@@ -6,6 +6,7 @@ import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles
 import { saveBlob } from '@/lib/io/saveBlob'
 import { exportProject, uploadKhrArchive, uploadPages, uploadPagesByPaths } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 /**
@@ -79,7 +80,16 @@ export async function exportCurrentProjectAs(
     const defaultName = filename ?? `${base}.${exportExtension[format]}`
     await saveBlob(blob, defaultName)
   } catch (err) {
+    // Surface the failure to the user instead of swallowing it. Previously this
+    // only `console.error`'d and rethrew into a `void` caller, so a failed
+    // export (e.g. exporting rendered/inpainted before those layers exist, which
+    // the server rejects with "no pages have the requested layer populated")
+    // showed no dialog and no message — looking like a broken feature.
     console.error('Export failed:', err)
-    throw err
+    const raw = err instanceof Error ? err.message : String(err)
+    const message = /layer populated|no pages in selection/i.test(raw)
+      ? 'Nothing to export yet — run Render first (Process menu) to generate images for these pages.'
+      : `Export failed: ${raw}`
+    useEditorUiStore.getState().showError(message)
   }
 }
