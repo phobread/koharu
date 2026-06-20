@@ -22,6 +22,12 @@ import {
   LogInIcon,
   LogOutIcon,
   SparklesIcon,
+  TypeIcon,
+  BoldIcon,
+  ItalicIcon,
+  MinusIcon,
+  PlusIcon,
+  SquareIcon,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -42,7 +48,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { ColorPicker } from '@/components/ui/color-picker'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { FontSelect } from '@/components/ui/font-select'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 import { Label } from '@/components/ui/label'
@@ -66,17 +74,22 @@ import {
   getGetCodexAuthStatusQueryKey,
   startCodexDeviceLogin,
   useGetCodexAuthStatus,
+  useGetGoogleFontsCatalog,
+  useListFonts,
 } from '@/lib/api/default/default'
 import type {
   AppConfig,
   ConfigPatch,
   CodexDeviceLogin,
   EngineCatalog as GetEngineCatalog200,
+  FontFaceInfo,
   LlmProviderCatalog,
   ProviderConfig,
 } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
+import { normalizeFamilyName } from '@/lib/font-utils'
 import { supportedLanguages } from '@/lib/i18n'
+import { queueAutoRender } from '@/lib/io/scene'
 import {
   areShortcutsEqual,
   formatShortcut,
@@ -85,7 +98,11 @@ import {
   isKeyBlocked,
   isModifierKey,
 } from '@/lib/shortcutUtils'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { useSelectionStore } from '@/lib/stores/selectionStore'
+import type { RenderStroke } from '@/lib/types'
+import { cn } from '@/lib/utils'
 
 // Dialog state models `AppConfig` (what `GET /config` returns — snake_case).
 // But `PATCH /config` expects a `ConfigPatch` with camelCase fields because
@@ -135,6 +152,7 @@ const GITHUB_REPO = 'mayocream/koharu'
 
 const TABS = [
   { id: 'appearance', icon: PaletteIcon, labelKey: 'settings.appearance' },
+  { id: 'rendering', icon: TypeIcon, labelKey: 'settings.textDefaults' },
   { id: 'engines', icon: CpuIcon, labelKey: 'settings.engines' },
   { id: 'providers', icon: KeyIcon, labelKey: 'settings.apiKeys' },
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
@@ -341,6 +359,7 @@ export function SettingsDialog({
           <ScrollArea className='min-h-0 flex-1'>
             <div className='p-6'>
               {tab === 'appearance' && <AppearancePane />}
+              {tab === 'rendering' && <TextDefaultsPane />}
               {tab === 'engines' && engineCatalog && appConfig && (
                 <EnginesPane
                   catalog={engineCatalog}
@@ -487,6 +506,334 @@ function AppearancePane() {
             ))}
           </SelectContent>
         </Select>
+      </Section>
+    </div>
+  )
+}
+
+// ── Text defaults ─────────────────────────────────────────────────
+
+const STROKE_DEFAULT_COLOR: [number, number, number, number] = [255, 255, 255, 255]
+const STROKE_DEFAULT_WIDTH = 1.6
+
+const colorToHex = (c: number[]) =>
+  `#${c
+    .slice(0, 3)
+    .map((v) =>
+      Math.max(0, Math.min(255, Math.round(v)))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
+
+const hexToColor = (hex: string, alpha: number): [number, number, number, number] => {
+  const n = hex.replace('#', '')
+  if (n.length !== 6) return [0, 0, 0, alpha]
+  const r = Number.parseInt(n.slice(0, 2), 16)
+  const g = Number.parseInt(n.slice(2, 4), 16)
+  const b = Number.parseInt(n.slice(4, 6), 16)
+  if ([r, g, b].some((v) => Number.isNaN(v))) return [0, 0, 0, alpha]
+  return [r, g, b, alpha]
+}
+
+/**
+ * Central place to set the global render defaults (font, size, bold/italic,
+ * border, and text-edge padding). These are the same persisted values the
+ * inline render panel edits when no block is selected; here they're grouped
+ * so they're easy to find and adjust. Per-block overrides still win.
+ */
+function TextDefaultsPane() {
+  const { t } = useTranslation()
+  const { data: availableFonts = [] } = useListFonts()
+  useGetGoogleFontsCatalog() // prefetch so Google families render with a preview
+
+  const defaultFont = usePreferencesStore((s) => s.defaultFont)
+  const setDefaultFont = usePreferencesStore((s) => s.setDefaultFont)
+  const defaultFontSize = usePreferencesStore((s) => s.defaultFontSize)
+  const setDefaultFontSize = usePreferencesStore((s) => s.setDefaultFontSize)
+  const boxPadding = usePreferencesStore((s) => s.boxPadding)
+  const setBoxPadding = usePreferencesStore((s) => s.setBoxPadding)
+  const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
+  const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
+  const renderEffect = useEditorUiStore((s) => s.renderEffect)
+  const setRenderEffect = useEditorUiStore((s) => s.setRenderEffect)
+  const renderStroke = useEditorUiStore((s) => s.renderStroke)
+  const setRenderStroke = useEditorUiStore((s) => s.setRenderStroke)
+
+  // Re-render the open page (if any) so default changes preview immediately.
+  const rerender = () => {
+    const pageId = useSelectionStore.getState().pageId
+    if (pageId) queueAutoRender(pageId)
+  }
+
+  const familyOptions = useMemo(() => {
+    const families = new Map<string, FontFaceInfo>()
+    for (const f of availableFonts) {
+      const name = normalizeFamilyName(f.familyName)
+      if (!families.has(name)) families.set(name, { ...f, familyName: name })
+    }
+    return Array.from(families.values()).sort((a, b) => a.familyName.localeCompare(b.familyName))
+  }, [availableFonts])
+
+  const currentFamily = defaultFont ? normalizeFamilyName(defaultFont) : ''
+
+  const pickFont = (family: string) => {
+    const variants = availableFonts.filter((f) => normalizeFamilyName(f.familyName) === family)
+    const regular =
+      variants.find((f) => {
+        const ps = f.postScriptName.toLowerCase()
+        return ps.includes('regular') || ps.includes('400')
+      }) ?? variants[0]
+    setDefaultFont(regular?.postScriptName ?? family)
+    rerender()
+  }
+
+  const setSize = (size?: number) => {
+    setDefaultFontSize(size)
+    rerender()
+  }
+
+  const updateStroke = (next?: RenderStroke) => {
+    setRenderStroke(next)
+    rerender()
+  }
+
+  const toggleEffect = (key: 'bold' | 'italic') => {
+    setRenderEffect({ ...renderEffect, [key]: !renderEffect[key] })
+    rerender()
+  }
+
+  const size = defaultFontSize
+  const strokeEnabled = renderStroke?.enabled === true
+  const strokeWidth = renderStroke?.widthPx ?? STROKE_DEFAULT_WIDTH
+  const strokeColor = renderStroke?.color ?? STROKE_DEFAULT_COLOR
+
+  const effects: { key: 'bold' | 'italic'; label: string; Icon: typeof BoldIcon }[] = [
+    { key: 'bold', label: t('render.effectBold'), Icon: BoldIcon },
+    { key: 'italic', label: t('render.effectItalic'), Icon: ItalicIcon },
+  ]
+
+  return (
+    <div className='space-y-8'>
+      <Section
+        title={t('settings.textDefaults')}
+        description={t('settings.textDefaultsDescription')}
+      >
+        <div className='space-y-1.5'>
+          <Label className='text-xs'>{t('render.fontLabel')}</Label>
+          <FontSelect
+            value={currentFamily}
+            options={familyOptions}
+            favoriteFonts={favoriteFonts}
+            onToggleFavorite={toggleFavoriteFont}
+            disabled={familyOptions.length === 0}
+            placeholder={t('render.fontPlaceholder')}
+            triggerStyle={currentFamily ? { fontFamily: currentFamily } : undefined}
+            onChange={pickFont}
+          />
+        </div>
+
+        <div className='flex flex-wrap items-end gap-6'>
+          <div className='space-y-1.5'>
+            <Label className='text-xs'>{t('settings.defaultFontSize')}</Label>
+            <div className='flex w-40 items-center rounded-md border border-input bg-background shadow-xs'>
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-sm'
+                className='size-7 rounded-r-none border-r'
+                onClick={() => setSize(Math.max(6, Math.round((size ?? 16) - 1)))}
+              >
+                <MinusIcon className='size-3' />
+              </Button>
+              <Input
+                type='number'
+                min='6'
+                max='300'
+                inputMode='numeric'
+                className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+                value={size !== undefined ? Math.round(size) : ''}
+                placeholder={t('settings.autoSize')}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  if (v === '') {
+                    setSize(undefined)
+                    return
+                  }
+                  const n = Number.parseInt(v, 10)
+                  if (Number.isFinite(n) && n >= 1) setSize(Math.min(300, n))
+                }}
+              />
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-sm'
+                className='size-7 rounded-l-none border-l'
+                onClick={() => setSize(Math.min(300, Math.round((size ?? 16) + 1)))}
+              >
+                <PlusIcon className='size-3' />
+              </Button>
+            </div>
+          </div>
+
+          <div className='space-y-1.5'>
+            <Label className='text-xs'>{t('render.effectLabel')}</Label>
+            <div className='flex items-center gap-1'>
+              {effects.map(({ key, label, Icon }) => (
+                <Button
+                  key={key}
+                  type='button'
+                  variant='outline'
+                  size='icon-sm'
+                  aria-label={label}
+                  className={cn(
+                    'size-7',
+                    renderEffect[key] &&
+                      'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                  )}
+                  onClick={() => toggleEffect(key)}
+                >
+                  <Icon className='size-3.5' />
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section title={t('render.effectBorder')} description={t('settings.borderDescription')}>
+        <div className='flex items-center gap-2'>
+          <Button
+            type='button'
+            variant='outline'
+            size='icon-sm'
+            aria-label={t('render.effectBorder')}
+            className={cn(
+              'size-7',
+              strokeEnabled &&
+                'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+            )}
+            onClick={() =>
+              updateStroke(
+                strokeEnabled
+                  ? undefined
+                  : { enabled: true, color: strokeColor, widthPx: strokeWidth },
+              )
+            }
+          >
+            <SquareIcon className='size-3.5' />
+          </Button>
+          {strokeEnabled && (
+            <>
+              <ColorPicker
+                value={colorToHex(strokeColor)}
+                className='size-7'
+                onChange={(hex) =>
+                  updateStroke({
+                    enabled: true,
+                    color: hexToColor(hex, strokeColor[3] ?? 255),
+                    widthPx: strokeWidth,
+                  })
+                }
+              />
+              <div className='flex w-32 items-center rounded-md border border-input bg-background shadow-xs'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon-sm'
+                  className='size-7 rounded-r-none border-r'
+                  onClick={() =>
+                    updateStroke({
+                      enabled: true,
+                      color: strokeColor,
+                      widthPx: Math.max(0.2, Number((strokeWidth - 0.2).toFixed(1))),
+                    })
+                  }
+                >
+                  <MinusIcon className='size-3' />
+                </Button>
+                <Input
+                  type='number'
+                  step='0.1'
+                  min='0.2'
+                  max='24'
+                  inputMode='decimal'
+                  className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+                  value={strokeWidth}
+                  onChange={(e) => {
+                    const n = Number.parseFloat(e.target.value)
+                    if (Number.isFinite(n)) {
+                      updateStroke({
+                        enabled: true,
+                        color: strokeColor,
+                        widthPx: Math.max(0.2, Math.min(24, n)),
+                      })
+                    }
+                  }}
+                />
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon-sm'
+                  className='size-7 rounded-l-none border-l'
+                  onClick={() =>
+                    updateStroke({
+                      enabled: true,
+                      color: strokeColor,
+                      widthPx: Math.min(24, Number((strokeWidth + 0.2).toFixed(1))),
+                    })
+                  }
+                >
+                  <PlusIcon className='size-3' />
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Section>
+
+      <Section title={t('settings.boxPadding')} description={t('settings.boxPaddingDescription')}>
+        <div className='flex w-40 items-center rounded-md border border-input bg-background shadow-xs'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-sm'
+            className='size-7 rounded-r-none border-r'
+            onClick={() => {
+              setBoxPadding(Math.max(0, boxPadding - 1))
+              rerender()
+            }}
+          >
+            <MinusIcon className='size-3' />
+          </Button>
+          <Input
+            type='number'
+            min='0'
+            max='64'
+            inputMode='numeric'
+            className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+            value={Number.isFinite(boxPadding) ? boxPadding : 0}
+            onChange={(e) => {
+              const n = Number.parseInt(e.target.value, 10)
+              if (Number.isFinite(n)) {
+                setBoxPadding(Math.max(0, Math.min(64, n)))
+                rerender()
+              }
+            }}
+          />
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-sm'
+            className='size-7 rounded-l-none border-l'
+            onClick={() => {
+              setBoxPadding(Math.min(64, boxPadding + 1))
+              rerender()
+            }}
+          >
+            <PlusIcon className='size-3' />
+          </Button>
+        </div>
       </Section>
     </div>
   )
