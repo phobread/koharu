@@ -12,6 +12,7 @@ type BlockContextMenuOptions = {
   pointerToDocument: PointerToDocumentFn
   onSelect: (nodeId: string | null) => void
   onRemove: (nodeId: string) => void
+  onSplit: (nodeId: string) => void
 }
 
 /**
@@ -23,6 +24,7 @@ export function useBlockContextMenu({
   pointerToDocument,
   onSelect,
   onRemove,
+  onSplit,
 }: BlockContextMenuOptions) {
   const [contextMenuNodeId, setContextMenuNodeId] = useState<string | null>(null)
 
@@ -59,12 +61,19 @@ export function useBlockContextMenu({
     setContextMenuNodeId(null)
   }
 
+  const handleSplitBlock = () => {
+    if (!contextMenuNodeId) return
+    onSplit(contextMenuNodeId)
+    setContextMenuNodeId(null)
+  }
+
   const clearContextMenu = () => setContextMenuNodeId(null)
 
   return {
     contextMenuNodeId,
     handleContextMenu,
     handleDeleteBlock,
+    handleSplitBlock,
     clearContextMenu,
   }
 }

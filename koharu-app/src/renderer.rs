@@ -280,6 +280,13 @@ impl Renderer {
         // Inset the layout box so glyphs/strokes don't clip at the box edge.
         // Symmetric inset preserves the box centre (and thus sprite centring).
         let layout_box = inset_layout_box(resolved_box.layout_box, box_padding);
+        // A manually drawn / resized box (`lock_layout_box`) is an explicit size
+        // choice, so let text shrink to fit it rather than bottoming out at the
+        // image-wide readability floor and overflowing the box — the centred
+        // sprite would otherwise spill past both edges and look de-centred
+        // (issue #223). Auto-detected boxes keep the floor so OCR text stays
+        // legible.
+        let min_font_size = effective_min_font_size(min_font_size, block.lock_layout_box);
 
         let mut layout_builder = TextLayout::new(&font, None)
             .with_fallback_fonts(&self.symbol_fallbacks)
@@ -502,6 +509,23 @@ struct MaskCollisionAttempt {
 fn min_font_size_for_image(image_width: u32, image_height: u32) -> f32 {
     let max_dim = image_width.max(image_height) as f32;
     (max_dim / 90.0).clamp(12.0, 28.0)
+}
+
+/// Floor for text in a manually drawn / resized box. Such a box is an explicit
+/// size choice, so text may shrink well below the auto readability floor to
+/// stay inside it (issue #223).
+const MANUAL_MIN_FONT_SIZE: f32 = 6.0;
+
+/// Effective minimum font size for a block. Manually-sized (locked) boxes are
+/// allowed down to `MANUAL_MIN_FONT_SIZE` so text fits the box the user drew;
+/// auto-detected boxes keep the image-derived readability floor. Never raises
+/// the floor above the image minimum.
+fn effective_min_font_size(image_min: f32, lock_layout_box: bool) -> f32 {
+    if lock_layout_box {
+        MANUAL_MIN_FONT_SIZE.min(image_min)
+    } else {
+        image_min
+    }
 }
 
 /// Maximum font size for the given layout box, derived from its dimensions.
@@ -1400,6 +1424,17 @@ mod tests {
             height: 30.0,
         };
         assert_eq!(inset_layout_box(b, 0.0), b);
+    }
+
+    #[test]
+    fn manual_boxes_allow_smaller_font_than_auto_floor() {
+        // Auto-detected boxes keep the image readability floor.
+        assert_eq!(effective_min_font_size(18.0, false), 18.0);
+        // Manually drawn / resized boxes may shrink text below it so it fits
+        // the box the user drew (issue #223).
+        assert_eq!(effective_min_font_size(18.0, true), MANUAL_MIN_FONT_SIZE);
+        // Never raises the floor above the image minimum.
+        assert_eq!(effective_min_font_size(4.0, true), 4.0);
     }
 
     #[test]

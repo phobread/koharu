@@ -32,14 +32,15 @@ import { useBlockDrafting, type BlockDraft } from '@/hooks/useBlockDrafting'
 import { useBrushCursor } from '@/hooks/useBrushCursor'
 import { useBrushLayerDisplay } from '@/hooks/useBrushLayerDisplay'
 import { useCanvasZoom } from '@/hooks/useCanvasZoom'
-import { findImageBlob, findMaskBlob, useCurrentPage } from '@/hooks/useCurrentPage'
+import { findImageBlob, findMaskBlob, isTextNode, useCurrentPage } from '@/hooks/useCurrentPage'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
-import type { Node, Transform } from '@/lib/api/schemas'
-import { applyOp } from '@/lib/io/scene'
+import type { Node, NodeDataPatch, Transform } from '@/lib/api/schemas'
+import { applyOp, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
+import { splitTextBlock } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -133,6 +134,54 @@ export function Workspace() {
     [page],
   )
 
+  // Split a text block into two halves along its longer side, dividing the
+  // text between them. Original keeps half A; a new node takes half B (style /
+  // font prediction / direction copied, stale sprite dropped so it re-renders).
+  const splitTextNode = useCallback(
+    async (nodeId: string) => {
+      if (!page) return
+      const node = page.nodes[nodeId]
+      if (!node || !isTextNode(node) || !node.transform) return
+      const data = node.kind.text
+      const split = splitTextBlock(node.transform, {
+        text: data.text,
+        translation: data.translation,
+      })
+      const at = Object.keys(page.nodes).length
+      const newId = crypto.randomUUID()
+      const updateA = ops.updateNode(page.id, nodeId, {
+        transform: split.a.transform,
+        data: {
+          text: {
+            text: split.a.text,
+            translation: split.a.translation,
+            lockLayoutBox: true,
+          },
+        } as NodeDataPatch,
+      })
+      const newNode: Node = {
+        id: newId,
+        transform: split.b.transform,
+        visible: true,
+        kind: {
+          text: {
+            text: split.b.text,
+            translation: split.b.translation,
+            style: data.style ?? undefined,
+            fontPrediction: data.fontPrediction ?? undefined,
+            sourceDirection: data.sourceDirection ?? undefined,
+            sourceLang: data.sourceLang ?? undefined,
+            lockLayoutBox: true,
+          },
+        },
+      }
+      await applyOp(ops.batch('Split block', [updateA, ops.addNode(page.id, at, newNode)]))
+      useSelectionStore.getState().selectMany([nodeId, newId])
+      queueAutoRender(page.id)
+    },
+    [page],
+  )
+
   const { draftBlock, bind: bindBlockDraft } = useBlockDrafting({
     mode,
     page,
@@ -184,18 +233,26 @@ export function Workspace() {
     if (page && autoFitEnabled) fitCanvasToViewport()
   }, [page?.id, autoFitEnabled])
 
-  const { contextMenuNodeId, handleContextMenu, handleDeleteBlock, clearContextMenu } =
-    useBlockContextMenu({
-      page,
-      pointerToDocument,
-      onSelect: (nodeId) => {
-        if (nodeId) useSelectionStore.getState().selectMany([nodeId])
-        else useSelectionStore.getState().clear()
-      },
-      onRemove: (nodeId) => {
-        void removeTextNode(nodeId)
-      },
-    })
+  const {
+    contextMenuNodeId,
+    handleContextMenu,
+    handleDeleteBlock,
+    handleSplitBlock,
+    clearContextMenu,
+  } = useBlockContextMenu({
+    page,
+    pointerToDocument,
+    onSelect: (nodeId) => {
+      if (nodeId) useSelectionStore.getState().selectMany([nodeId])
+      else useSelectionStore.getState().clear()
+    },
+    onRemove: (nodeId) => {
+      void removeTextNode(nodeId)
+    },
+    onSplit: (nodeId) => {
+      void splitTextNode(nodeId)
+    },
+  })
   const { t } = useTranslation()
 
   useGesture(
@@ -401,6 +458,12 @@ export function Workspace() {
                   </div>
                 </ContextMenuTrigger>
                 <ContextMenuContent className='min-w-32'>
+                  <ContextMenuItem
+                    disabled={contextMenuNodeId === null}
+                    onSelect={handleSplitBlock}
+                  >
+                    {t('workspace.splitBlock')}
+                  </ContextMenuItem>
                   <ContextMenuItem
                     disabled={contextMenuNodeId === null}
                     onSelect={handleDeleteBlock}
