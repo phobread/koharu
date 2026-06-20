@@ -244,6 +244,7 @@
   },
   "workspace": {
     "importPrompt": "导入页面以开始编辑。",
+    "splitBlock": "拆分文本块",
     "deleteBlock": "删除块"
   },
   "statusBar": {

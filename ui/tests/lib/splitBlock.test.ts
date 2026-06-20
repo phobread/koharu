@@ -58,6 +58,16 @@ describe('splitTextBlock', () => {
     expect(split.b.translation).toBe('bottom')
   })
 
+  it('tiles odd-sized boxes without a gap or overshoot', () => {
+    const horizontal = splitTextBlock(base(101, 40), {})
+    expect(horizontal.a.transform.x + horizontal.a.transform.width).toBe(horizontal.b.transform.x)
+    expect(horizontal.b.transform.x + horizontal.b.transform.width).toBe(201)
+
+    const vertical = splitTextBlock(base(40, 101), {})
+    expect(vertical.a.transform.y + vertical.a.transform.height).toBe(vertical.b.transform.y)
+    expect(vertical.b.transform.y + vertical.b.transform.height).toBe(301)
+  })
+
   it('preserves rotation on both halves', () => {
     const split = splitTextBlock({ x: 0, y: 0, width: 100, height: 40, rotationDeg: 15 }, {})
     expect(split.a.transform.rotationDeg).toBe(15)

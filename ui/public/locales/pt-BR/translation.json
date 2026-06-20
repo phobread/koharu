@@ -245,6 +245,7 @@
   },
   "workspace": {
     "importPrompt": "Importe uma página para começar a editar.",
+    "splitBlock": "Dividir bloco",
     "deleteBlock": "Excluir bloco"
   },
   "statusBar": {

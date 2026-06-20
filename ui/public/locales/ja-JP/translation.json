@@ -244,6 +244,7 @@
   },
   "workspace": {
     "importPrompt": "ページを読み込んで編集を開始してください。",
+    "splitBlock": "ブロックを分割",
     "deleteBlock": "ブロックを削除"
   },
   "statusBar": {

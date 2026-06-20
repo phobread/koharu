@@ -266,6 +266,7 @@
   },
   "workspace": {
     "importPrompt": "편집을 시작하려면 페이지를 가져오세요.",
+    "splitBlock": "블록 분할",
     "deleteBlock": "블록 삭제"
   },
   "statusBar": {

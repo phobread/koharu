@@ -51,14 +51,6 @@ export function splitTextValue(value: string | null | undefined): [string, strin
   return [v, '']
 }
 
-const roundTransform = (t: Transform): Transform => ({
-  ...t,
-  x: Math.round(t.x),
-  y: Math.round(t.y),
-  width: Math.round(t.width),
-  height: Math.round(t.height),
-})
-
 /**
  * Split a text block into two halves along its longer side (wide → left/right,
  * tall → top/bottom), dividing the source + translation text between them. The
@@ -74,12 +66,12 @@ export function splitTextBlock(transform: Transform, data: SplitInput): BlockSpl
   let bT: Transform
   if (leftRight) {
     const halfW = transform.width / 2
-    aT = roundTransform({ ...transform, width: halfW })
-    bT = roundTransform({ ...transform, x: transform.x + halfW, width: transform.width - halfW })
+    aT = { ...transform, width: halfW }
+    bT = { ...transform, x: transform.x + halfW, width: transform.width - halfW }
   } else {
     const halfH = transform.height / 2
-    aT = roundTransform({ ...transform, height: halfH })
-    bT = roundTransform({ ...transform, y: transform.y + halfH, height: transform.height - halfH })
+    aT = { ...transform, height: halfH }
+    bT = { ...transform, y: transform.y + halfH, height: transform.height - halfH }
   }
 
   return {

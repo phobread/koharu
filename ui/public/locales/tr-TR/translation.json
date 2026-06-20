@@ -244,6 +244,7 @@
   },
   "workspace": {
     "importPrompt": "Düzenlemeye başlamak için bir sayfa içe aktarın.",
+    "splitBlock": "Bloğu böl",
     "deleteBlock": "Bloğu sil"
   },
   "statusBar": {

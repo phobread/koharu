@@ -244,6 +244,7 @@
   },
   "workspace": {
     "importPrompt": "Импортируйте страницу, чтобы начать редактирование.",
+    "splitBlock": "Разделить блок",
     "deleteBlock": "Удалить блок"
   },
   "statusBar": {
