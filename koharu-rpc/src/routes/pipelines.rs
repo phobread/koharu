@@ -14,7 +14,8 @@ use koharu_app::pipeline::{
 };
 use koharu_core::{
     AppEvent, JobFinishedEvent, JobStatus, JobSummary, JobWarningEvent, NodeId, PageId,
-    PipelineProgress, PipelineStatus, ReadingOrder, Region,
+    PipelineProgress, PipelineStatus, ReadingOrder, Region, TextAlign, TextShaderEffect,
+    TextStrokeStyle,
 };
 use serde::{Deserialize, Serialize};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -50,6 +51,21 @@ pub struct StartPipelineRequest {
     pub default_font: Option<String>,
     #[serde(default)]
     pub reading_order: Option<ReadingOrder>,
+    /// Global render defaults applied when a text node has no explicit
+    /// per-node override. The renderer falls back to auto-fit / predicted
+    /// values when these are absent.
+    #[serde(default)]
+    pub default_font_size: Option<f32>,
+    /// Pixels to inset text from each edge of its layout box, to stop glyphs
+    /// and strokes being clipped at the box border.
+    #[serde(default)]
+    pub box_padding: Option<f32>,
+    #[serde(default)]
+    pub shader_effect: Option<TextShaderEffect>,
+    #[serde(default)]
+    pub shader_stroke: Option<TextStrokeStyle>,
+    #[serde(default)]
+    pub text_align: Option<TextAlign>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -88,6 +104,11 @@ async fn start_pipeline(
             text_node_ids: req.text_node_ids,
             region: req.region,
             reading_order: req.reading_order,
+            default_font_size: req.default_font_size,
+            box_padding: req.box_padding,
+            shader_effect: req.shader_effect,
+            shader_stroke: req.shader_stroke,
+            text_align: req.text_align,
         },
     };
 

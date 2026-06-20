@@ -204,6 +204,16 @@ pub struct ConfigPatch {
     /// are interpreted as "leave the existing secret alone".
     #[serde(default)]
     pub providers: Option<Vec<ProviderPatch>>,
+    #[serde(default)]
+    pub editor: Option<EditorConfigPatch>,
+}
+
+/// Patch for the editor/UI preferences blob. `client` is an opaque JSON
+/// object string owned by the frontend; the backend stores it verbatim.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorConfigPatch {
+    pub client: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]

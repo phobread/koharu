@@ -30,9 +30,9 @@ import type {
   ReadingOrder,
   SceneSnapshot,
 } from '@/lib/api/schemas'
+import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
 import { queryClient } from '@/lib/queryClient'
-import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 /**
@@ -119,8 +119,7 @@ async function runAutoRender(pageId: string): Promise<void> {
     const cfg = await getConfig()
     const renderer = cfg.pipeline?.renderer
     if (!renderer) return
-    const defaultFont = usePreferencesStore.getState().defaultFont
-    await startPipeline({ steps: [renderer], pages: [pageId], defaultFont })
+    await startPipeline({ steps: [renderer], pages: [pageId], ...renderDefaultsForPipeline() })
   } catch (err) {
     // Auto-render failures shouldn't disturb the editing flow; users can
     // always run Render manually from the toolbar / menu.
@@ -183,11 +182,9 @@ export async function uploadPagesByPaths(paths: string[], replace: boolean): Pro
 }
 
 export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
-  const bytes = await file.arrayBuffer()
-  const summary = await importProject({
-    body: bytes,
-    headers: { 'Content-Type': 'application/zip' },
-  })
+  // The generated `importProject` takes the archive as a `Blob` and sets the
+  // `application/zip` content type itself; a `File` is already a `Blob`.
+  const summary = await importProject(file)
   await invalidateScene()
   return summary
 }

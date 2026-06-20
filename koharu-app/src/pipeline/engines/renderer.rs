@@ -70,9 +70,12 @@ impl Engine for Model {
             .collect();
 
         let page_opts = PageRenderOptions {
-            shader_effect: Default::default(),
-            shader_stroke: None,
+            shader_effect: ctx.options.shader_effect.unwrap_or_default(),
+            shader_stroke: ctx.options.shader_stroke.clone(),
             document_font: ctx.options.default_font.clone(),
+            document_font_size: ctx.options.default_font_size,
+            document_align: ctx.options.text_align,
+            box_padding: ctx.options.box_padding.unwrap_or(0.0),
             target_language: ctx
                 .options
                 .target_language

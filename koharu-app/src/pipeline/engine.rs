@@ -21,7 +21,9 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use koharu_core::{NodeId, Op, PageId, ReadingOrder, Region, Scene};
+use koharu_core::{
+    NodeId, Op, PageId, ReadingOrder, Region, Scene, TextAlign, TextShaderEffect, TextStrokeStyle,
+};
 use koharu_runtime::RuntimeManager;
 use parking_lot::RwLock;
 use petgraph::algo::toposort;
@@ -63,6 +65,14 @@ pub struct PipelineRunOptions {
     /// and process just that one block. Other engines ignore it.
     pub region: Option<Region>,
     pub reading_order: Option<ReadingOrder>,
+    /// Global render defaults (renderer engine only). Applied when a text node
+    /// has no explicit per-node override; otherwise the renderer auto-fits the
+    /// font and derives stroke/alignment as before.
+    pub default_font_size: Option<f32>,
+    pub box_padding: Option<f32>,
+    pub shader_effect: Option<TextShaderEffect>,
+    pub shader_stroke: Option<TextStrokeStyle>,
+    pub text_align: Option<TextAlign>,
 }
 
 // ---------------------------------------------------------------------------

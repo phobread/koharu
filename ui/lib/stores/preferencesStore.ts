@@ -1,9 +1,10 @@
 'use client'
 
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 
 import { getPlatform } from '@/lib/shortcutUtils'
+import { serverConfigStorage } from '@/lib/stores/serverConfigStorage'
 
 type PreferencesState = {
   brushConfig: {
@@ -13,6 +14,12 @@ type PreferencesState = {
   setBrushConfig: (config: Partial<PreferencesState['brushConfig']>) => void
   defaultFont?: string
   setDefaultFont: (font?: string) => void
+  /** Global default text size (px). Caps render auto-fit; undefined = auto. */
+  defaultFontSize?: number
+  setDefaultFontSize: (size?: number) => void
+  /** Pixels to inset text from each layout-box edge (stops edge clipping). */
+  boxPadding: number
+  setBoxPadding: (px: number) => void
   favoriteFonts: string[]
   toggleFavoriteFont: (font: string) => void
   customSystemPrompt?: string
@@ -50,6 +57,7 @@ const initialPreferences = {
     size: 36,
     color: '#ffffff',
   },
+  boxPadding: 0,
   favoriteFonts: [],
   shortcuts: {
     select: 'V',
@@ -86,6 +94,15 @@ export const usePreferencesStore = create<PreferencesState>()(
           },
         })),
       setDefaultFont: (font) => set({ defaultFont: font }),
+      setDefaultFontSize: (size) =>
+        set({
+          defaultFontSize:
+            size === undefined || !Number.isFinite(size)
+              ? undefined
+              : Math.max(1, Math.round(size)),
+        }),
+      setBoxPadding: (px) =>
+        set({ boxPadding: Number.isFinite(px) ? Math.max(0, Math.round(px)) : 0 }),
       toggleFavoriteFont: (font) =>
         set((state) => ({
           favoriteFonts: state.favoriteFonts.includes(font)
@@ -119,7 +136,8 @@ export const usePreferencesStore = create<PreferencesState>()(
     }),
     {
       name: 'koharu-config',
-      version: 7,
+      storage: createJSONStorage(() => serverConfigStorage),
+      version: 8,
       migrate: (persisted: any, version: number) => {
         if (version < 2 && persisted) {
           delete persisted.localLlm
@@ -154,11 +172,16 @@ export const usePreferencesStore = create<PreferencesState>()(
         if (persisted && (version < 7 || persisted.customPipeline?.detect === undefined)) {
           persisted.customPipeline = initialPreferences.customPipeline
         }
+        if (version < 8 && persisted) {
+          persisted.boxPadding ??= initialPreferences.boxPadding
+        }
         return persisted
       },
       partialize: (state) => ({
         brushConfig: state.brushConfig,
         defaultFont: state.defaultFont,
+        defaultFontSize: state.defaultFontSize,
+        boxPadding: state.boxPadding,
         favoriteFonts: state.favoriteFonts,
         customSystemPrompt: state.customSystemPrompt,
         codexImagePrompt: state.codexImagePrompt,

@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use image::{DynamicImage, GrayImage, RgbaImage, imageops};
 use koharu_core::{
-    FontFaceInfo, FontPrediction, FontSource, NodeId, TextDirection, TextShaderEffect,
+    FontFaceInfo, FontPrediction, FontSource, NodeId, TextAlign, TextDirection, TextShaderEffect,
     TextStrokeStyle, TextStyle, Transform,
 };
 
@@ -56,6 +56,16 @@ pub struct PageRenderOptions {
     pub shader_effect: TextShaderEffect,
     pub shader_stroke: Option<TextStrokeStyle>,
     pub document_font: Option<String>,
+    /// Global default text size. Caps the auto-fit search so text is at most
+    /// this size but still shrinks to fit its box. A per-node explicit
+    /// `style.font_size` overrides it. `None` keeps the box-derived cap.
+    pub document_font_size: Option<f32>,
+    /// Global default alignment used when a block has no explicit
+    /// `style.text_align`. `None` keeps the renderer's centre default.
+    pub document_align: Option<TextAlign>,
+    /// Pixels to inset text from each edge of its layout box (stops glyphs and
+    /// strokes clipping at the box border). `0.0` keeps the original box.
+    pub box_padding: f32,
     pub target_language: Option<String>,
     pub raster: RasterOptions,
 }
@@ -186,6 +196,9 @@ impl Renderer {
                 &opts.shader_effect,
                 &opts.shader_stroke,
                 opts.document_font.as_deref(),
+                opts.document_font_size,
+                opts.document_align,
+                opts.box_padding,
                 opts.target_language.as_deref(),
                 opts.raster,
                 min_font,
@@ -220,6 +233,9 @@ impl Renderer {
         effect: &TextShaderEffect,
         global_stroke: &Option<TextStrokeStyle>,
         document_font: Option<&str>,
+        document_font_size: Option<f32>,
+        document_align: Option<TextAlign>,
+        box_padding: f32,
         target_language: Option<&str>,
         raster: RasterOptions,
         min_font_size: f32,
@@ -254,12 +270,16 @@ impl Renderer {
         let writing_mode = writing_mode_for_block(&layout_source);
         // Translations default to centre alignment inside a bubble — each
         // line sits centred above/below the others, matching manga
-        // typesetting convention. Explicit `style.text_align` wins if set.
+        // typesetting convention. Explicit `style.text_align` wins; otherwise
+        // the document-level default applies, falling back to centre.
         let align = style
             .text_align
+            .or(document_align)
             .map(core_align_to_renderer)
             .unwrap_or(RendererTextAlign::Center);
-        let layout_box = resolved_box.layout_box;
+        // Inset the layout box so glyphs/strokes don't clip at the box edge.
+        // Symmetric inset preserves the box centre (and thus sprite centring).
+        let layout_box = inset_layout_box(resolved_box.layout_box, box_padding);
 
         let mut layout_builder = TextLayout::new(&font, None)
             .with_fallback_fonts(&self.symbol_fallbacks)
@@ -268,7 +288,12 @@ impl Renderer {
         if let Some(target_language) = target_language {
             layout_builder = layout_builder.with_hyphenation_language_tag(target_language);
         }
-        let max_font = max_font_size_for_box(layout_box, min_font_size);
+        // A document default size caps the auto-fit search (text still shrinks
+        // to fit a tight box); otherwise the cap is derived from the box.
+        let max_font = match document_font_size {
+            Some(size) => size.max(min_font_size + 1.0),
+            None => max_font_size_for_box(layout_box, min_font_size),
+        };
         let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
             let resolved_stroke = resolve_stroke_style(
                 block.font_prediction.as_ref(),
@@ -858,6 +883,24 @@ fn seed_layout_box(block: &RenderBlockInput) -> LayoutBox {
     }
 }
 
+/// Symmetrically shrink a layout box by `padding` px on every side, keeping a
+/// positive size and the original centre. `padding <= 0` returns the box
+/// unchanged. The inset is capped so it never collapses the box below ~2px.
+fn inset_layout_box(layout_box: LayoutBox, padding: f32) -> LayoutBox {
+    if padding <= 0.0 {
+        return layout_box;
+    }
+    let max_w_inset = (layout_box.width - 2.0) * 0.5;
+    let max_h_inset = (layout_box.height - 2.0) * 0.5;
+    let inset = padding.min(max_w_inset).min(max_h_inset).max(0.0);
+    LayoutBox {
+        x: layout_box.x + inset,
+        y: layout_box.y + inset,
+        width: (layout_box.width - 2.0 * inset).max(1.0),
+        height: (layout_box.height - 2.0 * inset).max(1.0),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers: stroke resolution
 // ---------------------------------------------------------------------------
@@ -1315,6 +1358,48 @@ mod tests {
         }
 
         panic!("no system font available for tests");
+    }
+
+    #[test]
+    fn inset_layout_box_shrinks_symmetrically_and_keeps_centre() {
+        let b = LayoutBox {
+            x: 100.0,
+            y: 100.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let inset = inset_layout_box(b, 10.0);
+        assert_eq!(inset.x, 110.0);
+        assert_eq!(inset.y, 110.0);
+        assert_eq!(inset.width, 180.0);
+        assert_eq!(inset.height, 80.0);
+        // Centre is preserved so sprite centring is unaffected.
+        assert_eq!(b.x + b.width * 0.5, inset.x + inset.width * 0.5);
+        assert_eq!(b.y + b.height * 0.5, inset.y + inset.height * 0.5);
+    }
+
+    #[test]
+    fn inset_layout_box_never_collapses_below_minimum() {
+        let b = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 6.0,
+        };
+        let inset = inset_layout_box(b, 1000.0);
+        assert!(inset.width >= 1.0);
+        assert!(inset.height >= 1.0);
+    }
+
+    #[test]
+    fn inset_layout_box_is_noop_for_zero_padding() {
+        let b = LayoutBox {
+            x: 5.0,
+            y: 7.0,
+            width: 20.0,
+            height: 30.0,
+        };
+        assert_eq!(inset_layout_box(b, 0.0), b);
     }
 
     #[test]

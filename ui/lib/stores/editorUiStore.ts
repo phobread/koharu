@@ -1,8 +1,10 @@
 'use client'
 
 import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 
 import type { LlmTarget } from '@/lib/api/schemas'
+import { serverConfigStorage } from '@/lib/stores/serverConfigStorage'
 import type { RenderEffect, RenderStroke, ToolMode } from '@/lib/types'
 
 /**
@@ -92,59 +94,77 @@ const initialState = {
   readingOrder: 'rtl' as const,
 }
 
-export const useEditorUiStore = create<EditorUiState>((set) => ({
-  ...initialState,
+export const useEditorUiStore = create<EditorUiState>()(
+  persist(
+    (set) => ({
+      ...initialState,
 
-  setScale: (scale) => {
-    const clamped = Math.max(10, Math.min(100, Math.round(scale)))
-    set({ scale: clamped })
-  },
-  setAutoFitEnabled: (enabled) => set({ autoFitEnabled: enabled }),
+      setScale: (scale) => {
+        const clamped = Math.max(10, Math.min(100, Math.round(scale)))
+        set({ scale: clamped })
+      },
+      setAutoFitEnabled: (enabled) => set({ autoFitEnabled: enabled }),
 
-  setShowSegmentationMask: (show) => set({ showSegmentationMask: show }),
-  setShowInpaintedImage: (show) => set({ showInpaintedImage: show }),
-  setShowBrushLayer: (show) => set({ showBrushLayer: show }),
-  setShowRenderedImage: (show) => set({ showRenderedImage: show }),
-  setShowTextBlocksOverlay: (show) => set({ showTextBlocksOverlay: show }),
+      setShowSegmentationMask: (show) => set({ showSegmentationMask: show }),
+      setShowInpaintedImage: (show) => set({ showInpaintedImage: show }),
+      setShowBrushLayer: (show) => set({ showBrushLayer: show }),
+      setShowRenderedImage: (show) => set({ showRenderedImage: show }),
+      setShowTextBlocksOverlay: (show) => set({ showTextBlocksOverlay: show }),
 
-  setMode: (mode) => {
-    set({ mode })
-    if (mode === 'repairBrush' || mode === 'brush' || mode === 'eraser') {
-      set({ showRenderedImage: false, showInpaintedImage: true })
-    }
-    if (mode === 'repairBrush') {
-      set({
-        showTextBlocksOverlay: true,
-        showSegmentationMask: true,
-        showBrushLayer: false,
-      })
-    } else if (mode !== 'eraser') {
-      set({ showSegmentationMask: false })
-      if (mode === 'brush') set({ showBrushLayer: true })
-      else if (mode === 'block') set({ showTextBlocksOverlay: true })
-    }
-  },
+      setMode: (mode) => {
+        set({ mode })
+        if (mode === 'repairBrush' || mode === 'brush' || mode === 'eraser') {
+          set({ showRenderedImage: false, showInpaintedImage: true })
+        }
+        if (mode === 'repairBrush') {
+          set({
+            showTextBlocksOverlay: true,
+            showSegmentationMask: true,
+            showBrushLayer: false,
+          })
+        } else if (mode !== 'eraser') {
+          set({ showSegmentationMask: false })
+          if (mode === 'brush') set({ showBrushLayer: true })
+          else if (mode === 'block') set({ showTextBlocksOverlay: true })
+        }
+      },
 
-  setRenderEffect: (effect) => set({ renderEffect: effect }),
-  setRenderStroke: (stroke) => set({ renderStroke: stroke }),
+      setRenderEffect: (effect) => set({ renderEffect: effect }),
+      setRenderStroke: (stroke) => set({ renderStroke: stroke }),
 
-  setSelectedTarget: (selectedTarget) => set({ selectedTarget }),
-  setSelectedLanguage: (selectedLanguage) => set({ selectedLanguage }),
+      setSelectedTarget: (selectedTarget) => set({ selectedTarget }),
+      setSelectedLanguage: (selectedLanguage) => set({ selectedLanguage }),
 
-  showError: (message) => {
-    clearDismissTimer()
-    set({ error: { id: Date.now(), message } })
-    dismissTimer = setTimeout(() => {
-      dismissTimer = null
-      set({ error: undefined })
-    }, ERROR_AUTO_DISMISS_MS)
-  },
-  clearError: () => {
-    clearDismissTimer()
-    set({ error: undefined })
-  },
+      showError: (message) => {
+        clearDismissTimer()
+        set({ error: { id: Date.now(), message } })
+        dismissTimer = setTimeout(() => {
+          dismissTimer = null
+          set({ error: undefined })
+        }, ERROR_AUTO_DISMISS_MS)
+      },
+      clearError: () => {
+        clearDismissTimer()
+        set({ error: undefined })
+      },
 
-  setShowNavigator: (show) => set({ showNavigator: show }),
+      setShowNavigator: (show) => set({ showNavigator: show }),
 
-  setReadingOrder: (readingOrder) => set({ readingOrder }),
-}))
+      setReadingOrder: (readingOrder) => set({ readingOrder }),
+    }),
+    {
+      name: 'koharu-editor',
+      storage: createJSONStorage(() => serverConfigStorage),
+      version: 1,
+      // Persist only durable user choices — not ephemeral view state (canvas
+      // scale, tool mode, layer toggles, transient errors).
+      partialize: (state) => ({
+        selectedTarget: state.selectedTarget,
+        selectedLanguage: state.selectedLanguage,
+        readingOrder: state.readingOrder,
+        renderEffect: state.renderEffect,
+        renderStroke: state.renderStroke,
+      }),
+    },
+  ),
+)

@@ -135,6 +135,10 @@ export function RenderControlsPanel() {
   const { data: availableFonts = [] } = useListFonts()
   useGetGoogleFontsCatalog() // prefetch catalog so picker can decorate Google entries
   const appDefaultFont = usePreferencesStore((s) => s.defaultFont)
+  const appDefaultFontSize = usePreferencesStore((s) => s.defaultFontSize)
+  const setAppDefaultFontSize = usePreferencesStore((s) => s.setDefaultFontSize)
+  const boxPadding = usePreferencesStore((s) => s.boxPadding)
+  const setBoxPadding = usePreferencesStore((s) => s.setBoxPadding)
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
@@ -344,6 +348,26 @@ export function RenderControlsPanel() {
 
   const updateStrokeWidth = (value: number) => {
     applyStrokeSetting({ ...currentStroke, widthPx: clampStrokeWidth(value) })
+  }
+
+  // Font size: per-node when a block is selected; otherwise the global default
+  // size (a cap applied to every block without an explicit size at render).
+  const activeFontSize = selectedNode ? currentFontSize : appDefaultFontSize
+  const applyFontSize = (size: number | undefined) => {
+    if (selectedNode) {
+      if (size === undefined) return
+      applyStyleToSelected({ fontSize: size })
+      return
+    }
+    setAppDefaultFontSize(size)
+    if (page) queueAutoRender(page.id)
+  }
+
+  // Box padding is a global render default (insets text from each box edge to
+  // stop glyphs/strokes clipping). Re-render so the change is visible at once.
+  const updateBoxPadding = (px: number) => {
+    setBoxPadding(px)
+    if (page) queueAutoRender(page.id)
   }
 
   const effectItems: {
@@ -556,11 +580,7 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-r-none border-r'
-            disabled={!selectedNode}
-            onClick={() => {
-              const next = Math.max(6, Math.round((currentFontSize ?? 16) - 1))
-              applyStyleToSelected({ fontSize: next })
-            }}
+            onClick={() => applyFontSize(Math.max(6, Math.round((activeFontSize ?? 16) - 1)))}
           >
             <MinusIcon className='size-3' />
           </Button>
@@ -572,13 +592,18 @@ export function RenderControlsPanel() {
             inputMode='numeric'
             className='h-6 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-0.5 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
             data-testid='render-font-size'
-            disabled={!selectedNode}
-            value={currentFontSize !== undefined ? Math.round(currentFontSize) : ''}
+            value={activeFontSize !== undefined ? Math.round(activeFontSize) : ''}
             placeholder='auto'
             onChange={(event) => {
-              const parsed = Number.parseInt(event.target.value, 10)
+              const value = event.target.value.trim()
+              if (value === '') {
+                // Clearing only makes sense for the global default (→ auto-fit).
+                if (!selectedNode) applyFontSize(undefined)
+                return
+              }
+              const parsed = Number.parseInt(value, 10)
               if (!Number.isFinite(parsed) || parsed < 1) return
-              applyStyleToSelected({ fontSize: Math.min(300, parsed) })
+              applyFontSize(Math.min(300, parsed))
             }}
           />
           <Button
@@ -586,11 +611,7 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-l-none border-l'
-            disabled={!selectedNode}
-            onClick={() => {
-              const next = Math.min(300, Math.round((currentFontSize ?? 16) + 1))
-              applyStyleToSelected({ fontSize: next })
-            }}
+            onClick={() => applyFontSize(Math.min(300, Math.round((activeFontSize ?? 16) + 1)))}
           >
             <PlusIcon className='size-3' />
           </Button>
@@ -766,6 +787,49 @@ export function RenderControlsPanel() {
               <PlusIcon className='size-3' />
             </Button>
           </div>
+        </div>
+      </div>
+
+      {/* Box padding (global render default) — insets text from each box edge
+          so glyphs/strokes don't clip at the border. */}
+      <div className='flex flex-col gap-0.5'>
+        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+          {t('render.boxPadding', { defaultValue: 'Box padding' })}
+        </span>
+        <div className='flex min-w-0 items-center rounded-md border border-input bg-background shadow-xs'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-sm'
+            className='size-7 shrink-0 rounded-r-none border-r'
+            onClick={() => updateBoxPadding(Math.max(0, boxPadding - 1))}
+          >
+            <MinusIcon className='size-3' />
+          </Button>
+          <Input
+            type='number'
+            step='1'
+            min='0'
+            max='64'
+            inputMode='numeric'
+            className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+            data-testid='render-box-padding'
+            value={Number.isFinite(boxPadding) ? boxPadding : 0}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10)
+              if (!Number.isFinite(parsed)) return
+              updateBoxPadding(Math.max(0, Math.min(64, parsed)))
+            }}
+          />
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-sm'
+            className='size-7 shrink-0 rounded-l-none border-l'
+            onClick={() => updateBoxPadding(Math.min(64, boxPadding + 1))}
+          >
+            <PlusIcon className='size-3' />
+          </Button>
         </div>
       </div>
     </div>

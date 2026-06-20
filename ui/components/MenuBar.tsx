@@ -24,6 +24,7 @@ import { useScene } from '@/hooks/useScene'
 import { getConfig, startPipeline } from '@/lib/api/default/default'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
+import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
 import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -104,8 +105,8 @@ export function MenuBar() {
       pages: opts.pageId ? [opts.pageId] : undefined,
       targetLanguage: editor.selectedLanguage,
       systemPrompt: prefs.customSystemPrompt,
-      defaultFont: prefs.defaultFont,
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
+      ...renderDefaultsForPipeline(),
     })
   }
 
@@ -135,8 +136,8 @@ export function MenuBar() {
       pages: opts.pageId ? [opts.pageId] : undefined,
       targetLanguage: editor.selectedLanguage,
       systemPrompt: prefs.customSystemPrompt,
-      defaultFont: prefs.defaultFont,
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
+      ...renderDefaultsForPipeline(),
     })
   }
 

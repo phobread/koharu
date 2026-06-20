@@ -996,7 +996,17 @@
               }
             ],
             "default": {
-              "path": "C:\\Users\\Mayo\\AppData\\Local\\Koharu"
+              "path": "C:\\Users\\amiru\\AppData\\Local\\Koharu"
+            }
+          },
+          "editor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EditorConfig"
+              }
+            ],
+            "default": {
+              "client": ""
             }
           },
           "http": {
@@ -1022,7 +1032,7 @@
               "detector": "pp-doclayout-v3",
               "font_detector": "yuzumarker-font-detection",
               "inpainter": "lama-manga",
-              "ocr": "paddle-ocr-vl-1.5",
+              "ocr": "paddle-ocr-vl-1.6",
               "renderer": "koharu-renderer",
               "segmenter": "comic-text-detector-seg",
               "translator": "llm"
@@ -1320,6 +1330,16 @@
               }
             ]
           },
+          "editor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EditorConfigPatch"
+              }
+            ]
+          },
           "http": {
             "oneOf": [
               {
@@ -1473,6 +1493,26 @@
             }
           }
         ]
+      },
+      "EditorConfig": {
+        "type": "object",
+        "description": "Persisted editor / UI preferences.\n\n`client` is an opaque JSON document owned entirely by the frontend\n(shortcuts, brush, favorite fonts, prompts, pipeline toggles, LLM\nselection, render defaults, locale, theme, …). The backend stores and\nechoes it verbatim — it never interprets the contents.\n\nThis exists because the desktop webview loads the UI from the ephemeral\n`http://127.0.0.1:<port>` origin, and browser `localStorage` is keyed by\nthat origin: when the port drifts (e.g. 4000 is busy at launch) every\npersisted preference is silently wiped. Round-tripping prefs through\n`config.toml` makes them survive restarts regardless of the port.\n\nStored as a JSON *string* rather than a structured table because TOML has\nno null value (a structured blob with absent/optional fields would break\nserialization) and the blob's shape is the frontend's concern, not ours.",
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "Frontend-owned preferences, serialized as a JSON object string.\nEmpty string means \"no preferences saved yet\".",
+            "default": ""
+          }
+        }
+      },
+      "EditorConfigPatch": {
+        "type": "object",
+        "description": "Patch for the editor/UI preferences blob. `client` is an opaque JSON\nobject string owned by the frontend; the backend stores it verbatim.",
+        "properties": {
+          "client": {
+            "type": ["string", "null"]
+          }
+        }
       },
       "EngineCatalog": {
         "type": "object",
@@ -2596,7 +2636,7 @@
           },
           "ocr": {
             "type": "string",
-            "default": "paddle-ocr-vl-1.5"
+            "default": "paddle-ocr-vl-1.6"
           },
           "renderer": {
             "type": "string",
@@ -2976,8 +3016,18 @@
         "type": "object",
         "required": ["steps"],
         "properties": {
+          "boxPadding": {
+            "type": ["number", "null"],
+            "format": "float",
+            "description": "Pixels to inset text from each edge of its layout box, to stop glyphs\nand strokes being clipped at the box border."
+          },
           "defaultFont": {
             "type": ["string", "null"]
+          },
+          "defaultFontSize": {
+            "type": ["number", "null"],
+            "format": "float",
+            "description": "Global render defaults applied when a text node has no explicit\nper-node override. The renderer falls back to auto-fit / predicted\nvalues when these are absent."
           },
           "pages": {
             "type": ["array", "null"],
@@ -3007,6 +3057,26 @@
               }
             ]
           },
+          "shaderEffect": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextShaderEffect"
+              }
+            ]
+          },
+          "shaderStroke": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextStrokeStyle"
+              }
+            ]
+          },
           "steps": {
             "type": "array",
             "items": {
@@ -3019,6 +3089,16 @@
           },
           "targetLanguage": {
             "type": ["string", "null"]
+          },
+          "textAlign": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextAlign"
+              }
+            ]
           },
           "textNodeIds": {
             "type": ["array", "null"],

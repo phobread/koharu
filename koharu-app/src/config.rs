@@ -62,6 +62,31 @@ pub struct AppConfig {
     pub http: HttpConfig,
     pub pipeline: PipelineConfig,
     pub providers: Vec<ProviderConfig>,
+    pub editor: EditorConfig,
+}
+
+/// Persisted editor / UI preferences.
+///
+/// `client` is an opaque JSON document owned entirely by the frontend
+/// (shortcuts, brush, favorite fonts, prompts, pipeline toggles, LLM
+/// selection, render defaults, locale, theme, …). The backend stores and
+/// echoes it verbatim — it never interprets the contents.
+///
+/// This exists because the desktop webview loads the UI from the ephemeral
+/// `http://127.0.0.1:<port>` origin, and browser `localStorage` is keyed by
+/// that origin: when the port drifts (e.g. 4000 is busy at launch) every
+/// persisted preference is silently wiped. Round-tripping prefs through
+/// `config.toml` makes them survive restarts regardless of the port.
+///
+/// Stored as a JSON *string* rather than a structured table because TOML has
+/// no null value (a structured blob with absent/optional fields would break
+/// serialization) and the blob's shape is the frontend's concern, not ours.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// Frontend-owned preferences, serialized as a JSON object string.
+    /// Empty string means "no preferences saved yet".
+    pub client: String,
 }
 
 /// Engine selection for each pipeline stage.
@@ -235,6 +260,11 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
         if let Some(v) = p.renderer {
             config.pipeline.renderer = v;
         }
+    }
+    if let Some(editor) = patch.editor
+        && let Some(client) = editor.client
+    {
+        config.editor.client = client;
     }
     if let Some(providers) = patch.providers {
         let mut new_providers = Vec::with_capacity(providers.len());
@@ -446,6 +476,46 @@ mod tests {
         assert_eq!(config.pipeline.detector, PipelineConfig::default().detector);
         assert_eq!(config.pipeline.renderer, PipelineConfig::default().renderer);
         assert_eq!(config.pipeline.ocr, PipelineConfig::default().ocr);
+    }
+
+    #[test]
+    fn editor_client_blob_round_trips_through_toml() {
+        let mut config = AppConfig::default();
+        config.editor.client = r#"{"defaultFont":"ArialMT","boxPadding":4}"#.to_string();
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(parsed.editor.client, config.editor.client);
+    }
+
+    #[test]
+    fn old_config_without_editor_still_loads() {
+        let config: AppConfig = toml::from_str(
+            r#"
+                [data]
+                path = "/tmp/test"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.editor.client, "");
+    }
+
+    #[test]
+    fn apply_patch_updates_editor_client_blob() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                editor: Some(koharu_core::EditorConfigPatch {
+                    client: Some(r#"{"defaultFont":"Comic Sans MS"}"#.to_string()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(config.editor.client, r#"{"defaultFont":"Comic Sans MS"}"#);
     }
 
     #[test]

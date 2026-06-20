@@ -1,0 +1,103 @@
+'use client'
+
+import type { StateStorage } from 'zustand/middleware'
+
+import { getConfig, patchConfig } from '@/lib/api/default/default'
+
+/**
+ * A zustand `persist` storage backed by the server config (`config.toml`)
+ * instead of the browser's `localStorage`.
+ *
+ * The desktop webview loads the UI from the ephemeral `http://127.0.0.1:<port>`
+ * origin; `localStorage` is keyed by that origin and is silently wiped whenever
+ * the port drifts (e.g. 4000 was busy at launch). Persisting preferences
+ * through the backend's `editor.client` blob makes them survive restarts
+ * regardless of the port — the root cause of settings (LLM choice, font, …)
+ * resetting on restart.
+ *
+ * Multiple stores share the single `editor.client` field: it holds a JSON
+ * object keyed by each store's persist `name`. We keep an in-memory cache,
+ * merge per-store writes into it, and debounce a single `PATCH /config` so a
+ * burst of edits (or two stores flushing at once) collapses into one request.
+ */
+
+type Blob = Record<string, string>
+
+const LEGACY_LOCALSTORAGE_KEY = 'koharu-config'
+const FLUSH_DELAY_MS = 400
+
+let cache: Blob | null = null
+let loadPromise: Promise<Blob> | null = null
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+let inflight: Promise<void> | null = null
+
+async function load(): Promise<Blob> {
+  if (cache) return cache
+  if (loadPromise) return loadPromise
+  loadPromise = (async () => {
+    let blob: Blob = {}
+    try {
+      const config = await getConfig()
+      const raw = config.editor?.client
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') blob = parsed as Blob
+      }
+    } catch {
+      // Server unreachable or blob unparseable — start from empty prefs.
+    }
+    // One-time migration: if nothing is stored server-side yet but the old
+    // localStorage prefs exist, adopt them so users don't lose their settings
+    // when the source of truth moves to the backend.
+    if (Object.keys(blob).length === 0 && typeof localStorage !== 'undefined') {
+      const legacy = localStorage.getItem(LEGACY_LOCALSTORAGE_KEY)
+      if (legacy) {
+        blob[LEGACY_LOCALSTORAGE_KEY] = legacy
+        void patchConfig({ editor: { client: JSON.stringify(blob) } }).catch(() => {})
+      }
+    }
+    cache = blob
+    return blob
+  })()
+  return loadPromise
+}
+
+function scheduleFlush(): void {
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    void flush()
+  }, FLUSH_DELAY_MS)
+}
+
+async function flush(): Promise<void> {
+  // Chain behind any in-flight PATCH so writes never interleave/clobber.
+  if (inflight) await inflight.catch(() => {})
+  const snapshot = JSON.stringify(cache ?? {})
+  inflight = patchConfig({ editor: { client: snapshot } })
+    .then(() => undefined)
+    .catch((err) => {
+      console.error('Failed to persist settings to config:', err)
+    })
+    .finally(() => {
+      inflight = null
+    })
+  await inflight
+}
+
+export const serverConfigStorage: StateStorage = {
+  getItem: async (name) => {
+    const blob = await load()
+    return blob[name] ?? null
+  },
+  setItem: async (name, value) => {
+    const blob = await load()
+    blob[name] = value
+    scheduleFlush()
+  },
+  removeItem: async (name) => {
+    const blob = await load()
+    delete blob[name]
+    scheduleFlush()
+  },
+}
