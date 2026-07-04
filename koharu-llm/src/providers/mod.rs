@@ -5,15 +5,12 @@ use std::sync::Arc;
 use anyhow::Context;
 use reqwest_middleware::ClientWithMiddleware;
 
-use crate::prompt::{BLOCK_TAG_INSTRUCTIONS, system_prompt};
+use crate::prompt::system_prompt_with_custom;
 use crate::{Language, language::tags as language_tags, supported_locales};
 
-/// Resolve the effective system prompt: custom (with block instructions appended) or default.
+/// Resolve the effective system prompt: default translation prompt plus optional custom guidance.
 pub(crate) fn resolve_system_prompt(custom: Option<&str>, target_language: Language) -> String {
-    match custom {
-        Some(p) if !p.trim().is_empty() => format!("{p} {BLOCK_TAG_INSTRUCTIONS}"),
-        _ => system_prompt(target_language),
-    }
+    system_prompt_with_custom(target_language, custom)
 }
 
 pub mod caiyun;

@@ -7,6 +7,8 @@ import { MenuBar } from '@/components/MenuBar'
 import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import { saveBlob } from '@/lib/io/saveBlob'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 import { renderWithQuery } from '../helpers'
 import { server } from '../msw/server'
@@ -122,6 +124,8 @@ describe('MenuBar', () => {
       }),
     )
     queryClient.setQueryData(getGetConfigQueryKey(), { pipeline })
+    useEditorUiStore.setState({ selectedLanguage: 'en-US' })
+    usePreferencesStore.setState({ customSystemPrompt: 'write vividly' })
 
     renderWithQuery(<MenuBar />)
     await userEvent.click(screen.getByTestId('menu-process-trigger'))
@@ -139,6 +143,8 @@ describe('MenuBar', () => {
         'inpainter',
         'renderer',
       ],
+      targetLanguage: 'en-US',
+      systemPrompt: 'write vividly',
     })
     expect(pipelineRequests[0]).not.toHaveProperty('pages')
 

@@ -56,6 +56,19 @@ pub fn system_prompt(target_language: Language) -> String {
     )
 }
 
+pub fn system_prompt_with_custom(target_language: Language, custom_prompt: Option<&str>) -> String {
+    let Some(custom) = custom_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+    else {
+        return system_prompt(target_language);
+    };
+    format!(
+        "You are a professional manga translator. Translate manga dialogue into natural {} that fits inside speech bubbles. Preserve character voice, emotional tone, relationship nuance, emphasis, and sound effects naturally. Keep the wording concise. Do not add notes, explanations, or romanization. Apply these additional instructions while still translating into {}: {} {BLOCK_TAG_INSTRUCTIONS}",
+        target_language, target_language, custom
+    )
+}
+
 impl PromptRenderer {
     pub fn new(model_id: ModelId, template: String, bos_token: String, eos_token: String) -> Self {
         Self {
@@ -74,12 +87,7 @@ impl PromptRenderer {
         custom_prompt: Option<&str>,
     ) -> Vec<ChatMessage> {
         let text = text.into();
-        let sys = match custom_prompt {
-            Some(p) if !p.trim().is_empty() => {
-                format!("{p} {BLOCK_TAG_INSTRUCTIONS}")
-            }
-            _ => system_prompt(target_language),
-        };
+        let sys = system_prompt_with_custom(target_language, custom_prompt);
 
         match self.model_id {
             ModelId::VntlLlama3_8Bv2 => vec![
@@ -135,6 +143,16 @@ mod tests {
         assert!(prompt.contains("natural Korean"));
         assert!(prompt.contains("[1], [2]"));
         assert!(prompt.contains("Do not merge"));
+    }
+
+    #[test]
+    fn custom_system_prompt_keeps_target_language_instruction() {
+        let prompt = system_prompt_with_custom(Language::English, Some("Write in a vivid style."));
+
+        assert!(prompt.contains("natural English"));
+        assert!(prompt.contains("still translating into English"));
+        assert!(prompt.contains("Write in a vivid style."));
+        assert!(prompt.contains("[1], [2]"));
     }
 
     #[test]
