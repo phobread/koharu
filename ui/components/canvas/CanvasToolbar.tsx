@@ -36,6 +36,7 @@ import type { LlmCatalog, LlmCatalogModel, LlmProviderCatalog, LlmTarget } from 
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 // ---------------------------------------------------------------------------
@@ -57,12 +58,26 @@ function sameLlmTarget(a?: LlmTarget | null, b?: LlmTarget | null): boolean {
 
 type SelectableLlmModel = { model: LlmCatalogModel; provider?: LlmProviderCatalog }
 
+const DEFAULT_LLM_TARGET: LlmTarget = {
+  kind: 'provider',
+  providerId: 'claude',
+  modelId: 'claude-opus-4-5-20251101',
+}
+
 const flattenCatalogModels = (catalog?: LlmCatalog): SelectableLlmModel[] => [
   ...(catalog?.localModels ?? []).map((model) => ({ model })),
   ...(catalog?.providers ?? [])
     .filter((p) => p.status === 'ready')
     .flatMap((p) => p.models.map((model) => ({ model, provider: p }))),
 ]
+
+const preferredDefaultModel = (models: SelectableLlmModel[]): LlmCatalogModel | undefined =>
+  models.find(({ model }) => sameLlmTarget(model.target, DEFAULT_LLM_TARGET))?.model ??
+  models.find(
+    ({ model, provider }) =>
+      provider?.id === 'claude' && model.name.trim().toLowerCase() === 'claude opus 4.5',
+  )?.model ??
+  models[0]?.model
 
 // ---------------------------------------------------------------------------
 // Component
@@ -241,6 +256,7 @@ function LlmStatusPopover() {
   const llmLoading = llmState?.status === 'loading'
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [editorHydrated, setEditorHydrated] = useState(useEditorUiStore.persist.hasHydrated())
   const llmModels: LlmModelOption[] = useMemo(() => flattenCatalogModels(llmCatalog), [llmCatalog])
   const selectedTarget = useEditorUiStore((s) => s.selectedTarget)
   const customSystemPrompt = usePreferencesStore((s) => s.customSystemPrompt)
@@ -264,11 +280,13 @@ function LlmStatusPopover() {
         ? llmSelectedLanguage
         : nextLanguages[0]
     useEditorUiStore.setState({ selectedTarget: next.model.target, selectedLanguage: nextLanguage })
+    window.setTimeout(() => void flushServerConfigStorage(), 0)
   }
 
   const handleSetSelectedLanguage = (language: string) => {
     if (!selectedModelLanguages.includes(language)) return
     useEditorUiStore.setState({ selectedLanguage: language })
+    window.setTimeout(() => void flushServerConfigStorage(), 0)
   }
 
   const handleToggleLoadUnload = async () => {
@@ -289,16 +307,24 @@ function LlmStatusPopover() {
   }
 
   useEffect(() => {
+    const unsubscribe = useEditorUiStore.persist.onFinishHydration(() => setEditorHydrated(true))
+    if (useEditorUiStore.persist.hasHydrated()) setEditorHydrated(true)
+    return unsubscribe
+  }, [])
+
+  useEffect(() => {
+    if (!editorHydrated) return
     if (llmModels.length === 0) return
-    const hasCurrent = llmModels.some(({ model }) => sameLlmTarget(model.target, selectedTarget))
-    const nextModel = hasCurrent ? selectedModel?.model : llmModels[0]?.model
+    const cur = useEditorUiStore.getState()
+    const currentModel = llmModels.find(({ model }) => sameLlmTarget(model.target, cur.selectedTarget))
+    if (cur.selectedTarget && !currentModel) return
+    const nextModel = currentModel?.model ?? preferredDefaultModel(llmModels)
     if (!nextModel) return
     const nextLanguages = nextModel.languages
     const nextLanguage =
-      llmSelectedLanguage && nextLanguages.includes(llmSelectedLanguage)
-        ? llmSelectedLanguage
+      cur.selectedLanguage && nextLanguages.includes(cur.selectedLanguage)
+        ? cur.selectedLanguage
         : nextLanguages[0]
-    const cur = useEditorUiStore.getState()
     if (
       sameLlmTarget(cur.selectedTarget, nextModel.target) &&
       cur.selectedLanguage === nextLanguage
@@ -309,7 +335,7 @@ function LlmStatusPopover() {
       selectedTarget: nextModel.target,
       selectedLanguage: nextLanguage,
     })
-  }, [llmModels, llmSelectedLanguage, selectedModel?.model, selectedTarget])
+  }, [editorHydrated, llmModels])
 
   const indicatorBusy = busy || llmLoading
 
@@ -411,6 +437,7 @@ function LlmStatusPopover() {
               data-testid='llm-system-prompt'
               value={customSystemPrompt ?? ''}
               onChange={(e) => setCustomSystemPrompt(e.target.value || undefined)}
+              onBlur={() => void flushServerConfigStorage()}
               placeholder={t('llm.systemPromptPlaceholder')}
               rows={5}
               className='min-h-0 resize-y px-2 py-1.5 text-xs leading-snug md:text-xs'

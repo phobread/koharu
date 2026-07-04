@@ -30,6 +30,9 @@ let cache: Blob | null = null
 let loadPromise: Promise<Blob> | null = null
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 let inflight: Promise<void> | null = null
+let dirty = false
+let dirtyVersion = 0
+let lifecycleFlushInstalled = false
 
 async function load(): Promise<Blob> {
   if (cache) return cache
@@ -66,16 +69,48 @@ function scheduleFlush(): void {
   if (flushTimer) clearTimeout(flushTimer)
   flushTimer = setTimeout(() => {
     flushTimer = null
-    void flush()
+    void flushServerConfigStorage()
   }, FLUSH_DELAY_MS)
 }
 
-async function flush(): Promise<void> {
+async function writeSnapshot(snapshot: string, keepalive: boolean): Promise<void> {
+  if (keepalive && typeof fetch !== 'undefined') {
+    await fetch('/api/v1/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editor: { client: snapshot } }),
+      keepalive: true,
+    })
+    return
+  }
+  await patchConfig({ editor: { client: snapshot } })
+}
+
+export async function flushServerConfigStorage(options?: { keepalive?: boolean }): Promise<void> {
+  if (!cache || !dirty) return
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  const keepalive = options?.keepalive ?? false
+
   // Chain behind any in-flight PATCH so writes never interleave/clobber.
-  if (inflight) await inflight.catch(() => {})
+  if (!keepalive && inflight) await inflight.catch(() => {})
   const snapshot = JSON.stringify(cache ?? {})
-  inflight = patchConfig({ editor: { client: snapshot } })
+  const version = dirtyVersion
+  if (keepalive) {
+    if (dirtyVersion === version) dirty = false
+    void writeSnapshot(snapshot, true).catch((err) => {
+      console.error('Failed to persist settings to config before unload:', err)
+    })
+    return
+  }
+
+  inflight = writeSnapshot(snapshot, false)
     .then(() => undefined)
+    .then(() => {
+      if (dirtyVersion === version) dirty = false
+    })
     .catch((err) => {
       console.error('Failed to persist settings to config:', err)
     })
@@ -85,6 +120,24 @@ async function flush(): Promise<void> {
   await inflight
 }
 
+function flushForLifecycleExit(): void {
+  void flushServerConfigStorage({ keepalive: true })
+}
+
+function installLifecycleFlush(): void {
+  if (lifecycleFlushInstalled || typeof window === 'undefined') return
+  lifecycleFlushInstalled = true
+  window.addEventListener('pagehide', flushForLifecycleExit)
+  window.addEventListener('beforeunload', flushForLifecycleExit)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushForLifecycleExit()
+    })
+  }
+}
+
+installLifecycleFlush()
+
 export const serverConfigStorage: StateStorage = {
   getItem: async (name) => {
     const blob = await load()
@@ -93,11 +146,15 @@ export const serverConfigStorage: StateStorage = {
   setItem: async (name, value) => {
     const blob = await load()
     blob[name] = value
+    dirty = true
+    dirtyVersion += 1
     scheduleFlush()
   },
   removeItem: async (name) => {
     const blob = await load()
     delete blob[name]
+    dirty = true
+    dirtyVersion += 1
     scheduleFlush()
   },
 }
