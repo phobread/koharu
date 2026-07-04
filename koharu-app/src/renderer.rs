@@ -239,7 +239,7 @@ impl Renderer {
         document_font_size: Option<f32>,
         document_align: Option<TextAlign>,
         box_padding: f32,
-        target_language: Option<&str>,
+        _target_language: Option<&str>,
         raster: RasterOptions,
         min_font_size: f32,
     ) -> Result<Option<RenderedBlock>> {
@@ -291,13 +291,16 @@ impl Renderer {
         // legible.
         let min_font_size = effective_min_font_size(min_font_size, block.lock_layout_box);
 
-        let mut layout_builder = TextLayout::new(&font, None)
+        // Never break words with a hyphen — the auto-fit search shrinks the
+        // font until the longest word fits on a line instead. The core
+        // layouter hyphenates by default (English), so opt out explicitly.
+        // `target_language` stays plumbed in case hyphenation returns as an
+        // opt-in setting.
+        let layout_builder = TextLayout::new(&font, None)
             .with_fallback_fonts(&self.symbol_fallbacks)
             .with_writing_mode(writing_mode)
-            .with_alignment(align);
-        if let Some(target_language) = target_language {
-            layout_builder = layout_builder.with_hyphenation_language_tag(target_language);
-        }
+            .with_alignment(align)
+            .without_hyphenation();
         // A document default size caps the auto-fit search (text still shrinks
         // to fit a tight box); otherwise the cap is derived from the box.
         let max_font = match document_font_size {
@@ -605,6 +608,26 @@ fn fit_font_size<'a>(
     let mut hi = max_size - 1;
     let mut best = run_at(min_size as f32)?;
     if !fits(&best) {
+        // The readability floor is a preference, not a licence to overflow:
+        // auto-fit text must always stay inside its box, so keep shrinking
+        // below the floor until it fits. Only an explicit user-set size may
+        // exceed the box.
+        let mut lo = 1;
+        let mut hi = min_size - 1;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let candidate = run_at(mid as f32)?;
+            if fits(&candidate) {
+                best = candidate;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if !fits(&best) {
+            // Nothing fits at any size — overflow as little as possible.
+            return run_at(1.0);
+        }
         return Ok(best);
     }
     while lo <= hi {
@@ -673,7 +696,29 @@ where
         render_candidate,
     )?;
     if !min_attempt.valid {
-        return Ok(min_attempt.candidate);
+        // Same soft floor as `fit_font_size`: prefer shrinking below the
+        // readability minimum over spilling outside the box/bubble.
+        let mut lo = 1;
+        let mut hi = min_size - 1;
+        let mut below_floor_best: Option<RenderedTextCandidate> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            if let Some(candidate) = try_mask_collision_size(
+                layout_builder,
+                text,
+                layout_box,
+                mid as f32,
+                mask,
+                bubble_id,
+                render_candidate,
+            )? {
+                below_floor_best = Some(candidate);
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return Ok(below_floor_best.unwrap_or(min_attempt.candidate));
     }
     let mut best = min_attempt.candidate;
 
@@ -829,16 +874,22 @@ fn resolve_layout_boxes(
     for block in blocks {
         let seed_box = seed_layout_box(block);
         let translation = block.translation.trim();
-        let bubble_match = if block.lock_layout_box || translation.is_empty() {
+        // Locked (manually sized/split) boxes never expand to the bubble's
+        // safe area, but they must still *occupy* it: without counting them,
+        // resizing one block in a shared bubble would leave its neighbour as
+        // the sole occupant, blowing it up to the whole bubble and painting
+        // over the locked box.
+        let occupied = if translation.is_empty() {
             None
         } else {
             let layout_source = layout_source_from_input(block, translation);
             let writing_mode = writing_mode_for_block(&layout_source);
             bubble_index.lookup_match(seed_box, writing_mode)
         };
-        if let Some(matched) = bubble_match {
+        if let Some(matched) = occupied {
             *counts.entry(matched.id).or_insert(0) += 1;
         }
+        let bubble_match = if block.lock_layout_box { None } else { occupied };
         matches.push((seed_box, bubble_match));
     }
 
@@ -1010,17 +1061,25 @@ fn resolve_stroke_style(
                 .unwrap_or_else(|| default_stroke_width(font_size)),
         });
     }
-    let auto_stroke_color = contrasting_stroke_color(text_color);
     if let Some(pred) = font_prediction
         && pred.stroke_width_px > 0.0
     {
+        // Use the outline colour the model saw on the original text — thick
+        // manga outlines dominate the perceived colour, so substituting a
+        // contrast-picked black/white reads as "wrong colour" even when the
+        // fill matches.
         return Some(RenderStrokeOptions {
-            color: auto_stroke_color,
+            color: [
+                pred.stroke_color[0],
+                pred.stroke_color[1],
+                pred.stroke_color[2],
+                255,
+            ],
             width_px: pred.stroke_width_px,
         });
     }
     Some(RenderStrokeOptions {
-        color: auto_stroke_color,
+        color: contrasting_stroke_color(text_color),
         width_px: default_stroke_width(font_size),
     })
 }
@@ -1141,7 +1200,10 @@ mod tests {
     }
 
     #[test]
-    fn predicted_stroke_width_keeps_auto_black_or_white_color() {
+    fn predicted_stroke_uses_the_predicted_outline_color() {
+        // Thick manga outlines dominate the perceived text colour, so the
+        // fallback must reproduce the colour the model saw — not substitute
+        // a contrast-picked black/white.
         let prediction = FontPrediction {
             stroke_color: [12, 34, 56],
             stroke_width_px: 3.0,
@@ -1150,7 +1212,7 @@ mod tests {
         let stroke =
             resolve_stroke_style(Some(&prediction), None, None, 18.0, [255, 255, 255, 255])
                 .expect("predicted stroke should be present");
-        assert_eq!(stroke.color, [0, 0, 0, 255]);
+        assert_eq!(stroke.color, [12, 34, 56, 255]);
         assert_eq!(stroke.width_px, 3.0);
     }
 
@@ -1253,9 +1315,37 @@ mod tests {
             &mut render_candidate,
         )?;
 
-        assert_eq!(rendered_sizes.last().copied(), Some(12.0));
+        // Every size collides (the mask has no bubble-1 pixels), so the
+        // readability-floor candidate is returned as the least-bad option.
+        assert!(rendered_sizes.contains(&12.0));
+        assert_eq!(candidate.font_size, 12.0);
         assert!(candidate.image.width() >= 1);
         assert!(candidate.image.height() >= 1);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_fit_shrinks_below_readability_floor_instead_of_overflowing() -> Result<()> {
+        let font = any_system_font();
+        let layout_builder = TextLayout::new(&font, None).without_hyphenation();
+        // A box far too small for the floor size: the fit must drop below the
+        // floor until the text fits rather than spilling out of the box.
+        let (constraint_w, constraint_h) = (48.0, 30.0);
+        let layout = fit_font_size(
+            &layout_builder,
+            "overflowing text",
+            constraint_w,
+            constraint_h,
+            None,
+            12.0,
+            18.0,
+        )?;
+        assert!(
+            layout.font_size < 12.0,
+            "expected a below-floor font size, got {}",
+            layout.font_size
+        );
+        assert!(layout.width <= constraint_w && layout.height <= constraint_h);
         Ok(())
     }
 
@@ -1304,6 +1394,28 @@ mod tests {
 
         assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
         assert_eq!(layout_boxes[0].bubble_id, None);
+    }
+
+    #[test]
+    fn locked_block_still_occupies_shared_bubble_so_neighbour_keeps_seed_box() {
+        // Resizing a block locks it; the unlocked neighbour in the same
+        // bubble must NOT become the "sole occupant" and expand over it.
+        let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
+        paint_rect(&mut mask, 10, 10, 190, 190, 1);
+        let mut locked = block(30.0, 30.0, 40.0, 80.0, "hello");
+        locked.lock_layout_box = true;
+        let neighbour = block(120.0, 30.0, 40.0, 80.0, "world");
+        let index = BubbleIndex::new(mask);
+        let blocks = vec![locked, neighbour];
+
+        let layout_boxes = resolve_layout_boxes(&blocks, Some(&index));
+
+        // Locked box: unchanged, opts out of bubble handling entirely.
+        assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
+        assert_eq!(layout_boxes[0].bubble_id, None);
+        // Neighbour: keeps its own detector box instead of the bubble area.
+        assert_eq!(layout_boxes[1].layout_box, seed_layout_box(&blocks[1]));
+        assert_eq!(layout_boxes[1].bubble_id, Some(1));
     }
 
     #[test]
