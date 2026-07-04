@@ -75,18 +75,22 @@ function scheduleFlush(): void {
 
 async function writeSnapshot(snapshot: string, keepalive: boolean): Promise<void> {
   if (keepalive && typeof fetch !== 'undefined') {
-    await fetch('/api/v1/config', {
+    const response = await fetch('/api/v1/config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ editor: { client: snapshot } }),
       keepalive: true,
     })
+    if (!response.ok) throw new Error(`config persist failed: ${response.status}`)
     return
   }
   await patchConfig({ editor: { client: snapshot } })
 }
 
 export async function flushServerConfigStorage(options?: { keepalive?: boolean }): Promise<void> {
+  if (!cache && loadPromise) {
+    await loadPromise.catch(() => {})
+  }
   if (!cache || !dirty) return
   if (flushTimer) {
     clearTimeout(flushTimer)

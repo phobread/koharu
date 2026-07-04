@@ -36,8 +36,8 @@ import type { LlmCatalog, LlmCatalogModel, LlmProviderCatalog, LlmTarget } from 
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
-import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
 
 // ---------------------------------------------------------------------------
 // Helpers (inlined from former llmTargets util)
@@ -316,7 +316,9 @@ function LlmStatusPopover() {
     if (!editorHydrated) return
     if (llmModels.length === 0) return
     const cur = useEditorUiStore.getState()
-    const currentModel = llmModels.find(({ model }) => sameLlmTarget(model.target, cur.selectedTarget))
+    const currentModel = llmModels.find(({ model }) =>
+      sameLlmTarget(model.target, cur.selectedTarget),
+    )
     if (cur.selectedTarget && !currentModel) return
     const nextModel = currentModel?.model ?? preferredDefaultModel(llmModels)
     if (!nextModel) return
