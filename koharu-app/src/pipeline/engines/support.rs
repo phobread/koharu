@@ -245,6 +245,47 @@ pub fn image_dimensions(image: &DynamicImage) -> (u32, u32) {
     image.dimensions()
 }
 
+/// Collapse a multi-line OCR result into one line. OCR line breaks mirror
+/// the bubble's layout, not sentence structure — the renderer re-wraps to
+/// the box anyway, and single-line text is easier to proofread and edit.
+/// CJK lines join without a separator; other scripts join with a space,
+/// and a hyphen at a line break is treated as a soft hyphen and dropped.
+pub fn single_line_ocr_text(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let cjk = text.chars().any(is_cjk_char);
+    let mut out = String::with_capacity(text.len());
+    for line in lines {
+        if out.is_empty() {
+            out.push_str(line);
+        } else if cjk {
+            out.push_str(line);
+        } else if out.ends_with('-') {
+            out.pop();
+            out.push_str(line);
+        } else {
+            out.push(' ');
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+fn is_cjk_char(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F     // CJK punctuation
+        | 0x3040..=0x30FF   // hiragana + katakana
+        | 0x3400..=0x4DBF   // CJK extension A
+        | 0x4E00..=0x9FFF   // CJK unified ideographs
+        | 0xAC00..=0xD7AF   // hangul syllables
+        | 0xF900..=0xFAFF   // CJK compatibility ideographs
+        | 0xFF00..=0xFFEF   // fullwidth forms
+    )
+}
+
 /// Base image for a regional re-inpaint: `base` (the existing inpainted
 /// page) with `region` reverted to the `source` pixels. A regional run must
 /// recompute its area from scratch — the model only paints where the mask is
@@ -491,6 +532,24 @@ mod tests {
     use super::*;
     use image::{Rgba, RgbaImage};
     use koharu_core::ReadingOrder;
+
+    #[test]
+    fn single_line_ocr_text_joins_by_script() {
+        // Japanese: lines are fragments of one sentence — no separator.
+        assert_eq!(
+            single_line_ocr_text("こんな告白\nされても\n困る…"),
+            "こんな告白されても困る…"
+        );
+        // Latin scripts: space-separated, soft hyphens at breaks dropped.
+        assert_eq!(
+            single_line_ocr_text("even this confe-\nssion is\ntoo much"),
+            "even this confession is too much"
+        );
+        // Blank lines and stray whitespace disappear; single lines pass through.
+        assert_eq!(single_line_ocr_text("  one line  "), "one line");
+        assert_eq!(single_line_ocr_text("a\r\n\r\nb"), "a b");
+        assert_eq!(single_line_ocr_text(""), "");
+    }
 
     #[test]
     fn restore_region_reverts_only_the_region_to_source() {

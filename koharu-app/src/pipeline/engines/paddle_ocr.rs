@@ -15,7 +15,9 @@ use koharu_ml::comic_text_detector::crop_text_block_bbox;
 use crate::app::shared_llama_backend;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
-use crate::pipeline::engines::support::{load_source_image, text_node_to_region, text_nodes};
+use crate::pipeline::engines::support::{
+    load_source_image, single_line_ocr_text, text_node_to_region, text_nodes,
+};
 
 const MAX_NEW_TOKENS: usize = 256;
 
@@ -52,7 +54,7 @@ impl Engine for Model {
                 id: *node_id,
                 patch: NodePatch {
                     data: Some(NodeDataPatch::Text(TextDataPatch {
-                        text: Some(Some(out.text)),
+                        text: Some(Some(single_line_ocr_text(&out.text))),
                         ..Default::default()
                     })),
                     transform: None,
