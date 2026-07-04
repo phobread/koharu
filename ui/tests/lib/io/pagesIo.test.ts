@@ -21,18 +21,21 @@ vi.mock('@/lib/io/saveBlob', async () => {
   return {
     ...actual,
     saveBlob: vi.fn().mockResolvedValue(true),
+    saveBlobToDirectory: vi.fn().mockResolvedValue(true),
   }
 })
 
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
 import { exportCurrentProjectAs, importKhrFile, importPages } from '@/lib/io/pagesIo'
-import { saveBlob } from '@/lib/io/saveBlob'
+import { saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 
 const asMock = <T extends (...args: never) => unknown>(fn: T) =>
   fn as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   queryClient.clear()
+  useEditorUiStore.getState().clearError()
   queryClient.setQueryData(getGetSceneJsonQueryKey(), {
     epoch: 0,
     scene: { pages: {}, project: {} as never },
@@ -209,5 +212,56 @@ describe('exportCurrentProjectAs', () => {
     const [blob, filename] = asMock(saveBlob).mock.calls[0]
     expect(filename).toBe('page-001-abc.png')
     expect((blob as Blob).type).toBe('image/png')
+  })
+
+  it('can save directly to a preselected output directory', async () => {
+    server.use(
+      http.post('/api/v1/projects/current/export', () =>
+        HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
+          headers: { 'content-type': 'application/zip' },
+        }),
+      ),
+    )
+
+    await exportCurrentProjectAs('rendered', undefined, { outputDirectory: 'C:/Exports' })
+
+    expect(saveBlob).not.toHaveBeenCalled()
+    expect(saveBlobToDirectory).toHaveBeenCalledTimes(1)
+    const [, filename, folder] = asMock(saveBlobToDirectory).mock.calls[0]
+    expect(filename).toBe('koharu-export.zip')
+    expect(folder).toBe('C:/Exports')
+  })
+
+  it('explains how to populate missing rendered layers', async () => {
+    server.use(
+      http.post('/api/v1/projects/current/export', () =>
+        HttpResponse.json(
+          { message: 'no pages have the requested layer populated' },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    await exportCurrentProjectAs('rendered', ['p1'])
+
+    expect(saveBlob).not.toHaveBeenCalled()
+    expect(useEditorUiStore.getState().error?.message).toBe(
+      'No rendered images to export yet — run Process → Process All first to generate them, then try exporting again.',
+    )
+  })
+
+  it('does not suggest processing when there are no pages to export', async () => {
+    server.use(
+      http.post('/api/v1/projects/current/export', () =>
+        HttpResponse.json({ message: 'no pages in selection' }, { status: 400 }),
+      ),
+    )
+
+    await exportCurrentProjectAs('inpainted')
+
+    expect(saveBlob).not.toHaveBeenCalled()
+    expect(useEditorUiStore.getState().error?.message).toBe(
+      'No pages selected to export — add or select a page first.',
+    )
   })
 })

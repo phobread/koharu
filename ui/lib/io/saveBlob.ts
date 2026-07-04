@@ -17,6 +17,44 @@
 
 import { isTauri } from '@/lib/backend'
 
+export async function pickSaveDirectory(): Promise<string | undefined> {
+  if (!isTauri()) return undefined
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const folder = await open({ directory: true, multiple: false })
+  return typeof folder === 'string' ? folder : undefined
+}
+
+export async function saveBlobToDirectory(
+  blob: Blob,
+  defaultName: string,
+  folder: string,
+): Promise<boolean> {
+  if (!isTauri()) return saveBlob(blob, defaultName)
+
+  const { writeFile, mkdir } = await import('@tauri-apps/plugin-fs')
+  const isZip = blob.type === 'application/zip'
+
+  if (isZip) {
+    const { unzipSync } = await import('fflate')
+    const entries = unzipSync(new Uint8Array(await blob.arrayBuffer()))
+    for (const [name, bytes] of Object.entries(entries)) {
+      const normalized = name.replace(/\\/g, '/')
+      const full = `${folder}/${normalized}`
+      const slash = full.lastIndexOf('/')
+      if (slash > folder.length) {
+        const dir = full.substring(0, slash)
+        await mkdir(dir, { recursive: true }).catch(() => {})
+      }
+      await writeFile(full, bytes)
+    }
+    return true
+  }
+
+  const safeName = defaultName.replace(/[\\/]+/g, '_') || 'koharu-export'
+  await writeFile(`${folder}/${safeName}`, new Uint8Array(await blob.arrayBuffer()))
+  return true
+}
+
 export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean> {
   // Zip detection must come from the actual content type — a single-file
   // export (PNG/PSD/khr) whose filename happens to end in `.zip` would
@@ -24,25 +62,12 @@ export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean
   const isZip = blob.type === 'application/zip'
 
   if (isTauri()) {
-    const { open, save } = await import('@tauri-apps/plugin-dialog')
-    const { writeFile, mkdir } = await import('@tauri-apps/plugin-fs')
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
 
     if (isZip) {
-      const folder = await open({ directory: true, multiple: false })
-      if (!folder || typeof folder !== 'string') return false
-      const { unzipSync } = await import('fflate')
-      const entries = unzipSync(new Uint8Array(await blob.arrayBuffer()))
-      for (const [name, bytes] of Object.entries(entries)) {
-        const normalized = name.replace(/\\/g, '/')
-        const full = `${folder}/${normalized}`
-        const slash = full.lastIndexOf('/')
-        if (slash > folder.length) {
-          const dir = full.substring(0, slash)
-          await mkdir(dir, { recursive: true }).catch(() => {})
-        }
-        await writeFile(full, bytes)
-      }
-      return true
+      const folder = await pickSaveDirectory()
+      return folder ? saveBlobToDirectory(blob, defaultName, folder) : false
     }
 
     const path = await save({ defaultPath: defaultName })

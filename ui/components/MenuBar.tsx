@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next'
 import { fitCanvasToViewport, resetCanvasScale } from '@/components/Canvas'
 import { SettingsDialog, type TabId } from '@/components/SettingsDialog'
 import {
+  MenubarCheckboxItem,
   Menubar,
   MenubarContent,
   MenubarItem,
@@ -15,19 +16,21 @@ import {
   MenubarSeparator,
   MenubarShortcut,
   MenubarTrigger,
-  MenubarCheckboxItem,
   MenubarSub,
   MenubarSubContent,
   MenubarSubTrigger,
 } from '@/components/ui/menubar'
 import { useScene } from '@/hooks/useScene'
-import { getConfig, startPipeline } from '@/lib/api/default/default'
+import { getConfig, listOperations, startPipeline } from '@/lib/api/default/default'
+import type { JobSummary } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
+import { pickSaveDirectory } from '@/lib/io/saveBlob'
 import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
 import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -50,6 +53,67 @@ const windowControls = {
   },
 }
 
+const FINAL_JOB_STATUSES = new Set<JobSummary['status']>([
+  'completed',
+  'completed_with_errors',
+  'cancelled',
+  'failed',
+])
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function isFinalJob(job: JobSummary | undefined): job is JobSummary {
+  return !!job && FINAL_JOB_STATUSES.has(job.status)
+}
+
+function assertJobFinishedSuccessfully(job: JobSummary): void {
+  if (job.status === 'failed') {
+    throw new Error(job.error ?? 'Processing failed.')
+  }
+  if (job.status === 'cancelled') {
+    throw new Error('Processing was cancelled before export.')
+  }
+}
+
+async function waitForOperation(operationId: string): Promise<JobSummary> {
+  let done = false
+  let unsubscribe: (() => void) | undefined
+
+  const storePromise = new Promise<JobSummary>((resolve) => {
+    const finish = (job: JobSummary | undefined) => {
+      if (!isFinalJob(job)) return false
+      done = true
+      unsubscribe?.()
+      resolve(job)
+      return true
+    }
+
+    if (finish(useJobsStore.getState().jobs[operationId])) return
+    unsubscribe = useJobsStore.subscribe((state) => {
+      finish(state.jobs[operationId])
+    })
+  })
+
+  const pollPromise = (async () => {
+    while (!done) {
+      try {
+        const job = (await listOperations()).operations.find((op) => op.id === operationId)
+        if (isFinalJob(job)) return job
+      } catch (err) {
+        console.warn('Operation status poll failed:', err)
+      }
+      await sleep(2000)
+    }
+    return useJobsStore.getState().jobs[operationId]
+  })()
+
+  const job = await Promise.race([storePromise, pollPromise])
+  done = true
+  unsubscribe?.()
+  if (!job) throw new Error('Processing finished, but its final status was unavailable.')
+  return job
+}
+
 type MenuItem = {
   label: string
   onSelect?: () => void | Promise<void>
@@ -57,16 +121,11 @@ type MenuItem = {
   testId?: string
 }
 
-type MenuSection = {
-  label: string
-  items: MenuItem[]
-  triggerTestId?: string
-}
-
 export function MenuBar() {
   const { t } = useTranslation()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<TabId>('appearance')
+  const [processExporting, setProcessExporting] = useState(false)
   const hasPage = useSelectionStore((s) => s.pageId !== null)
   const hasScene = useScene().scene !== null
   const shortcuts = usePreferencesStore((state) => state.shortcuts)
@@ -100,7 +159,7 @@ export function MenuBar() {
     ].filter((s): s is string => !!s)
     const editor = useEditorUiStore.getState()
     const prefs = usePreferencesStore.getState()
-    await startPipeline({
+    return startPipeline({
       steps,
       pages: opts.pageId ? [opts.pageId] : undefined,
       targetLanguage: editor.selectedLanguage,
@@ -108,6 +167,30 @@ export function MenuBar() {
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
       ...renderDefaultsForPipeline(),
     })
+  }
+
+  const runPipelineAndExportRendered = async () => {
+    if (processExporting) return
+    setProcessExporting(true)
+    try {
+      const desktop = isTauri()
+      const outputDirectory = desktop ? await pickSaveDirectory() : undefined
+      if (desktop && !outputDirectory) return
+
+      const started = await runPipeline({})
+      if (!started?.operationId) {
+        throw new Error('Could not start processing because no pipeline is configured.')
+      }
+
+      const finished = await waitForOperation(started.operationId)
+      assertJobFinishedSuccessfully(finished)
+      await exportCurrentProjectAs('rendered', undefined, { outputDirectory })
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err)
+      useEditorUiStore.getState().showError(`Process/export failed: ${raw}`)
+    } finally {
+      setProcessExporting(false)
+    }
   }
 
   const runInpaint = async (pageId: string) => {
@@ -335,6 +418,16 @@ export function MenuBar() {
               onSelect={() => void runPipeline({})}
             >
               {t('menu.processAll')}
+            </MenubarItem>
+            <MenubarItem
+              data-testid='menu-process-all-export-rendered'
+              className='text-[13px]'
+              disabled={!hasScene || processExporting}
+              onSelect={() => void runPipelineAndExportRendered()}
+            >
+              {processExporting
+                ? t('menu.processingAllAndExporting', 'Processing and exporting...')
+                : t('menu.processAllAndExportRendered', 'Process all images + export rendered...')}
             </MenubarItem>
             <MenubarSeparator />
             <MenubarItem

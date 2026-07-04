@@ -3,7 +3,7 @@
 import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import type { SceneSnapshot } from '@/lib/api/schemas'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
-import { saveBlob } from '@/lib/io/saveBlob'
+import { saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
 import { exportProject, uploadKhrArchive, uploadPages, uploadPagesByPaths } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -66,9 +66,24 @@ function currentProjectName(): string | undefined {
   return snap?.scene.project?.name ?? undefined
 }
 
+function exportFailureMessage(
+  format: 'khr' | 'psd' | 'rendered' | 'inpainted',
+  raw: string,
+): string {
+  if (/no pages in selection/i.test(raw)) {
+    return 'No pages selected to export — add or select a page first.'
+  }
+  if (/requested layer populated|layer populated/i.test(raw)) {
+    const layer = format === 'inpainted' ? 'inpainted images' : 'rendered images'
+    return `No ${layer} to export yet — run Process → Process All first to generate them, then try exporting again.`
+  }
+  return `Export failed: ${raw}`
+}
+
 export async function exportCurrentProjectAs(
   format: 'khr' | 'psd' | 'rendered' | 'inpainted',
   pages?: string[],
+  opts?: { outputDirectory?: string },
 ): Promise<void> {
   try {
     const defaultFont = usePreferencesStore.getState().defaultFont
@@ -78,6 +93,10 @@ export async function exportCurrentProjectAs(
     // bytes — a raw PNG/PSD for single-file responses, a zip for multi).
     // Fall back to our guess only if the header is missing/unparseable.
     const defaultName = filename ?? `${base}.${exportExtension[format]}`
+    if (opts?.outputDirectory) {
+      await saveBlobToDirectory(blob, defaultName, opts.outputDirectory)
+      return
+    }
     await saveBlob(blob, defaultName)
   } catch (err) {
     // Surface the failure to the user instead of swallowing it. Previously this
@@ -87,9 +106,6 @@ export async function exportCurrentProjectAs(
     // showed no dialog and no message — looking like a broken feature.
     console.error('Export failed:', err)
     const raw = err instanceof Error ? err.message : String(err)
-    const message = /layer populated|no pages in selection/i.test(raw)
-      ? 'Nothing to export yet — run Render first (Process menu) to generate images for these pages.'
-      : `Export failed: ${raw}`
-    useEditorUiStore.getState().showError(message)
+    useEditorUiStore.getState().showError(exportFailureMessage(format, raw))
   }
 }

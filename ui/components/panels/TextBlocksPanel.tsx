@@ -35,9 +35,8 @@ import {
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
 import { getConfig, startPipeline, useGetCurrentLlm } from '@/lib/api/default/default'
-import { fetchApi } from '@/lib/api/fetch'
 import type { TextDataPatch } from '@/lib/api/schemas'
-import { applyOp, invalidateScene, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
+import { applyOp, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
 import { applyBlockSplit } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
 import { splitTextBlockAt, type SplitField } from '@/lib/splitBlock'

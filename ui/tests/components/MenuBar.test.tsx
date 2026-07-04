@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MenuBar } from '@/components/MenuBar'
 import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { saveBlob } from '@/lib/io/saveBlob'
 import { queryClient } from '@/lib/queryClient'
 
 import { renderWithQuery } from '../helpers'
@@ -15,6 +16,16 @@ vi.mock('@/lib/io/openFiles', () => ({
   openImageFolder: vi.fn().mockResolvedValue([]),
   openKhrFile: vi.fn().mockResolvedValue(null),
 }))
+
+vi.mock('@/lib/io/saveBlob', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/io/saveBlob')>('@/lib/io/saveBlob')
+  return {
+    ...actual,
+    pickSaveDirectory: vi.fn().mockResolvedValue(undefined),
+    saveBlob: vi.fn().mockResolvedValue(true),
+    saveBlobToDirectory: vi.fn().mockResolvedValue(true),
+  }
+})
 
 beforeEach(() => {
   // Default: config + scene exist so the menu enables scene-dependent items.
@@ -77,5 +88,61 @@ describe('MenuBar', () => {
     await userEvent.click(screen.getByTestId('menu-file-trigger'))
     const close = await screen.findByTestId('menu-file-close-project')
     expect(close).toHaveAttribute('data-disabled')
+  })
+
+  it('Process all + export rendered runs all pages and exports after completion', async () => {
+    const pipeline = {
+      detector: 'detector',
+      segmenter: 'segmenter',
+      bubble_segmenter: 'bubble',
+      font_detector: 'font',
+      ocr: 'ocr',
+      translator: 'translator',
+      inpainter: 'inpainter',
+      renderer: 'renderer',
+    }
+    const pipelineRequests: Array<Record<string, unknown>> = []
+    let exportCalls = 0
+    server.use(
+      http.get('/api/v1/config', () => HttpResponse.json({ pipeline })),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        pipelineRequests.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ operationId: 'op-1' })
+      }),
+      http.get('/api/v1/operations', () =>
+        HttpResponse.json({
+          operations: [{ id: 'op-1', kind: 'pipeline', status: 'completed' }],
+        }),
+      ),
+      http.post('/api/v1/projects/current/export', () => {
+        exportCalls += 1
+        return HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
+          headers: { 'content-type': 'application/zip' },
+        })
+      }),
+    )
+    queryClient.setQueryData(getGetConfigQueryKey(), { pipeline })
+
+    renderWithQuery(<MenuBar />)
+    await userEvent.click(screen.getByTestId('menu-process-trigger'))
+    await userEvent.click(await screen.findByTestId('menu-process-all-export-rendered'))
+
+    await waitFor(() => expect(pipelineRequests).toHaveLength(1))
+    expect(pipelineRequests[0]).toMatchObject({
+      steps: [
+        'detector',
+        'segmenter',
+        'bubble',
+        'font',
+        'ocr',
+        'translator',
+        'inpainter',
+        'renderer',
+      ],
+    })
+    expect(pipelineRequests[0]).not.toHaveProperty('pages')
+
+    await waitFor(() => expect(exportCalls).toBe(1))
+    expect(saveBlob).toHaveBeenCalledTimes(1)
   })
 })
