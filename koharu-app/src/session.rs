@@ -8,7 +8,9 @@
 //!
 //! On-disk layout:
 //!   `.khrproj/project.toml`    — TOML-encoded `ProjectMeta`
-//!   `.khrproj/scene.bin`       — postcard-encoded `Snapshot { epoch, scene }`
+//!   `.khrproj/scene.bin`       — `"KSCN"` + u16 LE format version + postcard
+//!                                `Snapshot { epoch, scene }` (headerless files
+//!                                predate versioning and are upgraded on load)
 //!   `.khrproj/history.log`     — append-only `LogFrame { epoch, op }`
 //!   `.khrproj/blobs/ab/cdef…`  — content-addressed blobs
 //!   `.khrproj/.lock`           — fs4 exclusive lock (session lifetime)
@@ -35,6 +37,15 @@ const LOCK_FILE: &str = ".lock";
 const BLOBS_DIR: &str = "blobs";
 const CACHE_DIR: &str = "cache";
 const PROJECT_TOML: &str = "project.toml";
+
+/// `scene.bin` header: magic + format version. Postcard is positional (not
+/// self-describing), so *any* change to a persisted struct silently breaks
+/// old files — the version lets us decode them with the layout they were
+/// written in and upgrade. Files without the magic predate versioning.
+const SCENE_MAGIC: [u8; 4] = *b"KSCN";
+/// v1 (implicit, headerless): layout before `TextData.rendered_font_size_px`.
+/// v2: current layout, first to carry the header.
+const SCENE_FORMAT_VERSION: u16 = 2;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -164,7 +175,11 @@ impl ProjectSession {
                 scene: scene.clone(),
             }
         };
-        let bytes = postcard::to_allocvec(&snap).context("encode snapshot")?;
+        let payload = postcard::to_allocvec(&snap).context("encode snapshot")?;
+        let mut bytes = Vec::with_capacity(SCENE_MAGIC.len() + 2 + payload.len());
+        bytes.extend_from_slice(&SCENE_MAGIC);
+        bytes.extend_from_slice(&SCENE_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&payload);
         AtomicFile::new(
             self.dir.join(SCENE_FILE).as_std_path(),
             OverwriteBehavior::AllowOverwrite,
@@ -186,8 +201,7 @@ fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
     if scene_path.exists() {
         let bytes = std::fs::read(scene_path.as_std_path())
             .with_context(|| format!("read {}", scene_path))?;
-        let snap: Snapshot =
-            postcard::from_bytes(&bytes).with_context(|| format!("decode {}", scene_path))?;
+        let snap = decode_snapshot(&bytes).with_context(|| format!("decode {}", scene_path))?;
         return Ok((snap.scene, snap.epoch));
     }
 
@@ -211,6 +225,193 @@ fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
     scene.project.created_at = meta.created_at;
     scene.project.updated_at = meta.updated_at;
     Ok((scene, 0))
+}
+
+/// Decode `scene.bin` in whichever format it was written.
+///
+/// - `"KSCN"` + version header → decode with that version's layout.
+/// - Headerless (pre-versioning): try the current layout first (a few interim
+///   builds wrote it headerless), then fall back to the v1 layout and upgrade.
+///   `take_from_bytes` + full-consumption check keeps a wrong-layout decode
+///   from "succeeding" on garbage.
+fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
+    if let Some(rest) = bytes.strip_prefix(&SCENE_MAGIC) {
+        if rest.len() < 2 {
+            anyhow::bail!("truncated scene.bin header");
+        }
+        let (ver, payload) = rest.split_at(2);
+        let version = u16::from_le_bytes([ver[0], ver[1]]);
+        if version != SCENE_FORMAT_VERSION {
+            anyhow::bail!(
+                "unsupported scene.bin format version {version} (written by a newer build?)"
+            );
+        }
+        return postcard::from_bytes(payload).context("postcard decode (v2)");
+    }
+
+    if let Ok((snap, rest)) = postcard::take_from_bytes::<Snapshot>(bytes)
+        && rest.is_empty()
+    {
+        return Ok(snap);
+    }
+
+    let (legacy, rest) = postcard::take_from_bytes::<compat::SnapshotV1>(bytes)
+        .context("postcard decode (current and v1 layouts both failed)")?;
+    if !rest.is_empty() {
+        anyhow::bail!("trailing bytes after v1 snapshot — file corrupt?");
+    }
+    Ok(legacy.upgrade())
+}
+
+/// Legacy (pre-versioning) on-disk layouts, decoded field-for-field as they
+/// were written and upgraded to the current types. Only the structs that
+/// changed shape need a frozen copy here; everything else is reused. Postcard
+/// cares about field/variant *order* only, so keep it identical to the
+/// original definitions.
+mod compat {
+    use indexmap::IndexMap;
+    use koharu_core::{
+        BlobRef, FontPrediction, ImageData, MaskData, Node, NodeId, NodeKind, Page, PageId,
+        ProjectMeta, Scene, TextData, TextDirection, TextStyle, Transform,
+    };
+    use serde::Deserialize;
+
+    use super::Snapshot;
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV1 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV1,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV1 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV1>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV1 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV1>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV1 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV1,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV1 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV1),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// `TextData` before `rendered_font_size_px` was inserted.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV1 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyle>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    impl SnapshotV1 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV1 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV1::Image(d) => NodeKind::Image(d),
+                                    NodeKindV1::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV1::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV1 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                // The renderer refills this on the next render.
+                rendered_font_size_px: None,
+                lock_layout_box: self.lock_layout_box,
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -256,6 +457,117 @@ mod tests {
         let session = ProjectSession::open(&path).unwrap();
         assert_eq!(session.scene.read().pages.len(), 1);
         assert!(session.scene.read().pages.contains_key(&page_id));
+    }
+
+    #[test]
+    fn compact_writes_versioned_scene_bin() {
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "versioned").unwrap();
+            session
+                .apply(Op::AddPage {
+                    page: Page::new("p1", 800, 600),
+                    at: 0,
+                })
+                .unwrap();
+            session.compact().unwrap();
+        }
+        let bytes = std::fs::read(path.join(SCENE_FILE).as_std_path()).unwrap();
+        assert_eq!(&bytes[..4], &SCENE_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes([bytes[4], bytes[5]]),
+            SCENE_FORMAT_VERSION
+        );
+    }
+
+    #[test]
+    fn headerless_v1_scene_bin_upgrades_on_open() {
+        // Regression: projects written before `TextData.rendered_font_size_px`
+        // existed (headerless postcard, v1 layout) must still open — postcard
+        // is positional, so the new field shifted every byte after it and old
+        // files failed with "found a bool that wasn't 0 or 1".
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "legacy").unwrap();
+            drop(session); // only project.toml written; we supply scene.bin below
+        }
+
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            node_id,
+            compat::NodeV1 {
+                id: node_id,
+                transform: Transform {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 100.0,
+                    height: 40.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: compat::NodeKindV1::Text(compat::TextDataV1 {
+                    text: Some("こんにちは".to_string()),
+                    translation: Some("Hello".to_string()),
+                    lock_layout_box: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV1 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let legacy = compat::SnapshotV1 {
+            epoch: 7,
+            scene: compat::SceneV1 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let bytes = postcard::to_allocvec(&legacy).unwrap();
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("legacy scene.bin must open");
+        let scene = session.scene.read();
+        let page = scene.pages.get(&page_id).expect("page survives upgrade");
+        let node = page.nodes.get(&node_id).expect("node survives upgrade");
+        let NodeKind::Text(text) = &node.kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("Hello"));
+        assert!(text.lock_layout_box, "trailing bool must decode intact");
+        assert!(
+            text.rendered_font_size_px.is_none(),
+            "new field defaults to None for upgraded scenes"
+        );
+    }
+
+    #[test]
+    fn future_scene_bin_version_is_rejected_cleanly() {
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "future").unwrap();
+            drop(session);
+        }
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&99u16.to_le_bytes());
+        bytes.extend_from_slice(&[1, 2, 3]);
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let err = match ProjectSession::open(&path) {
+            Ok(_) => panic!("unknown version must not decode"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").contains("unsupported scene.bin format version"));
     }
 
     #[test]
