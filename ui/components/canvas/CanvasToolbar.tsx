@@ -9,7 +9,7 @@ import {
   Wand2Icon,
 } from 'lucide-react'
 import { motion } from 'motion/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -32,52 +32,12 @@ import {
   useGetCatalog,
   useGetCurrentLlm,
 } from '@/lib/api/default/default'
-import type { LlmCatalog, LlmCatalogModel, LlmProviderCatalog, LlmTarget } from '@/lib/api/schemas'
+import { flattenCatalogModels, llmTargetKey, sameLlmTarget } from '@/lib/llmTargets'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
-
-// ---------------------------------------------------------------------------
-// Helpers (inlined from former llmTargets util)
-// ---------------------------------------------------------------------------
-
-function llmTargetKey(t: LlmTarget): string {
-  return `${t.kind}:${t.providerId ?? ''}:${t.modelId}`
-}
-
-function sameLlmTarget(a?: LlmTarget | null, b?: LlmTarget | null): boolean {
-  if (!a || !b) return false
-  return (
-    a.kind === b.kind &&
-    a.modelId === b.modelId &&
-    (a.providerId ?? null) === (b.providerId ?? null)
-  )
-}
-
-type SelectableLlmModel = { model: LlmCatalogModel; provider?: LlmProviderCatalog }
-
-const DEFAULT_LLM_TARGET: LlmTarget = {
-  kind: 'provider',
-  providerId: 'claude',
-  modelId: 'claude-opus-4-5-20251101',
-}
-
-const flattenCatalogModels = (catalog?: LlmCatalog): SelectableLlmModel[] => [
-  ...(catalog?.localModels ?? []).map((model) => ({ model })),
-  ...(catalog?.providers ?? [])
-    .filter((p) => p.status === 'ready')
-    .flatMap((p) => p.models.map((model) => ({ model, provider: p }))),
-]
-
-const preferredDefaultModel = (models: SelectableLlmModel[]): LlmCatalogModel | undefined =>
-  models.find(({ model }) => sameLlmTarget(model.target, DEFAULT_LLM_TARGET))?.model ??
-  models.find(
-    ({ model, provider }) =>
-      provider?.id === 'claude' && model.name.trim().toLowerCase() === 'claude opus 4.5',
-  )?.model ??
-  models[0]?.model
 
 // ---------------------------------------------------------------------------
 // Component
@@ -256,7 +216,6 @@ function LlmStatusPopover() {
   const llmLoading = llmState?.status === 'loading'
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [editorHydrated, setEditorHydrated] = useState(useEditorUiStore.persist.hasHydrated())
   const llmModels: LlmModelOption[] = useMemo(() => flattenCatalogModels(llmCatalog), [llmCatalog])
   const selectedTarget = useEditorUiStore((s) => s.selectedTarget)
   const customSystemPrompt = usePreferencesStore((s) => s.customSystemPrompt)
@@ -305,39 +264,6 @@ function LlmStatusPopover() {
       setBusy(false)
     }
   }
-
-  useEffect(() => {
-    const unsubscribe = useEditorUiStore.persist.onFinishHydration(() => setEditorHydrated(true))
-    if (useEditorUiStore.persist.hasHydrated()) setEditorHydrated(true)
-    return unsubscribe
-  }, [])
-
-  useEffect(() => {
-    if (!editorHydrated) return
-    if (llmModels.length === 0) return
-    const cur = useEditorUiStore.getState()
-    const currentModel = llmModels.find(({ model }) =>
-      sameLlmTarget(model.target, cur.selectedTarget),
-    )
-    if (cur.selectedTarget && !currentModel) return
-    const nextModel = currentModel?.model ?? preferredDefaultModel(llmModels)
-    if (!nextModel) return
-    const nextLanguages = nextModel.languages
-    const nextLanguage =
-      cur.selectedLanguage && nextLanguages.includes(cur.selectedLanguage)
-        ? cur.selectedLanguage
-        : nextLanguages[0]
-    if (
-      sameLlmTarget(cur.selectedTarget, nextModel.target) &&
-      cur.selectedLanguage === nextLanguage
-    ) {
-      return
-    }
-    useEditorUiStore.setState({
-      selectedTarget: nextModel.target,
-      selectedLanguage: nextLanguage,
-    })
-  }, [editorHydrated, llmModels])
 
   const indicatorBusy = busy || llmLoading
 
