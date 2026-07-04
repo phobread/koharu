@@ -18,13 +18,7 @@ import { Button } from '@/components/ui/button'
 import { ColorPicker } from '@/components/ui/color-picker'
 import { FontSelect, useGoogleFontPreview } from '@/components/ui/font-select'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { VariantItem } from '@/components/ui/variant-item'
 import {
@@ -53,7 +47,12 @@ import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
-import { effectiveTextColor, mergeTextStyle, type TextStyleUpdates } from '@/lib/textStyle'
+import {
+  effectiveTextColor,
+  isManualTextColor,
+  mergeTextStyle,
+  type TextStyleUpdates,
+} from '@/lib/textStyle'
 import { cn } from '@/lib/utils'
 
 const DEFAULT_STROKE_COLOR: number[] = [255, 255, 255, 255]
@@ -113,9 +112,10 @@ const normalizeEffect = (effect?: TextShaderEffect | null): TextShaderEffect => 
   italic: effect?.italic ?? false,
 })
 
-const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?.color)
+const hasExplicitColor = (node: TextNodeEntry) =>
+  isManualTextColor(node.data.style?.color, node.data.fontPrediction)
 
-/** Small ↺ button that clears an override back to the model-predicted value. */
+/** Small ↺ button that clears an override back to the renderer's automatic value. */
 function ResetToAutoButton({
   label,
   disabled,
@@ -605,6 +605,7 @@ export function RenderControlsPanel() {
             swatchTestId='render-color-swatch'
             inputTestId='render-color-input'
             pickButtonTestId='render-color-pick'
+            pickButtonLabel={t('render.eyedropper')}
             onOpenChange={(open) => {
               if (open) commitCurrentFontColorIfImplicit()
             }}
@@ -817,6 +818,7 @@ export function RenderControlsPanel() {
                   swatchTestId='render-stroke-color-swatch'
                   inputTestId='render-stroke-color-input'
                   pickButtonTestId='render-stroke-color-pick'
+                  pickButtonLabel={t('render.eyedropper')}
                   onChange={(hex) => {
                     applyStrokeSetting({
                       ...currentStroke,

@@ -121,8 +121,8 @@ impl Engine for Model {
                         rendered_font_size_px: Some(Some(block_out.font_size)),
                         // Only persist explicit user style overrides. Writing
                         // a synthetic default style back into the scene makes
-                        // later renders treat implicit predicted colors as
-                        // explicit black overrides.
+                        // later renders treat automatic colour placeholders as
+                        // manual style data.
                         style: preserve_existing_style(existing_style),
                         ..Default::default()
                     })),

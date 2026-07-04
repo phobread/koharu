@@ -36,6 +36,8 @@
     "processCurrent": "Process current image",
     "redoInpaintRender": "Redo inpaint and render",
     "processAll": "Process all images",
+    "processAllAndExportRendered": "Process all images + export rendered...",
+    "processingAllAndExporting": "Processing and exporting...",
     "help": "Help",
     "settings": "Settings",
     "discord": "Discord",
@@ -69,6 +71,7 @@
     "delete": "Delete",
     "deleting": "Deleting...",
     "projectOptions": "Project options",
+    "deleteProject": "Delete {{name}}",
     "deleteConfirmTitle": "Delete Project",
     "deleteConfirmDescription": "Are you sure you want to permanently delete \"{{name}}\"? This will delete all of its pages, images, and translations. This action cannot be undone.",
     "newDialogTitle": "New project",
@@ -237,6 +240,7 @@
     "fontLabel": "Font",
     "fontPlaceholder": "Select font",
     "fontColorLabel": "Font color",
+    "eyedropper": "Eyedropper",
     "fontSizeLabel": "Size",
     "fontStylePlaceholder": "Style",
     "fontScopeGlobal": "Global",
@@ -258,7 +262,7 @@
       "italicWithName": "{{name}} Italic",
       "regularItalic": "Regular Italic"
     },
-    "resetToAuto": "Reset to auto (model-predicted)"
+    "resetToAuto": "Reset to auto (black/white contrast)"
   },
   "textBlocks": {
     "emptyPrompt": "Open an image to see text blocks.",

@@ -18,10 +18,16 @@ const style: TextStyle = {
 }
 
 describe('effectiveTextColor', () => {
-  it('prefers explicit style color, then prediction, then black', () => {
+  it('prefers manual style color and otherwise previews auto as black', () => {
     expect(effectiveTextColor(style, prediction)).toEqual([1, 2, 3, 255])
-    expect(effectiveTextColor(null, prediction)).toEqual([200, 30, 30, 255])
+    expect(effectiveTextColor(null, prediction)).toEqual(DEFAULT_TEXT_COLOR)
     expect(effectiveTextColor(null, null)).toEqual(DEFAULT_TEXT_COLOR)
+  })
+
+  it('treats stale predicted colors as auto placeholders', () => {
+    expect(effectiveTextColor({ ...style, color: [200, 30, 30, 255] }, prediction)).toEqual(
+      DEFAULT_TEXT_COLOR,
+    )
   })
 })
 
@@ -47,17 +53,16 @@ describe('mergeTextStyle', () => {
     expect(next.color).toEqual([1, 2, 3, 255])
   })
 
-  it('resets color to the model-predicted value on explicit null', () => {
-    expect(mergeTextStyle(style, prediction, { color: null }).color).toEqual([200, 30, 30, 255])
-    // Without a prediction the reset falls back to black.
+  it('resets color to the auto placeholder on explicit null', () => {
+    expect(mergeTextStyle(style, prediction, { color: null }).color).toEqual(DEFAULT_TEXT_COLOR)
     expect(mergeTextStyle(style, null, { color: null }).color).toEqual(DEFAULT_TEXT_COLOR)
   })
 
   it('materialises the effective color when a style becomes explicit', () => {
-    // Block had no style; setting only the size must not turn predicted red
-    // into black.
+    // Block had no style; setting only the size should leave color in auto
+    // contrast mode, not freeze the model-predicted red.
     const next = mergeTextStyle(null, prediction, { fontSize: 18 })
-    expect(next.color).toEqual([200, 30, 30, 255])
+    expect(next.color).toEqual(DEFAULT_TEXT_COLOR)
     expect(next.fontSize).toBe(18)
     expect(next.stroke).toBeNull()
   })

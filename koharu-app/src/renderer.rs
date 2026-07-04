@@ -190,11 +190,17 @@ impl Renderer {
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
         let bubble_mask = bubble_index.as_ref().map(BubbleIndex::mask);
 
+        let mut background = inpainted.to_rgba8();
+        if let Some(brush) = brush_layer {
+            imageops::overlay(&mut background, &brush.to_rgba8(), 0, 0);
+        }
+
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
         for (block, layout_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
             match self.render_one(
                 block,
                 layout_box,
+                &background,
                 bubble_mask,
                 &opts.shader_effect,
                 &opts.shader_stroke,
@@ -213,10 +219,7 @@ impl Renderer {
         }
 
         // Compose the final page: inpainted → brush → per-block sprites.
-        let mut canvas = inpainted.to_rgba8();
-        if let Some(brush) = brush_layer {
-            imageops::overlay(&mut canvas, &brush.to_rgba8(), 0, 0);
-        }
+        let mut canvas = background;
         for out in &rendered_blocks {
             let (x, y) = placement_origin(find_input(blocks, out.node_id), &out.expanded_transform);
             imageops::overlay(&mut canvas, &out.sprite.to_rgba8(), x as i64, y as i64);
@@ -232,6 +235,7 @@ impl Renderer {
         &self,
         block: &RenderBlockInput,
         resolved_box: ResolvedLayoutBox,
+        background: &RgbaImage,
         bubble_mask: Option<&GrayImage>,
         effect: &TextShaderEffect,
         global_stroke: &Option<TextStrokeStyle>,
@@ -267,8 +271,14 @@ impl Renderer {
 
         let font = self.select_font(&style)?;
         let block_effect = style.effect.unwrap_or(*effect);
-        let color =
-            resolve_text_color(block.style.as_ref(), &style, block.font_prediction.as_ref());
+        let color = resolve_text_color(
+            &style,
+            block.font_prediction.as_ref(),
+            background,
+            resolved_box.layout_box,
+            bubble_mask,
+            resolved_box.bubble_id,
+        );
 
         let writing_mode = writing_mode_for_block(&layout_source);
         // Translations default to centre alignment inside a bubble — each
@@ -889,7 +899,11 @@ fn resolve_layout_boxes(
         if let Some(matched) = occupied {
             *counts.entry(matched.id).or_insert(0) += 1;
         }
-        let bubble_match = if block.lock_layout_box { None } else { occupied };
+        let bubble_match = if block.lock_layout_box {
+            None
+        } else {
+            occupied
+        };
         matches.push((seed_box, bubble_match));
     }
 
@@ -1061,46 +1075,135 @@ fn resolve_stroke_style(
                 .unwrap_or_else(|| default_stroke_width(font_size)),
         });
     }
-    if let Some(pred) = font_prediction
-        && pred.stroke_width_px > 0.0
-    {
-        // Use the outline colour the model saw on the original text — thick
-        // manga outlines dominate the perceived colour, so substituting a
-        // contrast-picked black/white reads as "wrong colour" even when the
-        // fill matches.
-        return Some(RenderStrokeOptions {
-            color: [
-                pred.stroke_color[0],
-                pred.stroke_color[1],
-                pred.stroke_color[2],
-                255,
-            ],
-            width_px: pred.stroke_width_px,
-        });
-    }
     Some(RenderStrokeOptions {
         color: contrasting_stroke_color(text_color),
-        width_px: default_stroke_width(font_size),
+        width_px: font_prediction
+            .filter(|pred| pred.stroke_width_px > 0.0)
+            .map(|pred| pred.stroke_width_px)
+            .unwrap_or_else(|| default_stroke_width(font_size)),
     })
 }
 
 fn resolve_text_color(
-    explicit_style: Option<&TextStyle>,
     derived_style: &TextStyle,
     font_prediction: Option<&FontPrediction>,
+    background: &RgbaImage,
+    layout_box: LayoutBox,
+    bubble_mask: Option<&GrayImage>,
+    bubble_id: Option<u8>,
 ) -> [u8; 4] {
-    if explicit_style.is_some() {
+    if is_manual_text_color(derived_style.color, font_prediction) {
         return derived_style.color;
     }
-    if let Some(pred) = font_prediction {
-        return [
-            pred.text_color[0],
-            pred.text_color[1],
-            pred.text_color[2],
-            255,
-        ];
+
+    contrast_text_color(background, layout_box, bubble_mask, bubble_id)
+}
+
+fn is_manual_text_color(color: [u8; 4], font_prediction: Option<&FontPrediction>) -> bool {
+    if color[3] != 255 {
+        return true;
     }
-    [0, 0, 0, 255]
+    if color == [0, 0, 0, 255] {
+        return false;
+    }
+    if let Some(pred) = font_prediction
+        && color[0] == pred.text_color[0]
+        && color[1] == pred.text_color[1]
+        && color[2] == pred.text_color[2]
+    {
+        return false;
+    }
+    true
+}
+
+fn contrast_text_color(
+    background: &RgbaImage,
+    layout_box: LayoutBox,
+    bubble_mask: Option<&GrayImage>,
+    bubble_id: Option<u8>,
+) -> [u8; 4] {
+    let luminance =
+        median_background_luminance(background, layout_box, bubble_mask, bubble_id).unwrap_or(1.0);
+    let black_contrast = contrast_ratio(luminance, 0.0);
+    let white_contrast = contrast_ratio(luminance, 1.0);
+    if black_contrast >= white_contrast {
+        [0, 0, 0, 255]
+    } else {
+        [255, 255, 255, 255]
+    }
+}
+
+fn median_background_luminance(
+    background: &RgbaImage,
+    layout_box: LayoutBox,
+    bubble_mask: Option<&GrayImage>,
+    bubble_id: Option<u8>,
+) -> Option<f32> {
+    let width = background.width();
+    let height = background.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let left = layout_box.x.floor().max(0.0).min(width as f32) as u32;
+    let top = layout_box.y.floor().max(0.0).min(height as f32) as u32;
+    let right = (layout_box.x + layout_box.width)
+        .ceil()
+        .max(0.0)
+        .min(width as f32) as u32;
+    let bottom = (layout_box.y + layout_box.height)
+        .ceil()
+        .max(0.0)
+        .min(height as f32) as u32;
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    let sample_area = (right - left).saturating_mul(bottom - top).max(1);
+    let stride = ((sample_area as f32 / 10_000.0).sqrt().ceil() as u32).max(1);
+    let mut samples = Vec::new();
+    let mask_and_id = bubble_mask.zip(bubble_id);
+
+    let mut y = top;
+    while y < bottom {
+        let mut x = left;
+        while x < right {
+            if let Some((mask, id)) = mask_and_id
+                && (x >= mask.width() || y >= mask.height() || mask.get_pixel(x, y).0[0] != id)
+            {
+                x = x.saturating_add(stride);
+                continue;
+            }
+            let pixel = background.get_pixel(x, y).0;
+            samples.push(relative_luminance(pixel[0], pixel[1], pixel[2]));
+            x = x.saturating_add(stride);
+        }
+        y = y.saturating_add(stride);
+    }
+
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(|a, b| a.total_cmp(b));
+    Some(samples[samples.len() / 2])
+}
+
+fn contrast_ratio(a: f32, b: f32) -> f32 {
+    let lighter = a.max(b);
+    let darker = a.min(b);
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(r: u8, g: u8, b: u8) -> f32 {
+    fn channel(v: u8) -> f32 {
+        let normalized = v as f32 / 255.0;
+        if normalized <= 0.03928 {
+            normalized / 12.92
+        } else {
+            ((normalized + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,10 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn predicted_stroke_uses_the_predicted_outline_color() {
-        // Thick manga outlines dominate the perceived text colour, so the
-        // fallback must reproduce the colour the model saw — not substitute
-        // a contrast-picked black/white.
+    fn predicted_stroke_keeps_width_but_uses_contrast_color() {
         let prediction = FontPrediction {
             stroke_color: [12, 34, 56],
             stroke_width_px: 3.0,
@@ -1212,7 +1312,7 @@ mod tests {
         let stroke =
             resolve_stroke_style(Some(&prediction), None, None, 18.0, [255, 255, 255, 255])
                 .expect("predicted stroke should be present");
-        assert_eq!(stroke.color, [12, 34, 56, 255]);
+        assert_eq!(stroke.color, [0, 0, 0, 255]);
         assert_eq!(stroke.width_px, 3.0);
     }
 
@@ -1235,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn predicted_text_color_wins_without_explicit_style() {
+    fn auto_text_color_ignores_prediction_and_picks_black_on_light_background() {
         let derived = TextStyle {
             font_families: Vec::new(),
             font_size: None,
@@ -1248,14 +1348,56 @@ mod tests {
             text_color: [12, 34, 56],
             ..Default::default()
         };
+        let background = RgbaImage::from_pixel(32, 32, Rgba([245, 245, 245, 255]));
         assert_eq!(
-            resolve_text_color(None, &derived, Some(&prediction)),
-            [12, 34, 56, 255]
+            resolve_text_color(
+                &derived,
+                Some(&prediction),
+                &background,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0
+                },
+                None,
+                None,
+            ),
+            [0, 0, 0, 255]
         );
     }
 
     #[test]
-    fn explicit_text_color_wins_over_prediction() {
+    fn auto_text_color_picks_white_on_dark_background() {
+        let derived = TextStyle {
+            font_families: Vec::new(),
+            font_size: None,
+            color: [0, 0, 0, 255],
+            effect: None,
+            stroke: None,
+            text_align: None,
+        };
+        let background = RgbaImage::from_pixel(32, 32, Rgba([24, 24, 24, 255]));
+        assert_eq!(
+            resolve_text_color(
+                &derived,
+                None,
+                &background,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0
+                },
+                None,
+                None,
+            ),
+            [255, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn manual_colored_text_wins_over_auto_contrast() {
         let explicit = TextStyle {
             font_families: Vec::new(),
             font_size: None,
@@ -1268,9 +1410,55 @@ mod tests {
             text_color: [12, 34, 56],
             ..Default::default()
         };
+        let background = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 255]));
         assert_eq!(
-            resolve_text_color(Some(&explicit), &explicit, Some(&prediction)),
+            resolve_text_color(
+                &explicit,
+                Some(&prediction),
+                &background,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0
+                },
+                None,
+                None,
+            ),
             [200, 100, 50, 255]
+        );
+    }
+
+    #[test]
+    fn stale_predicted_style_color_is_treated_as_auto() {
+        let style = TextStyle {
+            font_families: Vec::new(),
+            font_size: Some(24.0),
+            color: [12, 34, 56, 255],
+            effect: None,
+            stroke: None,
+            text_align: None,
+        };
+        let prediction = FontPrediction {
+            text_color: [12, 34, 56],
+            ..Default::default()
+        };
+        let background = RgbaImage::from_pixel(32, 32, Rgba([20, 20, 20, 255]));
+        assert_eq!(
+            resolve_text_color(
+                &style,
+                Some(&prediction),
+                &background,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0
+                },
+                None,
+                None,
+            ),
+            [255, 255, 255, 255]
         );
     }
 

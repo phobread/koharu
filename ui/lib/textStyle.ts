@@ -9,9 +9,9 @@ import type {
 /**
  * Shared helpers for building explicit per-block `TextStyle` patches. The
  * scene only stores a style when the user overrides something; these helpers
- * merge an update over the existing style while materialising the effective
- * color, so an implicit predicted color isn't silently replaced by black when
- * the style becomes explicit.
+ * merge an update over the existing style. Automatic render colour is now
+ * chosen by the renderer from the page background, so stale model-predicted
+ * colours are treated as auto placeholders rather than user intent.
  */
 
 const clampByte = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
@@ -24,11 +24,30 @@ export const predictionColor = (prediction?: FontPrediction | null): number[] | 
   return [clampByte(tc[0]), clampByte(tc[1]), clampByte(tc[2]), 255]
 }
 
-/** Mirrors renderer precedence: explicit style color → predicted color → black. */
+const sameRgb = (a: number[], b: number[]) =>
+  a.length >= 3 &&
+  b.length >= 3 &&
+  clampByte(a[0]) === clampByte(b[0]) &&
+  clampByte(a[1]) === clampByte(b[1]) &&
+  clampByte(a[2]) === clampByte(b[2])
+
+export const isManualTextColor = (
+  color?: number[] | null,
+  prediction?: FontPrediction | null,
+): boolean => {
+  if (!color || color.length < 3) return false
+  if ((color[3] ?? 255) !== 255) return true
+  if (sameRgb(color, DEFAULT_TEXT_COLOR)) return false
+  const predicted = predictionColor(prediction)
+  if (predicted && sameRgb(color, predicted)) return false
+  return true
+}
+
+/** Mirrors renderer intent: manual style colour wins; otherwise auto previews black. */
 export const effectiveTextColor = (
   style?: TextStyle | null,
   prediction?: FontPrediction | null,
-): number[] => style?.color ?? predictionColor(prediction) ?? DEFAULT_TEXT_COLOR
+): number[] => (isManualTextColor(style?.color, prediction) ? style!.color : DEFAULT_TEXT_COLOR)
 
 /**
  * Partial style update where each field distinguishes three states: key
@@ -46,9 +65,9 @@ export type TextStyleUpdates = {
 
 /**
  * Merge updates over a block's existing style into a full style. `color` has
- * no "absent" representation in a stored style (the renderer only consults
- * the prediction when the block has no style at all), so resetting it writes
- * the predicted color explicitly.
+ * no "absent" representation in a stored style, so resetting it writes the
+ * black auto placeholder; the renderer treats that placeholder as background
+ * contrast mode instead of a manual black override.
  */
 export const mergeTextStyle = (
   current: TextStyle | null | undefined,
@@ -60,7 +79,7 @@ export const mergeTextStyle = (
   fontSize: 'fontSize' in updates ? (updates.fontSize ?? null) : (current?.fontSize ?? null),
   color:
     'color' in updates
-      ? (updates.color ?? predictionColor(prediction) ?? DEFAULT_TEXT_COLOR)
+      ? (updates.color ?? DEFAULT_TEXT_COLOR)
       : effectiveTextColor(current, prediction),
   effect: 'effect' in updates ? (updates.effect ?? null) : (current?.effect ?? null),
   stroke: 'stroke' in updates ? (updates.stroke ?? null) : (current?.stroke ?? null),
