@@ -5,7 +5,6 @@ import {
   ArrowRightIcon,
   ClockIcon,
   FileArchiveIcon,
-  MoreVerticalIcon,
   PlusIcon,
   TrashIcon,
   XIcon,
@@ -33,7 +32,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useDeleteProject, useListProjects } from '@/lib/api/default/default'
 import type { ProjectSummary } from '@/lib/api/schemas'
@@ -363,41 +361,31 @@ function ProjectRow({
           <div className='truncate text-[11px] text-muted-foreground'>{project.id}</div>
         </div>
         {when && (
-          <div className='mr-8 flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground transition-opacity group-hover:opacity-0'>
+          <div className='mr-2 flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground'>
             <ClockIcon className='h-3 w-3' />
             {formatRelative(when)}
           </div>
         )}
       </button>
 
-      <div className='absolute top-1/2 right-2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100'>
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              variant='ghost'
-              size='icon-xs'
-              className='h-7 w-7 text-muted-foreground hover:bg-accent hover:text-foreground'
-              disabled={disabled}
-              aria-label={t('welcome.projectOptions')}
-            >
-              <MoreVerticalIcon className='h-3.5 w-3.5' />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent
-            align='end'
-            className='w-32 rounded-md border border-border bg-popover p-1 shadow-lg'
-          >
-            <button
-              type='button'
-              onClick={() => onDeleteRequest(project)}
-              className='flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-destructive transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10'
-            >
-              <TrashIcon className='h-3.5 w-3.5' />
-              <span>{t('welcome.delete')}</span>
-            </button>
-          </PopoverContent>
-        </Popover>
-      </div>
+      <Button
+        data-testid={`welcome-delete-project-${project.id}`}
+        variant='ghost'
+        size='icon-xs'
+        className='mr-2 h-7 w-7 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive'
+        disabled={disabled}
+        aria-label={t('welcome.deleteProject', {
+          defaultValue: 'Delete {{name}}',
+          name: project.name,
+        })}
+        title={t('welcome.deleteProject', {
+          defaultValue: 'Delete {{name}}',
+          name: project.name,
+        })}
+        onClick={() => onDeleteRequest(project)}
+      >
+        <TrashIcon className='h-3.5 w-3.5' />
+      </Button>
     </li>
   )
 }

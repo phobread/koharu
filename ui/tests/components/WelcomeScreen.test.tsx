@@ -134,6 +134,25 @@ describe('WelcomeScreen', () => {
     await waitFor(() => expect(isInvalidated(getGetSceneJsonQueryKey())).toBe(true))
   })
 
+  it('deletes a recent project from the visible row button', async () => {
+    withProjects([{ id: 'smoke-test', name: 'Smoke Test' }])
+    const deletes: string[] = []
+    server.use(
+      http.delete('/api/v1/projects/:id', ({ params }) => {
+        deletes.push(String(params.id))
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+
+    renderWithQuery(<WelcomeScreen />)
+
+    await screen.findByText('Smoke Test')
+    await userEvent.click(screen.getByTestId('welcome-delete-project-smoke-test'))
+    await userEvent.click(await screen.findByRole('button', { name: /welcome\.delete/i }))
+
+    await waitFor(() => expect(deletes).toEqual(['smoke-test']))
+  })
+
   it('surfaces an error banner when create fails', async () => {
     withProjects([])
     server.use(

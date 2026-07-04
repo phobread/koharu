@@ -1,5 +1,6 @@
 'use client'
 
+import { PipetteIcon } from 'lucide-react'
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { HexColorInput, HexColorPicker } from 'react-colorful'
 
@@ -18,6 +19,7 @@ type ColorPickerProps = {
   swatchTestId?: string
   inputTestId?: string
   pickButtonTestId?: string
+  pickButtonLabel?: string
   'aria-label'?: string
   'aria-labelledby'?: string
 }
@@ -44,6 +46,7 @@ export function ColorPicker({
   swatchTestId,
   inputTestId,
   pickButtonTestId,
+  pickButtonLabel = 'Eyedropper',
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
 }: ColorPickerProps) {
@@ -139,12 +142,15 @@ export function ColorPicker({
                 variant='outline'
                 data-testid={pickButtonTestId}
                 disabled={disabled}
-                className='h-8 shrink-0 px-2 text-xs'
+                aria-label={pickButtonLabel}
+                title={pickButtonLabel}
+                className='h-8 shrink-0 gap-1 px-2 text-xs'
                 onClick={() => {
                   void handlePickFromScreen()
                 }}
               >
-                Pick
+                <PipetteIcon className='size-3.5' />
+                {pickButtonLabel}
               </Button>
             )}
           </div>
