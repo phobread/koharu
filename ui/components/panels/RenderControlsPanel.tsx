@@ -36,7 +36,6 @@ import {
 import { fetchGoogleFont, useGetGoogleFontsCatalog, useListFonts } from '@/lib/api/default/default'
 import type {
   FontFaceInfo,
-  FontPrediction,
   Op,
   TextAlign,
   TextShaderEffect,
@@ -54,9 +53,9 @@ import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { effectiveTextColor, mergeTextStyle } from '@/lib/textStyle'
 import { cn } from '@/lib/utils'
 
-const DEFAULT_COLOR: number[] = [0, 0, 0, 255]
 const DEFAULT_STROKE_COLOR: number[] = [255, 255, 255, 255]
 const DEFAULT_STROKE_WIDTH = 1.6
 const MIN_STROKE_WIDTH = 0.2
@@ -113,16 +112,6 @@ const normalizeEffect = (effect?: TextShaderEffect | null): TextShaderEffect => 
   bold: effect?.bold ?? false,
   italic: effect?.italic ?? false,
 })
-
-const predictionColor = (prediction?: FontPrediction | null): number[] | undefined => {
-  const tc = prediction?.textColor
-  if (!tc || tc.length < 3) return undefined
-  return [clampByte(tc[0]), clampByte(tc[1]), clampByte(tc[2]), 255]
-}
-
-// Mirrors renderer precedence: explicit style color → predicted color → black.
-const effectiveColorOf = (style?: TextStyle | null, prediction?: FontPrediction | null): number[] =>
-  style?.color ?? predictionColor(prediction) ?? DEFAULT_COLOR
 
 const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?.color)
 
@@ -262,7 +251,7 @@ export function RenderControlsPanel() {
 
   const selectedStyle = selectedNode?.data.style ?? firstNode?.data.style
   const colorSource = selectedNode ?? firstNode
-  const currentColor = effectiveColorOf(colorSource?.data.style, colorSource?.data.fontPrediction)
+  const currentColor = effectiveTextColor(colorSource?.data.style, colorSource?.data.fontPrediction)
   const currentColorHex = colorToHex(currentColor)
   const currentStroke = normalizeStroke(selectedStyle?.stroke)
   const currentStrokeColorHex = colorToHex(currentStroke.color ?? DEFAULT_STROKE_COLOR)
@@ -271,6 +260,10 @@ export function RenderControlsPanel() {
   // The scene only persists manual overrides in `style.fontSize`. Font detector
   // metadata describes the source text, not the renderer's current auto-fit size.
   const currentFontSize: number | undefined = selectedNode?.data.style?.fontSize ?? undefined
+  // Size the renderer last used for the selected block (auto-fit result) —
+  // shown as the "auto" placeholder and used as the stepping base so +/-
+  // nudges start from the real size instead of an arbitrary constant.
+  const renderedFontSize: number | undefined = selectedNode?.data.renderedFontSizePx ?? undefined
 
   const effectiveAlign: TextAlign =
     selectedNode?.data.style?.textAlign ??
@@ -288,15 +281,7 @@ export function RenderControlsPanel() {
   // ---------------------------------------------------------------------------
 
   const buildStyleOp = (n: TextNodeEntry, updates: Partial<TextStyle>): Op => {
-    const current = n.data.style
-    const nextStyle: TextStyle = {
-      fontFamilies: updates.fontFamilies ?? current?.fontFamilies ?? [],
-      fontSize: updates.fontSize ?? current?.fontSize ?? null,
-      color: updates.color ?? effectiveColorOf(current, n.data.fontPrediction),
-      effect: updates.effect ?? current?.effect ?? null,
-      stroke: updates.stroke ?? current?.stroke ?? null,
-      textAlign: updates.textAlign ?? current?.textAlign ?? null,
-    }
+    const nextStyle = mergeTextStyle(n.data.style, n.data.fontPrediction, updates)
     return ops.updateNode(page!.id, n.id, {
       data: { text: { style: nextStyle } } as never,
     })
@@ -580,7 +565,9 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-r-none border-r'
-            onClick={() => applyFontSize(Math.max(6, Math.round((activeFontSize ?? 16) - 1)))}
+            onClick={() =>
+              applyFontSize(Math.max(6, Math.round((activeFontSize ?? renderedFontSize ?? 16) - 1)))
+            }
           >
             <MinusIcon className='size-3' />
           </Button>
@@ -593,7 +580,11 @@ export function RenderControlsPanel() {
             className='h-6 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-0.5 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
             data-testid='render-font-size'
             value={activeFontSize !== undefined ? Math.round(activeFontSize) : ''}
-            placeholder='auto'
+            placeholder={
+              selectedNode && renderedFontSize !== undefined
+                ? `auto (${Math.round(renderedFontSize)})`
+                : 'auto'
+            }
             onChange={(event) => {
               const value = event.target.value.trim()
               if (value === '') {
@@ -611,7 +602,11 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-l-none border-l'
-            onClick={() => applyFontSize(Math.min(300, Math.round((activeFontSize ?? 16) + 1)))}
+            onClick={() =>
+              applyFontSize(
+                Math.min(300, Math.round((activeFontSize ?? renderedFontSize ?? 16) + 1)),
+              )
+            }
           >
             <PlusIcon className='size-3' />
           </Button>

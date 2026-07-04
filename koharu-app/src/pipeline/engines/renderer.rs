@@ -115,6 +115,10 @@ impl Engine for Model {
                             block_out.expanded_transform.map(normalize_transform),
                         ),
                         rendered_direction: Some(Some(block_out.rendered_direction)),
+                        // Record the size the fit settled on so the UI can
+                        // scale text with box resizes (Canva-style corner
+                        // drag) without guessing the auto-fit result.
+                        rendered_font_size_px: Some(Some(block_out.font_size)),
                         // Only persist explicit user style overrides. Writing
                         // a synthetic default style back into the scene makes
                         // later renders treat implicit predicted colors as

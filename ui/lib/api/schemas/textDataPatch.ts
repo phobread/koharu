@@ -26,6 +26,8 @@ export interface TextDataPatch {
   lockLayoutBox?: boolean | null
   renderedDirection?: null | TextDirection
   /** @nullable */
+  renderedFontSizePx?: number | null
+  /** @nullable */
   rotationDeg?: number | null
   sourceDirection?: null | TextDirection
   /** @nullable */

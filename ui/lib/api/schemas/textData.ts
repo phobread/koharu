@@ -19,6 +19,12 @@ export interface TextData {
   linePolygons?: number[][][] | null
   lockLayoutBox?: boolean
   renderedDirection?: null | TextDirection
+  /**
+   * Font size the renderer actually used for the last sprite (auto-fit
+   * result or explicit override). Lets the UI scale text with box resizes.
+   * @nullable
+   */
+  renderedFontSizePx?: number | null
   /** @nullable */
   rotationDeg?: number | null
   sourceDirection?: null | TextDirection

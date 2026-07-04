@@ -3172,6 +3172,11 @@
               }
             ]
           },
+          "renderedFontSizePx": {
+            "type": ["number", "null"],
+            "format": "float",
+            "description": "Font size the renderer actually used for the last sprite (auto-fit\nresult or explicit override). Lets the UI scale text with box resizes."
+          },
           "rotationDeg": {
             "type": ["number", "null"],
             "format": "float"
@@ -3279,6 +3284,10 @@
                 "$ref": "#/components/schemas/TextDirection"
               }
             ]
+          },
+          "renderedFontSizePx": {
+            "type": ["number", "null"],
+            "format": "float"
           },
           "rotationDeg": {
             "type": ["number", "null"],

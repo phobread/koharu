@@ -307,6 +307,10 @@ pub struct TextData {
     /// Sprite placement when the renderer expands past the bubble geometry.
     #[serde(default)]
     pub sprite_transform: Option<Transform>,
+    /// Font size the renderer actually used for the last sprite (auto-fit
+    /// result or explicit override). Lets the UI scale text with box resizes.
+    #[serde(default)]
+    pub rendered_font_size_px: Option<f32>,
     #[serde(default)]
     pub lock_layout_box: bool,
 }

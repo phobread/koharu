@@ -1,16 +1,21 @@
 'use client'
 
 import { useDrag } from '@use-gesture/react'
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 
 import { useBlobImage } from '@/hooks/useBlobData'
-import { useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
+import { isTextNode, useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+import { mergeTextStyle } from '@/lib/textStyle'
+
+/** Explicit font sizes committed by a corner-drag scale stay in sane bounds. */
+const MIN_SCALED_FONT_PX = 4
+const MAX_SCALED_FONT_PX = 300
 
 type TextBlockLayerProps = {
   showSprites?: boolean
@@ -55,14 +60,33 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     }
   }
 
-  const updateTransform = async (id: string, t: Transform) => {
+  // Live sprite preview while a corner drag scales a block (Canva-style).
+  const [spritePreview, setSpritePreview] = useState<{ id: string; factor: number } | null>(null)
+
+  const updateTransform = async (id: string, t: Transform, scaleFactor?: number) => {
     if (!page) return
-    const data: NodeDataPatch = {
-      text: {
-        lockLayoutBox: true,
-      },
+    const node = page.nodes[id]
+    // Corner drags scale the text with the box: multiply the block's current
+    // size (explicit override, else the last auto-fit result) and persist it
+    // as an explicit override so the re-render honours the new size.
+    let scaledStyle
+    if (scaleFactor && node && isTextNode(node)) {
+      const data = node.kind.text
+      const base = data.style?.fontSize ?? data.renderedFontSizePx
+      if (base) {
+        const next = Math.min(
+          Math.max(base * scaleFactor, MIN_SCALED_FONT_PX),
+          MAX_SCALED_FONT_PX,
+        )
+        scaledStyle = mergeTextStyle(data.style, data.fontPrediction, {
+          fontSize: Math.round(next * 10) / 10,
+        })
+      }
     }
-    await applyOp(ops.updateNode(page.id, id, { transform: t, data }))
+    const patch: NodeDataPatch = {
+      text: scaledStyle ? { lockLayoutBox: true, style: scaledStyle } : { lockLayoutBox: true },
+    }
+    await applyOp(ops.updateNode(page.id, id, { transform: t, data: patch }))
     queueAutoRender(page.id)
   }
 
@@ -88,7 +112,14 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       }}
     >
       {showSprites &&
-        nodes.map((n, i) => <BlockSprite key={`sprite-${n.id ?? i}`} node={n} scale={scale} />)}
+        nodes.map((n, i) => (
+          <BlockSprite
+            key={`sprite-${n.id ?? i}`}
+            node={n}
+            scale={scale}
+            previewFactor={spritePreview?.id === n.id ? spritePreview.factor : undefined}
+          />
+        ))}
       {nodes.map((n, i) => (
         <TextBlockItem
           key={n.id}
@@ -98,7 +129,10 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
           selected={selectedIds.has(n.id)}
           interactive={interactive}
           onSelect={(id, additive) => select(id, additive)}
-          onCommit={(t) => void updateTransform(n.id, t)}
+          onCommit={(t, scaleFactor) => void updateTransform(n.id, t, scaleFactor)}
+          onScalePreview={(factor) =>
+            setSpritePreview(factor === null ? null : { id: n.id, factor })
+          }
         />
       ))}
     </div>
@@ -112,7 +146,8 @@ type TextBlockItemProps = {
   selected: boolean
   interactive: boolean
   onSelect: (id: string, additive: boolean) => void
-  onCommit: (transform: Transform) => void
+  onCommit: (transform: Transform, scaleFactor?: number) => void
+  onScalePreview: (factor: number | null) => void
 }
 
 const isAdditiveEvent = (event: unknown): boolean => {
@@ -133,6 +168,7 @@ function TextBlockItem({
   interactive,
   onSelect,
   onCommit,
+  onScalePreview,
 }: TextBlockItemProps) {
   const boxRef = useRef<HTMLDivElement>(null)
   const dragStart = useRef({ x: 0, y: 0, w: 0, h: 0 })
@@ -171,7 +207,38 @@ function TextBlockItem({
       }
       const { x: sx, y: sy, w: sw, h: sh } = dragStart.current
       const edge = edgeRef.current
-      if (isResizeRef.current && edge) {
+      const isCorner = !!edge && (edge.left || edge.right) && (edge.top || edge.bottom)
+      if (isResizeRef.current && edge && isCorner) {
+        // Corner drag scales the whole block Canva-style: uniform factor
+        // (aspect locked), opposite corner anchored, text size follows on
+        // commit. The dominant drag axis drives the factor.
+        const wR = (edge.right ? sw + mx : sw - mx) / sw
+        const hR = (edge.bottom ? sh + my : sh - my) / sh
+        let factor = Math.abs(wR - 1) >= Math.abs(hR - 1) ? wR : hR
+        const minFactor = Math.max((4 * scale) / sw, (4 * scale) / sh)
+        factor = Math.max(factor, minFactor)
+        const w = sw * factor
+        const h = sh * factor
+        const dx = edge.left ? sw - w : 0
+        const dy = edge.top ? sh - h : 0
+        setBox(sx + dx, sy + dy, w, h)
+        onScalePreview(factor)
+        if (last) {
+          isResizeRef.current = false
+          edgeRef.current = null
+          onScalePreview(null)
+          onCommit(
+            {
+              x: Math.round((sx + dx) / scale),
+              y: Math.round((sy + dy) / scale),
+              width: Math.max(4, Math.round(w / scale)),
+              height: Math.max(4, Math.round(h / scale)),
+              rotationDeg: t.rotationDeg ?? 0,
+            },
+            factor,
+          )
+        }
+      } else if (isResizeRef.current && edge) {
         let dx = 0
         let dy = 0
         let w = sw
@@ -268,13 +335,26 @@ function TextBlockItem({
   )
 }
 
-function BlockSprite({ node, scale }: { node: TextNodeEntry; scale: number }) {
+function BlockSprite({
+  node,
+  scale,
+  previewFactor,
+}: {
+  node: TextNodeEntry
+  scale: number
+  previewFactor?: number
+}) {
   const sprite = (node.data.sprite as string | null | undefined) ?? undefined
   const { data: src } = useBlobImage(sprite)
   if (!src) return null
   const spriteT = node.data.spriteTransform
   const x = (spriteT?.x ?? node.transform.x) * scale
   const y = (spriteT?.y ?? node.transform.y) * scale
+  // While a corner drag scales the block, mirror the factor on the sprite
+  // about its centre for live feedback; the crisp re-render lands on commit.
+  const f = previewFactor ?? 1
+  const pw = (spriteT?.width ?? node.transform.width) * scale
+  const ph = (spriteT?.height ?? node.transform.height) * scale
   return (
     <img
       alt=''
@@ -285,7 +365,7 @@ function BlockSprite({ node, scale }: { node: TextNodeEntry; scale: number }) {
         top: 0,
         left: 0,
         transformOrigin: 'top left',
-        transform: `translate(${x}px, ${y}px) scale(${scale})`,
+        transform: `translate(${x + (pw * (1 - f)) / 2}px, ${y + (ph * (1 - f)) / 2}px) scale(${scale * f})`,
       }}
     />
   )
@@ -340,13 +420,30 @@ function ResizeHandles({ onEdgePointerDown }: { onEdgePointerDown: (edge: Resize
 
   return (
     <>
-      {edges.map((e, i) => (
-        <div
-          key={i}
-          onPointerDown={() => onEdgePointerDown(e.edge)}
-          style={{ position: 'absolute', ...e.style, cursor: e.cursor, zIndex: 30 }}
-        />
-      ))}
+      {edges.map((e, i) => {
+        const isCorner = (e.edge.left || e.edge.right) && (e.edge.top || e.edge.bottom)
+        return (
+          <div
+            key={i}
+            onPointerDown={() => onEdgePointerDown(e.edge)}
+            style={{
+              position: 'absolute',
+              ...e.style,
+              cursor: e.cursor,
+              zIndex: 30,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {/* Visible dot so the resize affordance is discoverable: corners
+                scale the whole block, edges stretch/reflow. */}
+            {isCorner && (
+              <div className='h-2 w-2 rounded-sm border border-primary bg-background shadow-sm' />
+            )}
+          </div>
+        )
+      })}
     </>
   )
 }

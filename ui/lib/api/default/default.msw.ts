@@ -973,6 +973,10 @@ export const getGetSceneJsonResponseMock = (
                     ]),
                     undefined,
                   ]),
+                  renderedFontSizePx: faker.helpers.arrayElement([
+                    faker.helpers.arrayElement([faker.number.float({ fractionDigits: 2 }), null]),
+                    undefined,
+                  ]),
                   rotationDeg: faker.helpers.arrayElement([
                     faker.helpers.arrayElement([faker.number.float({ fractionDigits: 2 }), null]),
                     undefined,
