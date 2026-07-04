@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op,
-    PageId, ReadingOrder, Scene, TextData, Transform,
+    PageId, ReadingOrder, Region, Scene, TextData, Transform,
 };
 
 use crate::blobs::BlobStore;
@@ -245,6 +245,33 @@ pub fn image_dimensions(image: &DynamicImage) -> (u32, u32) {
     image.dimensions()
 }
 
+/// Base image for a regional re-inpaint: `base` (the existing inpainted
+/// page) with `region` reverted to the `source` pixels. A regional run must
+/// recompute its area from scratch — the model only paints where the mask is
+/// white, so compositing onto the stale inpainted image would keep the old
+/// fill forever wherever mask pixels were *cleared* (un-inpaint, mask
+/// eraser) instead of bringing the original art back.
+pub fn restore_region_from_source(
+    base: &DynamicImage,
+    source: &DynamicImage,
+    region: &Region,
+) -> DynamicImage {
+    let mut out = base.to_rgba8();
+    let src = source.to_rgba8();
+    let (w, h) = out.dimensions();
+    let (sw, sh) = src.dimensions();
+    let x0 = region.x.min(w).min(sw);
+    let y0 = region.y.min(h).min(sh);
+    let x1 = region.x.saturating_add(region.width).min(w).min(sw);
+    let y1 = region.y.saturating_add(region.height).min(h).min(sh);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            out.put_pixel(x, y, *src.get_pixel(x, y));
+        }
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
 /// Translate the `koharu-ml` `TextDirection` primitive into the scene-layer one.
 pub fn ml_text_direction_to_core(d: koharu_ml::types::TextDirection) -> koharu_core::TextDirection {
     match d {
@@ -462,7 +489,38 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{Rgba, RgbaImage};
     use koharu_core::ReadingOrder;
+
+    #[test]
+    fn restore_region_reverts_only_the_region_to_source() {
+        let base = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([255; 4])));
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([10, 20, 30, 255])));
+
+        let region = Region {
+            x: 2,
+            y: 2,
+            width: 3,
+            height: 3,
+        };
+        let out = restore_region_from_source(&base, &source, &region).to_rgba8();
+        assert_eq!(out.get_pixel(2, 2).0, [10, 20, 30, 255]);
+        assert_eq!(out.get_pixel(4, 4).0, [10, 20, 30, 255]);
+        // Exclusive right/bottom edge and everything outside stay untouched.
+        assert_eq!(out.get_pixel(5, 5).0, [255; 4]);
+        assert_eq!(out.get_pixel(1, 1).0, [255; 4]);
+
+        // A region overflowing the image is clamped, not a panic.
+        let big = Region {
+            x: 6,
+            y: 6,
+            width: 100,
+            height: 100,
+        };
+        let out = restore_region_from_source(&base, &source, &big).to_rgba8();
+        assert_eq!(out.get_pixel(7, 7).0, [10, 20, 30, 255]);
+        assert_eq!(out.get_pixel(5, 5).0, [255; 4]);
+    }
 
     #[test]
     fn test_reading_order_sort() {

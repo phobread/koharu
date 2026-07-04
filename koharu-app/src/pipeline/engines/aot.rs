@@ -3,8 +3,10 @@
 //! only wires up the scene I/O.
 //!
 //! For repair-brush (`ctx.options.region`), composite onto the existing
-//! `Image { Inpainted }` if present (fallback Source) and zero out mask
-//! pixels outside the region so only that area is reprocessed.
+//! `Image { Inpainted }` if present (fallback Source), revert the region to
+//! the source pixels, and zero out mask pixels outside the region — the
+//! region is recomputed from scratch, so cleared mask areas return to the
+//! original art.
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -17,8 +19,8 @@ use koharu_ml::types::TextRegion;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, load_source_image, text_node_to_region,
-    text_nodes, upsert_image_blob,
+    find_image_node, find_mask_node, image_dimensions, load_source_image,
+    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(AotInpainting);
@@ -36,7 +38,11 @@ impl Engine for Model {
         let (image, mask, bubble_mask) = match ctx.options.region {
             Some(r) => {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
-                    Some((_, blob)) => ctx.blobs.load_image(&blob)?,
+                    Some((_, blob)) => {
+                        let inpainted = ctx.blobs.load_image(&blob)?;
+                        let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
+                        restore_region_from_source(&inpainted, &source, &r)
+                    }
                     None => load_source_image(ctx.scene, ctx.page, ctx.blobs)?,
                 };
                 let clipped_mask = clip_mask_to_region(&mask, &r);
