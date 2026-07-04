@@ -438,7 +438,7 @@ function LlmStatusPopover() {
             <Textarea
               data-testid='llm-system-prompt'
               value={customSystemPrompt ?? ''}
-              onChange={(e) => setCustomSystemPrompt(e.target.value || undefined)}
+              onChange={(e) => setCustomSystemPrompt(e.target.value)}
               onBlur={() => void flushServerConfigStorage()}
               placeholder={t('llm.systemPromptPlaceholder')}
               rows={5}

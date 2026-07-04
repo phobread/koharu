@@ -34,6 +34,12 @@ let dirty = false
 let dirtyVersion = 0
 let lifecycleFlushInstalled = false
 
+function readLegacyBlob(): Blob | null {
+  if (typeof localStorage === 'undefined') return null
+  const legacy = localStorage.getItem(LEGACY_LOCALSTORAGE_KEY)
+  return legacy ? { [LEGACY_LOCALSTORAGE_KEY]: legacy } : null
+}
+
 async function load(): Promise<Blob> {
   if (cache) return cache
   if (loadPromise) return loadPromise
@@ -43,19 +49,31 @@ async function load(): Promise<Blob> {
       const config = await getConfig()
       const raw = config.editor?.client
       if (raw) {
-        const parsed: unknown = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') blob = parsed as Blob
+        try {
+          const parsed: unknown = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object') blob = parsed as Blob
+        } catch {
+          blob = {}
+        }
       }
-    } catch {
-      // Server unreachable or blob unparseable — start from empty prefs.
+    } catch (err) {
+      const legacy = readLegacyBlob()
+      if (legacy) {
+        cache = legacy
+        return legacy
+      }
+      // Do not cache an empty blob after a failed config read: a later write
+      // would overwrite existing settings with partial startup defaults.
+      loadPromise = null
+      throw err
     }
     // One-time migration: if nothing is stored server-side yet but the old
     // localStorage prefs exist, adopt them so users don't lose their settings
     // when the source of truth moves to the backend.
-    if (Object.keys(blob).length === 0 && typeof localStorage !== 'undefined') {
-      const legacy = localStorage.getItem(LEGACY_LOCALSTORAGE_KEY)
+    if (Object.keys(blob).length === 0) {
+      const legacy = readLegacyBlob()
       if (legacy) {
-        blob[LEGACY_LOCALSTORAGE_KEY] = legacy
+        blob = legacy
         void patchConfig({ editor: { client: JSON.stringify(blob) } }).catch(() => {})
       }
     }

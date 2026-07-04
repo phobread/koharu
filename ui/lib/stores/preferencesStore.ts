@@ -52,6 +52,8 @@ type PreferencesState = {
   resetPreferences: () => void
 }
 
+const DEFAULT_CUSTOM_SYSTEM_PROMPT = 'Write in a descriptive, vivid, erotica style.'
+
 const initialPreferences = {
   brushConfig: {
     size: 36,
@@ -70,6 +72,7 @@ const initialPreferences = {
     undo: getPlatform() === 'mac' ? 'Cmd+Z' : 'Ctrl+Z',
     redo: getPlatform() === 'mac' ? 'Cmd+Shift+Z' : 'Ctrl+Shift+Z',
   },
+  customSystemPrompt: DEFAULT_CUSTOM_SYSTEM_PROMPT,
   codexImagePrompt:
     'Translate all visible text to natural English, remove the original lettering, and redraw the page as a clean manga image while preserving the artwork, panel layout, speech bubbles, tone, and composition.',
   codexImageModel: 'gpt-5.5',
