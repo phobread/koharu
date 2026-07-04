@@ -2,7 +2,7 @@
 
 import { Languages, LoaderCircleIcon, Trash2Icon } from 'lucide-react'
 import { motion } from 'motion/react'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -12,7 +12,13 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
-import { DraftTextarea } from '@/components/ui/draft-textarea'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { DraftTextarea, type DraftTextareaProps } from '@/components/ui/draft-textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
@@ -22,12 +28,19 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
+import {
+  isTextNode,
+  useCurrentPage,
+  useTextNodes,
+  type TextNodeEntry,
+} from '@/hooks/useCurrentPage'
 import { getConfig, startPipeline, useGetCurrentLlm } from '@/lib/api/default/default'
 import { fetchApi } from '@/lib/api/fetch'
 import type { TextDataPatch } from '@/lib/api/schemas'
 import { applyOp, invalidateScene, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
+import { applyBlockSplit } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
+import { splitTextBlockAt, type SplitField } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -83,6 +96,25 @@ export function TextBlocksPanel() {
     await applyOp(ops.removeNode(page.id, nodeId, node, idx < 0 ? 0 : idx))
     clearSelection()
     queueAutoRender(page.id)
+  }
+
+  // Split the block at a caret position inside its OCR / translation text.
+  // The cut follows the text flow: horizontal text stacks the halves,
+  // vertical (RTL-column) text puts the first half on the right.
+  const splitNodeAt = async (nodeId: string, field: SplitField, offset: number) => {
+    const node = page.nodes[nodeId]
+    if (!node || !isTextNode(node) || !node.transform) return
+    const data = node.kind.text
+    const direction =
+      (field === 'text' ? data.sourceDirection : data.renderedDirection) ?? 'horizontal'
+    const split = splitTextBlockAt(
+      node.transform,
+      { text: data.text, translation: data.translation },
+      { field, offset },
+      direction,
+    )
+    if (!split) return
+    await applyBlockSplit(page, nodeId, split)
   }
 
   const generate = async (nodeId: string) => {
@@ -191,6 +223,7 @@ export function TextBlocksPanel() {
                   onPatch={(patch) => void patchText(node.id, patch)}
                   onDelete={() => void removeNode(node.id)}
                   onGenerate={() => void generate(node.id)}
+                  onSplitAt={(field, offset) => void splitNodeAt(node.id, field, offset)}
                   processing={isProcessing}
                   llmReady={llmReady}
                 />
@@ -211,6 +244,7 @@ type BlockCardProps = {
   onPatch: (patch: TextDataPatch) => void
   onDelete: () => void
   onGenerate: () => void
+  onSplitAt: (field: SplitField, offset: number) => void
   processing: boolean
   llmReady: boolean
 }
@@ -223,6 +257,7 @@ function BlockCard({
   onPatch,
   onDelete,
   onGenerate,
+  onSplitAt,
   processing,
   llmReady,
 }: BlockCardProps) {
@@ -288,13 +323,15 @@ function BlockCard({
               <span className='text-[10px] text-muted-foreground uppercase'>
                 {t('textBlocks.ocrLabel')}
               </span>
-              <DraftTextarea
+              <SplittableDraftTextarea
                 data-testid={`textblock-ocr-${index}`}
                 value={data.text ?? ''}
                 placeholder={t('textBlocks.addOcrPlaceholder')}
                 rows={2}
                 onValueChange={(value) => onPatch({ text: value })}
                 className='min-h-0 resize-none px-1.5 py-1 text-xs'
+                splitLabel={t('textBlocks.splitAtCursor')}
+                onSplit={(offset) => onSplitAt('text', offset)}
               />
             </div>
             <div className='flex flex-col gap-0.5'>
@@ -345,18 +382,58 @@ function BlockCard({
                   </Tooltip>
                 </div>
               </div>
-              <DraftTextarea
+              <SplittableDraftTextarea
                 data-testid={`textblock-translation-${index}`}
                 value={data.translation ?? ''}
                 placeholder={t('textBlocks.addTranslationPlaceholder')}
                 rows={2}
                 onValueChange={(value) => onPatch({ translation: value })}
                 className='min-h-0 resize-none px-1.5 py-1 text-xs'
+                splitLabel={t('textBlocks.splitAtCursor')}
+                onSplit={(offset) => onSplitAt('translation', offset)}
               />
             </div>
           </div>
         </AccordionContent>
       </AccordionItem>
     </motion.div>
+  )
+}
+
+/**
+ * DraftTextarea with a right-click "split block at cursor" action. The caret
+ * position at the moment of the right-click (Chromium places the caret before
+ * firing `contextmenu`) becomes the split offset. Splitting is disabled when
+ * the caret sits at the very start/end — both halves need text.
+ */
+function SplittableDraftTextarea({
+  splitLabel,
+  onSplit,
+  ...props
+}: DraftTextareaProps & { splitLabel: string; onSplit: (offset: number) => void }) {
+  const caretRef = useRef(0)
+  const [canSplit, setCanSplit] = useState(false)
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className='contents'
+          onContextMenu={(e) => {
+            const el = e.target as HTMLTextAreaElement
+            if (typeof el.selectionStart !== 'number') return
+            const offset = el.selectionStart
+            caretRef.current = offset
+            setCanSplit(offset > 0 && offset < el.value.length)
+          }}
+        >
+          <DraftTextarea {...props} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled={!canSplit} onSelect={() => onSplit(caretRef.current)}>
+          {splitLabel}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

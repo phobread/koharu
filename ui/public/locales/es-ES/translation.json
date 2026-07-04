@@ -237,6 +237,7 @@
     "translationBadge": "TL",
     "addOcrPlaceholder": "Añadir texto OCR",
     "addTranslationPlaceholder": "Añadir traducción",
+    "splitAtCursor": "Dividir bloque en el cursor",
     "readingOrder": "Orden de lectura",
     "readingOrderRtl": "Derecha a izquierda (RTL)",
     "readingOrderLtr": "Izquierda a derecha (LTR)",
@@ -245,6 +246,7 @@
   "workspace": {
     "importPrompt": "Importa una página para comenzar a editar.",
     "splitBlock": "Dividir bloque",
+    "mergeBlocks": "Combinar bloques",
     "deleteBlock": "Eliminar bloque"
   },
   "statusBar": {

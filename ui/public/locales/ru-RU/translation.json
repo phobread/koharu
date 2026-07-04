@@ -237,6 +237,7 @@
     "translationBadge": "Пер.",
     "addOcrPlaceholder": "Добавить текст OCR",
     "addTranslationPlaceholder": "Добавить перевод",
+    "splitAtCursor": "Разделить блок по курсору",
     "readingOrder": "Порядок чтения",
     "readingOrderRtl": "Справа налево (RTL)",
     "readingOrderLtr": "Слева направо (LTR)",
@@ -245,6 +246,7 @@
   "workspace": {
     "importPrompt": "Импортируйте страницу, чтобы начать редактирование.",
     "splitBlock": "Разделить блок",
+    "mergeBlocks": "Объединить блоки",
     "deleteBlock": "Удалить блок"
   },
   "statusBar": {

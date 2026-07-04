@@ -237,6 +237,7 @@
     "translationBadge": "TL",
     "addOcrPlaceholder": "添加 OCR 文本",
     "addTranslationPlaceholder": "添加翻译",
+    "splitAtCursor": "在光标处拆分文本块",
     "readingOrder": "阅读顺序",
     "readingOrderRtl": "从右至左 (RTL)",
     "readingOrderLtr": "从左至右 (LTR)",
@@ -245,6 +246,7 @@
   "workspace": {
     "importPrompt": "导入页面以开始编辑。",
     "splitBlock": "拆分文本块",
+    "mergeBlocks": "合并文本块",
     "deleteBlock": "删除块"
   },
   "statusBar": {

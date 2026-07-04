@@ -237,6 +237,7 @@
     "translationBadge": "TL",
     "addOcrPlaceholder": "OCRテキストを追加",
     "addTranslationPlaceholder": "翻訳を追加",
+    "splitAtCursor": "カーソル位置でブロックを分割",
     "readingOrder": "読み順",
     "readingOrderRtl": "右から左 (RTL)",
     "readingOrderLtr": "左から右 (LTR)",
@@ -245,6 +246,7 @@
   "workspace": {
     "importPrompt": "ページを読み込んで編集を開始してください。",
     "splitBlock": "ブロックを分割",
+    "mergeBlocks": "ブロックを結合",
     "deleteBlock": "ブロックを削除"
   },
   "statusBar": {

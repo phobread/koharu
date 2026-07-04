@@ -237,6 +237,7 @@
     "translationBadge": "TL",
     "addOcrPlaceholder": "OCR metni ekle",
     "addTranslationPlaceholder": "Çeviri ekle",
+    "splitAtCursor": "Bloğu imleçten böl",
     "readingOrder": "Okuma Sırası",
     "readingOrderRtl": "Sağdan Sola (RTL)",
     "readingOrderLtr": "Soldan Sağa (LTR)",
@@ -245,6 +246,7 @@
   "workspace": {
     "importPrompt": "Düzenlemeye başlamak için bir sayfa içe aktarın.",
     "splitBlock": "Bloğu böl",
+    "mergeBlocks": "Blokları birleştir",
     "deleteBlock": "Bloğu sil"
   },
   "statusBar": {

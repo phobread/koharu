@@ -259,6 +259,7 @@
     "translationBadge": "번역",
     "addOcrPlaceholder": "OCR 텍스트 추가",
     "addTranslationPlaceholder": "번역 추가",
+    "splitAtCursor": "커서 위치에서 블록 분할",
     "readingOrder": "읽기 순서",
     "readingOrderRtl": "우에서 좌 (RTL)",
     "readingOrderLtr": "좌에서 우 (LTR)",
@@ -267,6 +268,7 @@
   "workspace": {
     "importPrompt": "편집을 시작하려면 페이지를 가져오세요.",
     "splitBlock": "블록 분할",
+    "mergeBlocks": "블록 병합",
     "deleteBlock": "블록 삭제"
   },
   "statusBar": {

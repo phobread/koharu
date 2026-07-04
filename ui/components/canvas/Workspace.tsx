@@ -37,8 +37,9 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
-import type { Node, NodeDataPatch, Transform } from '@/lib/api/schemas'
-import { applyOp, queueAutoRender } from '@/lib/io/scene'
+import type { Node, Transform } from '@/lib/api/schemas'
+import { applyOp } from '@/lib/io/scene'
+import { applyBlockMerge, applyBlockSplit } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
 import { splitTextBlock } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -135,8 +136,8 @@ export function Workspace() {
   )
 
   // Split a text block into two halves along its longer side, dividing the
-  // text between them. Original keeps half A; a new node takes half B (style /
-  // font prediction / direction copied, stale sprite dropped so it re-renders).
+  // text between them (see `applyBlockSplit` for how the halves land in the
+  // scene).
   const splitTextNode = useCallback(
     async (nodeId: string) => {
       if (!page) return
@@ -147,40 +148,21 @@ export function Workspace() {
         text: data.text,
         translation: data.translation,
       })
-      const at = Object.keys(page.nodes).length
-      const newId = crypto.randomUUID()
-      const updateA = ops.updateNode(page.id, nodeId, {
-        transform: split.a.transform,
-        data: {
-          text: {
-            text: split.a.text,
-            translation: split.a.translation,
-            lockLayoutBox: true,
-          },
-        } as NodeDataPatch,
-      })
-      const newNode: Node = {
-        id: newId,
-        transform: split.b.transform,
-        visible: true,
-        kind: {
-          text: {
-            text: split.b.text,
-            translation: split.b.translation,
-            style: data.style ?? undefined,
-            fontPrediction: data.fontPrediction ?? undefined,
-            sourceDirection: data.sourceDirection ?? undefined,
-            sourceLang: data.sourceLang ?? undefined,
-            lockLayoutBox: true,
-          },
-        },
-      }
-      await applyOp(ops.batch('Split block', [updateA, ops.addNode(page.id, at, newNode)]))
-      useSelectionStore.getState().selectMany([nodeId, newId])
-      queueAutoRender(page.id)
+      await applyBlockSplit(page, nodeId, split)
     },
     [page],
   )
+
+  // Merge the selected blocks back into one — the inverse of a split (halves
+  // tile the original box, so the union reconstructs it exactly).
+  const selectedCount = useSelectionStore((s) => s.nodeIds.size)
+  const mergeSelectedBlocks = useCallback(async () => {
+    if (!page) return
+    const ids = Array.from(useSelectionStore.getState().nodeIds).filter(
+      (id): id is string => !!id,
+    )
+    await applyBlockMerge(page, ids)
+  }, [page])
 
   const { draftBlock, bind: bindBlockDraft } = useBlockDrafting({
     mode,
@@ -243,8 +225,15 @@ export function Workspace() {
     page,
     pointerToDocument,
     onSelect: (nodeId) => {
-      if (nodeId) useSelectionStore.getState().selectMany([nodeId])
-      else useSelectionStore.getState().clear()
+      if (!nodeId) {
+        useSelectionStore.getState().clear()
+        return
+      }
+      // Keep a multi-selection intact when right-clicking inside it (e.g. to
+      // merge the selected blocks); otherwise select the hit node alone.
+      if (!useSelectionStore.getState().nodeIds.has(nodeId)) {
+        useSelectionStore.getState().selectMany([nodeId])
+      }
     },
     onRemove: (nodeId) => {
       void removeTextNode(nodeId)
@@ -463,6 +452,12 @@ export function Workspace() {
                     onSelect={handleSplitBlock}
                   >
                     {t('workspace.splitBlock')}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    disabled={selectedCount < 2}
+                    onSelect={() => void mergeSelectedBlocks()}
+                  >
+                    {t('workspace.mergeBlocks')}
                   </ContextMenuItem>
                   <ContextMenuItem
                     disabled={contextMenuNodeId === null}
