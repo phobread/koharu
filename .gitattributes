@@ -1,0 +1,28 @@
+# Keep the working tree aligned with .editorconfig on Windows.
+* text=auto eol=lf
+
+# Binary assets should never be newline-normalized.
+*.7z binary
+*.dll binary
+*.exe binary
+*.gif binary
+*.gz binary
+*.icns binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.lib binary
+*.mp3 binary
+*.mp4 binary
+*.onnx binary
+*.otf binary
+*.pdb binary
+*.pdf binary
+*.png binary
+*.safetensors binary
+*.tar binary
+*.ttf binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.zip binary
