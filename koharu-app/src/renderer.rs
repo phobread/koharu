@@ -77,6 +77,9 @@ pub struct RenderedBlock {
     pub sprite: DynamicImage,
     pub rendered_direction: TextDirection,
     pub expanded_transform: Option<Transform>,
+    /// Font size the fit actually settled on (auto-fit result or explicit
+    /// override) — persisted so the UI can scale text with box resizes.
+    pub font_size: f32,
 }
 
 /// Result of rendering a whole page.
@@ -301,6 +304,26 @@ impl Renderer {
             Some(size) => size.max(min_font_size + 1.0),
             None => max_font_size_for_box(layout_box, min_font_size),
         };
+        // Reserve clearance for the outline. The sprite canvas is sized to the
+        // glyph fill and the stroke paints *outward* beyond it, so without
+        // canvas padding the outline clips at the sprite edge no matter how
+        // far the layout box is inset. Resolve the stroke at the largest
+        // candidate size — stroke width never shrinks as fonts grow, so the
+        // bound holds for the final fit — shrink the fit constraint by that
+        // clearance, and pad the canvas by the same amount per candidate in
+        // `render_candidate`. Fill + clearance then always fits `layout_box`,
+        // and the symmetric inset keeps the sprite centred.
+        let fit_clearance = stroke_clearance(
+            resolve_stroke_style(
+                block.font_prediction.as_ref(),
+                style.stroke.as_ref(),
+                global_stroke.as_ref(),
+                max_font,
+                color,
+            )
+            .as_ref(),
+        );
+        let fit_box = inset_layout_box(layout_box, fit_clearance);
         let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
             let resolved_stroke = resolve_stroke_style(
                 block.font_prediction.as_ref(),
@@ -317,6 +340,7 @@ impl Renderer {
                     font_size: layout.font_size,
                     color,
                     effect: shader_core_to_renderer(block_effect),
+                    padding: stroke_clearance(resolved_stroke.as_ref()),
                     stroke: resolved_stroke,
                     raster,
                     ..Default::default()
@@ -331,6 +355,7 @@ impl Renderer {
             Ok(RenderedTextCandidate {
                 image: rendered,
                 transform,
+                font_size: layout.font_size,
             })
         };
 
@@ -338,7 +363,7 @@ impl Renderer {
             let candidate = fit_rendered_with_mask_collision(
                 &layout_builder,
                 translation,
-                layout_box,
+                fit_box,
                 style.font_size,
                 min_font_size,
                 max_font,
@@ -351,14 +376,15 @@ impl Renderer {
                 sprite: DynamicImage::ImageRgba8(candidate.image),
                 rendered_direction: rendered_direction_for_writing_mode(writing_mode),
                 expanded_transform: Some(candidate.transform),
+                font_size: candidate.font_size,
             }));
         }
 
         let layout = fit_font_size(
             &layout_builder,
             translation,
-            layout_box.width,
-            layout_box.height,
+            fit_box.width,
+            fit_box.height,
             style.font_size,
             min_font_size,
             max_font,
@@ -371,6 +397,7 @@ impl Renderer {
             sprite: DynamicImage::ImageRgba8(candidate.image),
             rendered_direction: rendered_direction_for_writing_mode(writing_mode),
             expanded_transform: Some(candidate.transform),
+            font_size: candidate.font_size,
         }))
     }
 
@@ -499,6 +526,7 @@ const FIT_EPSILON: f32 = 0.5;
 struct RenderedTextCandidate {
     image: RgbaImage,
     transform: Transform,
+    font_size: f32,
 }
 
 struct MaskCollisionAttempt {
@@ -933,6 +961,16 @@ fn default_stroke_width(font_size: f32) -> f32 {
     (font_size * 0.10).clamp(1.2, 8.0)
 }
 
+/// Clearance the sprite needs around the glyph fill for an outline to render
+/// fully: the core stroke pass paints outward ~`width_px` beyond the fill,
+/// plus 1px for anti-aliasing. Used both as canvas padding and as the fit
+/// constraint inset so the padded sprite still fits its layout box.
+fn stroke_clearance(stroke: Option<&RenderStrokeOptions>) -> f32 {
+    stroke
+        .map(|s| s.width_px.max(0.0).ceil() + 1.0)
+        .unwrap_or(0.0)
+}
+
 fn contrasting_stroke_color(text_color: [u8; 4]) -> [u8; 4] {
     let luminance =
         0.299 * text_color[0] as f32 + 0.587 * text_color[1] as f32 + 0.114 * text_color[2] as f32;
@@ -1192,6 +1230,7 @@ mod tests {
             let height = layout.height.ceil().max(1.0) as u32;
             Ok(RenderedTextCandidate {
                 image: RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255])),
+                font_size: layout.font_size,
                 transform: Transform {
                     x: 0.0,
                     y: 0.0,
@@ -1424,6 +1463,57 @@ mod tests {
             height: 30.0,
         };
         assert_eq!(inset_layout_box(b, 0.0), b);
+    }
+
+    #[test]
+    fn stroke_clearance_reserves_full_width_plus_antialias() {
+        let stroke = RenderStrokeOptions {
+            color: [255, 255, 255, 255],
+            width_px: 4.2,
+        };
+        // Full stroke width (ceiled) + 1px AA: outline paints outward past the
+        // glyph fill, so the sprite canvas needs at least this much padding.
+        assert_eq!(stroke_clearance(Some(&stroke)), 6.0);
+    }
+
+    #[test]
+    fn stroke_clearance_is_zero_without_stroke() {
+        assert_eq!(stroke_clearance(None), 0.0);
+        // Degenerate widths never produce negative clearance.
+        let stroke = RenderStrokeOptions {
+            color: [0, 0, 0, 255],
+            width_px: -3.0,
+        };
+        assert_eq!(stroke_clearance(Some(&stroke)), 1.0);
+    }
+
+    #[test]
+    fn stroke_clearance_fits_padded_sprite_inside_layout_box() {
+        // Fill constrained to the inset box + canvas padded by the clearance
+        // must never exceed the original layout box on either axis.
+        let layout_box = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 120.0,
+        };
+        let stroke = RenderStrokeOptions {
+            color: [255, 255, 255, 255],
+            width_px: 5.0,
+        };
+        let clearance = stroke_clearance(Some(&stroke));
+        let fit_box = inset_layout_box(layout_box, clearance);
+        assert!(fit_box.width + 2.0 * clearance <= layout_box.width);
+        assert!(fit_box.height + 2.0 * clearance <= layout_box.height);
+        // Symmetric inset keeps the centre (and thus sprite centring).
+        assert_eq!(
+            fit_box.x + fit_box.width / 2.0,
+            layout_box.x + layout_box.width / 2.0
+        );
+        assert_eq!(
+            fit_box.y + fit_box.height / 2.0,
+            layout_box.y + layout_box.height / 2.0
+        );
     }
 
     #[test]
