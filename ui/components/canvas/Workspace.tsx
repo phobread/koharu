@@ -428,19 +428,22 @@ export function Workspace() {
                           }}
                           {...brushBindings}
                         />
-                        {showTextBlocksOverlay && (
-                          <TextBlockLayer
-                            showSprites={!showRenderedImage}
-                            scale={scaleRatio}
-                            style={{ zIndex: 30 }}
-                          />
-                        )}
                         {renderedData && showRenderedImage && (
                           <Image
                             data-testid='workspace-rendered-image'
                             data={renderedData}
                             transition={true}
                             style={{ zIndex: 40 }}
+                          />
+                        )}
+                        {/* Above the rendered image: boxes, the quick editor
+                            and the original-art peek stay visible and usable
+                            in the Translated view too. */}
+                        {showTextBlocksOverlay && (
+                          <TextBlockLayer
+                            showSprites={!showRenderedImage}
+                            scale={scaleRatio}
+                            style={{ zIndex: 50 }}
                           />
                         )}
                       </div>

@@ -7,6 +7,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import { BlockQuickEditor } from '@/components/canvas/BlockQuickEditor'
 import { useBlobImage } from '@/hooks/useBlobData'
 import {
+  findImageBlob,
   isTextNode,
   useCurrentPage,
   useTextNodes,
@@ -83,6 +84,13 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     if (!quickEditNodeId) setQuickEditorHiddenFor(null)
   }, [quickEditNodeId])
 
+  // While the quick editor is open, reveal the original art inside the edited
+  // block (and hide its sprite) so the source text is right there to compare
+  // against — regardless of which page image is underneath.
+  const editingNode =
+    quickEditNode && quickEditorHiddenFor !== quickEditNode.id ? quickEditNode : null
+  const { data: originalSrc } = useBlobImage((page && findImageBlob(page, 'source')) ?? undefined)
+
   const updateTransform = async (id: string, t: Transform, scaleFactor?: number) => {
     if (!page) return
     const node = page.nodes[id]
@@ -129,14 +137,19 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       }}
     >
       {showSprites &&
-        nodes.map((n, i) => (
-          <BlockSprite
-            key={`sprite-${n.id ?? i}`}
-            node={n}
-            scale={scale}
-            previewFactor={spritePreview?.id === n.id ? spritePreview.factor : undefined}
-          />
-        ))}
+        nodes
+          .filter((n) => n.id !== editingNode?.id)
+          .map((n, i) => (
+            <BlockSprite
+              key={`sprite-${n.id ?? i}`}
+              node={n}
+              scale={scale}
+              previewFactor={spritePreview?.id === n.id ? spritePreview.factor : undefined}
+            />
+          ))}
+      {page && editingNode && originalSrc && (
+        <OriginalArtPeek page={page} node={editingNode} scale={scale} src={originalSrc} />
+      )}
       {nodes.map((n, i) => (
         <TextBlockItem
           key={n.id}
@@ -152,13 +165,13 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
           }
         />
       ))}
-      {page && quickEditNode && quickEditorHiddenFor !== quickEditNode.id && (
+      {page && editingNode && (
         <BlockQuickEditor
           page={page}
-          node={quickEditNode}
-          index={nodes.findIndex((n) => n.id === quickEditNode.id)}
+          node={editingNode}
+          index={nodes.findIndex((n) => n.id === editingNode.id)}
           scale={scale}
-          onClose={() => setQuickEditorHiddenFor(quickEditNode.id)}
+          onClose={() => setQuickEditorHiddenFor(editingNode.id)}
         />
       )}
     </div>
@@ -361,6 +374,51 @@ function TextBlockItem({
   )
 }
 
+/**
+ * Window onto the untouched source image, clipped to the edited block's box:
+ * the original text shows through while the quick editor is open, even when
+ * the inpainted or rendered page image is what's displayed underneath.
+ */
+function OriginalArtPeek({
+  page,
+  node,
+  scale,
+  src,
+}: {
+  page: { width: number; height: number }
+  node: TextNodeEntry
+  scale: number
+  src: string
+}) {
+  const t = node.transform
+  return (
+    <div
+      data-testid='original-art-peek'
+      className='pointer-events-none absolute overflow-hidden rounded-sm shadow-[0_0_0_1px_rgba(0,0,0,0.25)]'
+      style={{
+        left: t.x * scale,
+        top: t.y * scale,
+        width: t.width * scale,
+        height: t.height * scale,
+      }}
+    >
+      <img
+        alt=''
+        src={src}
+        draggable={false}
+        className='max-w-none select-none'
+        style={{
+          position: 'absolute',
+          left: -t.x * scale,
+          top: -t.y * scale,
+          width: page.width * scale,
+          height: page.height * scale,
+        }}
+      />
+    </div>
+  )
+}
+
 function BlockSprite({
   node,
   scale,
@@ -372,7 +430,9 @@ function BlockSprite({
 }) {
   const sprite = (node.data.sprite as string | null | undefined) ?? undefined
   const { data: src } = useBlobImage(sprite)
-  if (!src) return null
+  // A block whose translation was cleared (e.g. un-inpainted) may keep a
+  // stale sprite blob until the next render finishes — don't show it.
+  if (!src || !node.data.translation) return null
   const spriteT = node.data.spriteTransform
   const x = (spriteT?.x ?? node.transform.x) * scale
   const y = (spriteT?.y ?? node.transform.y) * scale

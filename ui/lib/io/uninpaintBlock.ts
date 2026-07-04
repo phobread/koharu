@@ -1,8 +1,8 @@
 import { isTextNode } from '@/hooks/useCurrentPage'
 import { getConfig } from '@/lib/api/default/default'
 import type { Page } from '@/lib/api/schemas'
-import { invalidateScene } from '@/lib/io/scene'
-import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
+import { ops } from '@/lib/ops'
 
 /** Extra pixels cleared around a block — segment masks bleed a little past
  * the detector box. */
@@ -36,14 +36,21 @@ const blockClearRect = (
  * inpainter there in the same backend transaction — restoring the original
  * art (the inpainter only paints where the mask is white). Used for falsely
  * detected blocks and for text worth keeping as-is ("...", sound effects).
+ *
+ * Also clears each block's translation (keeping the OCR text) so the next
+ * render doesn't paint translated text back over the restored art, and
+ * queues that re-render so the Translated view reflects the restore.
  */
 export async function uninpaintBlocks(page: Page, nodeIds: string[], segmentPng: Uint8Array) {
   const rects: Rect[] = []
+  const clearIds: string[] = []
   for (const id of nodeIds) {
     const node = page.nodes[id]
     if (!node || !isTextNode(node) || !node.transform) continue
     const rect = blockClearRect(page, node.transform)
-    if (rect) rects.push(rect)
+    if (!rect) continue
+    rects.push(rect)
+    if (node.kind.text.translation) clearIds.push(id)
   }
   if (rects.length === 0) return
 
@@ -85,6 +92,13 @@ export async function uninpaintBlocks(page: Page, nodeIds: string[], segmentPng:
     body: png,
   })
   if (!res.ok) throw new Error(`mask PUT failed: ${res.status}`)
+
+  // Empty string, not null: a JSON `"translation": null` deserialises to the
+  // patch's outer None on the backend and is silently dropped.
+  for (const id of clearIds) {
+    await applyOp(ops.updateNode(page.id, id, { data: { text: { translation: '' } } as never }))
+  }
+
   await invalidateScene()
-  useEditorUiStore.getState().setShowInpaintedImage(true)
+  queueAutoRender(page.id)
 }
