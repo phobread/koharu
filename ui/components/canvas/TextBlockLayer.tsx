@@ -1,11 +1,17 @@
 'use client'
 
 import { useDrag } from '@use-gesture/react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 
+import { BlockQuickEditor } from '@/components/canvas/BlockQuickEditor'
 import { useBlobImage } from '@/hooks/useBlobData'
-import { isTextNode, useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
+import {
+  isTextNode,
+  useCurrentPage,
+  useTextNodes,
+  type TextNodeEntry,
+} from '@/hooks/useCurrentPage'
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
@@ -63,6 +69,20 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
   // Live sprite preview while a corner drag scales a block (Canva-style).
   const [spritePreview, setSpritePreview] = useState<{ id: string; factor: number } | null>(null)
 
+  // Quick editor: floats next to the block when exactly one is selected, so
+  // the OCR'd source and translation can be checked/fixed in place. The ✕
+  // hides it for that block; deselecting resets so a fresh click reopens it.
+  const [quickEditorHiddenFor, setQuickEditorHiddenFor] = useState<string | null>(null)
+  const selectedTextNodes = useMemo(
+    () => nodes.filter((n) => selectedIds.has(n.id)),
+    [nodes, selectedIds],
+  )
+  const quickEditNode = interactive && selectedTextNodes.length === 1 ? selectedTextNodes[0] : null
+  const quickEditNodeId = quickEditNode?.id ?? null
+  useEffect(() => {
+    if (!quickEditNodeId) setQuickEditorHiddenFor(null)
+  }, [quickEditNodeId])
+
   const updateTransform = async (id: string, t: Transform, scaleFactor?: number) => {
     if (!page) return
     const node = page.nodes[id]
@@ -74,10 +94,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       const data = node.kind.text
       const base = data.style?.fontSize ?? data.renderedFontSizePx
       if (base) {
-        const next = Math.min(
-          Math.max(base * scaleFactor, MIN_SCALED_FONT_PX),
-          MAX_SCALED_FONT_PX,
-        )
+        const next = Math.min(Math.max(base * scaleFactor, MIN_SCALED_FONT_PX), MAX_SCALED_FONT_PX)
         scaledStyle = mergeTextStyle(data.style, data.fontPrediction, {
           fontSize: Math.round(next * 10) / 10,
         })
@@ -135,6 +152,15 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
           }
         />
       ))}
+      {page && quickEditNode && quickEditorHiddenFor !== quickEditNode.id && (
+        <BlockQuickEditor
+          page={page}
+          node={quickEditNode}
+          index={nodes.findIndex((n) => n.id === quickEditNode.id)}
+          scale={scale}
+          onClose={() => setQuickEditorHiddenFor(quickEditNode.id)}
+        />
+      )}
     </div>
   )
 }
