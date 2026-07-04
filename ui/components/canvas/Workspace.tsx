@@ -40,6 +40,7 @@ import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import type { Node, Transform } from '@/lib/api/schemas'
 import { applyOp } from '@/lib/io/scene'
 import { applyBlockMerge, applyBlockSplit } from '@/lib/io/splitNode'
+import { uninpaintBlocks } from '@/lib/io/uninpaintBlock'
 import { ops } from '@/lib/ops'
 import { splitTextBlock } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -158,11 +159,22 @@ export function Workspace() {
   const selectedCount = useSelectionStore((s) => s.nodeIds.size)
   const mergeSelectedBlocks = useCallback(async () => {
     if (!page) return
-    const ids = Array.from(useSelectionStore.getState().nodeIds).filter(
-      (id): id is string => !!id,
-    )
+    const ids = Array.from(useSelectionStore.getState().nodeIds).filter((id): id is string => !!id)
     await applyBlockMerge(page, ids)
   }, [page])
+
+  // Clear the segment mask under the selected blocks and re-inpaint, so the
+  // original art shows again (for falsely detected blocks or text worth
+  // keeping as drawn, like "...").
+  const uninpaintSelectedBlocks = useCallback(async () => {
+    if (!page || !segmentData) return
+    const ids = Array.from(useSelectionStore.getState().nodeIds).filter((id): id is string => !!id)
+    try {
+      await uninpaintBlocks(page, ids, segmentData)
+    } catch (e) {
+      useEditorUiStore.getState().showError(String(e))
+    }
+  }, [page, segmentData])
 
   const { draftBlock, bind: bindBlockDraft } = useBlockDrafting({
     mode,
@@ -458,6 +470,12 @@ export function Workspace() {
                     onSelect={() => void mergeSelectedBlocks()}
                   >
                     {t('workspace.mergeBlocks')}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    disabled={contextMenuNodeId === null || !segmentData}
+                    onSelect={() => void uninpaintSelectedBlocks()}
+                  >
+                    {t('workspace.uninpaintBlock')}
                   </ContextMenuItem>
                   <ContextMenuItem
                     disabled={contextMenuNodeId === null}

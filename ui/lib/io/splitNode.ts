@@ -59,7 +59,12 @@ export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSp
 export async function applyBlockMerge(page: Page, nodeIds: string[]) {
   const wanted = new Set(nodeIds)
   // Page order = reading order, so texts join in the order they're read.
-  const entries: { node: Node; transform: Transform; text?: string | null; translation?: string | null }[] = []
+  const entries: {
+    node: Node
+    transform: Transform
+    text?: string | null
+    translation?: string | null
+  }[] = []
   for (const id of Object.keys(page.nodes)) {
     if (!wanted.has(id)) continue
     const n = page.nodes[id]
