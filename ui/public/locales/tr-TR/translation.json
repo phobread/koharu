@@ -242,7 +242,8 @@
     "readingOrder": "Okuma Sırası",
     "readingOrderRtl": "Sağdan Sola (RTL)",
     "readingOrderLtr": "Soldan Sağa (LTR)",
-    "readingOrderCustom": "Özel"
+    "readingOrderCustom": "Özel",
+    "peekOriginal": "Bloğun altında orijinal çizimi göster"
   },
   "workspace": {
     "importPrompt": "Düzenlemeye başlamak için bir sayfa içe aktarın.",

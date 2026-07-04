@@ -84,11 +84,14 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     if (!quickEditNodeId) setQuickEditorHiddenFor(null)
   }, [quickEditNodeId])
 
-  // While the quick editor is open, reveal the original art inside the edited
-  // block (and hide its sprite) so the source text is right there to compare
-  // against — regardless of which page image is underneath.
+  // While the quick editor is open, the edited block can reveal the original
+  // art inside its box (sprite hidden) so the source text is right there to
+  // compare against — or show the translated result instead. The choice is a
+  // toggle in the editor header and sticks for the session.
+  const [showOriginalUnderEdit, setShowOriginalUnderEdit] = useState(true)
   const editingNode =
     quickEditNode && quickEditorHiddenFor !== quickEditNode.id ? quickEditNode : null
+  const peekNode = showOriginalUnderEdit ? editingNode : null
   const { data: originalSrc } = useBlobImage((page && findImageBlob(page, 'source')) ?? undefined)
 
   const updateTransform = async (id: string, t: Transform, scaleFactor?: number) => {
@@ -138,7 +141,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     >
       {showSprites &&
         nodes
-          .filter((n) => n.id !== editingNode?.id)
+          .filter((n) => n.id !== peekNode?.id)
           .map((n, i) => (
             <BlockSprite
               key={`sprite-${n.id ?? i}`}
@@ -147,8 +150,8 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
               previewFactor={spritePreview?.id === n.id ? spritePreview.factor : undefined}
             />
           ))}
-      {page && editingNode && originalSrc && (
-        <OriginalArtPeek page={page} node={editingNode} scale={scale} src={originalSrc} />
+      {page && peekNode && originalSrc && (
+        <OriginalArtPeek page={page} node={peekNode} scale={scale} src={originalSrc} />
       )}
       {nodes.map((n, i) => (
         <TextBlockItem
@@ -158,7 +161,11 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
           scale={scale}
           selected={selectedIds.has(n.id)}
           interactive={interactive}
-          onSelect={(id, additive) => select(id, additive)}
+          onSelect={(id, additive) => {
+            select(id, additive)
+            // Tapping a box always brings its quick editor back, even after ✕.
+            setQuickEditorHiddenFor((prev) => (prev === id ? null : prev))
+          }}
           onCommit={(t, scaleFactor) => void updateTransform(n.id, t, scaleFactor)}
           onScalePreview={(factor) =>
             setSpritePreview(factor === null ? null : { id: n.id, factor })
@@ -171,6 +178,8 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
           node={editingNode}
           index={nodes.findIndex((n) => n.id === editingNode.id)}
           scale={scale}
+          showOriginal={showOriginalUnderEdit}
+          onToggleOriginal={() => setShowOriginalUnderEdit((v) => !v)}
           onClose={() => setQuickEditorHiddenFor(editingNode.id)}
         />
       )}

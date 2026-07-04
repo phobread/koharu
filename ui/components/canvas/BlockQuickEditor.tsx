@@ -1,6 +1,6 @@
 'use client'
 
-import { XIcon } from 'lucide-react'
+import { ImageIcon, XIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -24,12 +24,16 @@ export function BlockQuickEditor({
   node,
   index,
   scale,
+  showOriginal,
+  onToggleOriginal,
   onClose,
 }: {
   page: Page
   node: TextNodeEntry
   index: number
   scale: number
+  showOriginal: boolean
+  onToggleOriginal: () => void
   onClose: () => void
 }) {
   const { t } = useTranslation()
@@ -61,16 +65,34 @@ export function BlockQuickEditor({
         <span className='text-[10px] font-semibold tracking-wide text-muted-foreground uppercase'>
           #{index + 1}
         </span>
-        <Button
-          variant='ghost'
-          size='icon-xs'
-          className='size-4 text-muted-foreground hover:text-foreground'
-          aria-label={t('common.close', { defaultValue: 'Close' })}
-          data-testid='quick-editor-close'
-          onClick={onClose}
-        >
-          <XIcon className='size-3' />
-        </Button>
+        <div className='flex items-center gap-1'>
+          <Button
+            variant='ghost'
+            size='icon-xs'
+            className={
+              showOriginal
+                ? 'size-4 bg-primary/15 text-primary hover:text-primary'
+                : 'size-4 text-muted-foreground hover:text-foreground'
+            }
+            aria-label={t('textBlocks.peekOriginal')}
+            aria-pressed={showOriginal}
+            title={t('textBlocks.peekOriginal')}
+            data-testid='quick-editor-peek-toggle'
+            onClick={onToggleOriginal}
+          >
+            <ImageIcon className='size-3' />
+          </Button>
+          <Button
+            variant='ghost'
+            size='icon-xs'
+            className='size-4 text-muted-foreground hover:text-foreground'
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+            data-testid='quick-editor-close'
+            onClick={onClose}
+          >
+            <XIcon className='size-3' />
+          </Button>
+        </div>
       </div>
       <div className='flex flex-col gap-0.5'>
         <span className='text-[10px] text-muted-foreground uppercase'>

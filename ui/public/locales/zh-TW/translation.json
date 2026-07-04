@@ -242,7 +242,8 @@
     "readingOrder": "閱讀順序",
     "readingOrderRtl": "從右至左 (RTL)",
     "readingOrderLtr": "從左至右 (LTR)",
-    "readingOrderCustom": "自定義"
+    "readingOrderCustom": "自定義",
+    "peekOriginal": "在文字塊下方顯示原圖"
   },
   "workspace": {
     "importPrompt": "匯入頁面以開始編輯。",
