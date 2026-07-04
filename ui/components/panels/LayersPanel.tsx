@@ -1,34 +1,24 @@
 'use client'
 
-import {
-  EyeIcon,
-  EyeOffIcon,
-  SparklesIcon,
-  ALargeSmallIcon,
-  ContrastIcon,
-  BandageIcon,
-  PaintbrushIcon,
-} from 'lucide-react'
-import { motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
 
-import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { findImageBlob, findMaskBlob, useCurrentPage, useTextNodes } from '@/hooks/useCurrentPage'
 import { useScene } from '@/hooks/useScene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 
-type Layer = {
-  id: string
-  labelKey: string
-  icon: React.ComponentType<{ className?: string }> | 'RAW'
-  visible: boolean
-  setVisible: (visible: boolean) => void
-  hasContent: boolean
-  alwaysEnabled?: boolean
-}
+/**
+ * Replaces the old Photoshop-style layer list: the page images (original /
+ * inpainted / rendered) stack opaquely, so only one is ever really visible —
+ * a single "View" choice models that honestly. The overlays that genuinely
+ * combine with any view are simple on/off switches below it.
+ */
+
+type ViewId = 'original' | 'cleaned' | 'translated'
 
 export function LayersPanel() {
+  const { t } = useTranslation()
   const page = useCurrentPage()
   const { epoch: sceneEpoch } = useScene()
   const textNodes = useTextNodes()
@@ -45,148 +35,104 @@ export function LayersPanel() {
 
   const hasRendered = !!(page && findImageBlob(page, 'rendered'))
   const hasInpainted = !!(page && findImageBlob(page, 'inpainted'))
-  const hasSource = !!(page && findImageBlob(page, 'source'))
   const hasSegment = !!(page && findMaskBlob(page, 'segment'))
   const hasBrush = !!(page && findMaskBlob(page, 'brushInpaint'))
   // Silence warning about unused epoch dep — it's the invalidation trigger.
   void sceneEpoch
 
-  const layers: Layer[] = [
-    {
-      id: 'rendered',
-      labelKey: 'layers.rendered',
-      icon: SparklesIcon,
-      visible: showRenderedImage,
-      setVisible: setShowRenderedImage,
-      hasContent: hasRendered,
-    },
+  const view: ViewId = showRenderedImage
+    ? 'translated'
+    : showInpaintedImage
+      ? 'cleaned'
+      : 'original'
+  const setView = (next: ViewId) => {
+    setShowRenderedImage(next === 'translated')
+    setShowInpaintedImage(next !== 'original')
+  }
+
+  const views: { id: ViewId; label: string; enabled: boolean }[] = [
+    { id: 'original', label: t('layers.viewOriginal'), enabled: true },
+    { id: 'cleaned', label: t('layers.viewCleaned'), enabled: hasInpainted },
+    { id: 'translated', label: t('layers.viewTranslated'), enabled: hasRendered },
+  ]
+
+  const overlays = [
     {
       id: 'textBlocks',
-      labelKey: 'layers.textBlocks',
-      icon: ALargeSmallIcon,
-      visible: showTextBlocksOverlay,
-      setVisible: setShowTextBlocksOverlay,
-      hasContent: textNodes.length > 0,
-    },
-    {
-      id: 'brush',
-      labelKey: 'layers.brush',
-      icon: PaintbrushIcon,
-      visible: showBrushLayer,
-      setVisible: setShowBrushLayer,
-      hasContent: hasBrush,
-    },
-    {
-      id: 'inpainted',
-      labelKey: 'layers.inpainted',
-      icon: BandageIcon,
-      visible: showInpaintedImage,
-      setVisible: setShowInpaintedImage,
-      hasContent: hasInpainted,
+      label: t('layers.textBlocks'),
+      checked: showTextBlocksOverlay,
+      setChecked: setShowTextBlocksOverlay,
+      enabled: textNodes.length > 0,
     },
     {
       id: 'mask',
-      labelKey: 'layers.mask',
-      icon: ContrastIcon,
-      visible: showSegmentationMask,
-      setVisible: setShowSegmentationMask,
-      hasContent: hasSegment,
+      label: t('layers.mask'),
+      checked: showSegmentationMask,
+      setChecked: setShowSegmentationMask,
+      enabled: hasSegment,
     },
     {
-      id: 'base',
-      labelKey: 'layers.base',
-      icon: 'RAW',
-      visible: true,
-      setVisible: () => {},
-      hasContent: hasSource,
-      alwaysEnabled: true,
+      id: 'brush',
+      label: t('layers.brush'),
+      checked: showBrushLayer,
+      setChecked: setShowBrushLayer,
+      enabled: hasBrush,
     },
   ]
 
   return (
-    <div className='flex flex-col'>
-      {layers.map((layer) => (
-        <LayerItem key={layer.id} layer={layer} />
-      ))}
-    </div>
-  )
-}
-
-function LayerItem({ layer }: { layer: Layer }) {
-  const { t } = useTranslation()
-  const isLocked = layer.alwaysEnabled
-  const canToggle = layer.hasContent && !isLocked
-  const isActive = layer.hasContent && layer.visible
-
-  return (
-    <motion.div
-      data-testid={`layer-${layer.id}`}
-      data-has-content={layer.hasContent ? 'true' : 'false'}
-      data-visible={layer.visible ? 'true' : 'false'}
-      className={cn(
-        'group flex items-center gap-2 px-2 py-1.5',
-        !layer.hasContent && !isLocked && 'opacity-40',
-      )}
-      whileHover={{ backgroundColor: 'rgba(0,0,0,0.03)' }}
-      transition={{ duration: 0.15 }}
-    >
-      {/* Visibility toggle */}
-      <Button
-        variant='ghost'
-        size='icon-xs'
-        onClick={(e) => {
-          e.stopPropagation()
-          if (canToggle) {
-            layer.setVisible(!layer.visible)
-          }
-        }}
-        disabled={!canToggle}
-        className={cn('size-5', canToggle ? 'cursor-pointer' : 'cursor-default')}
-      >
-        {layer.visible ? (
-          <EyeIcon
-            className={cn('size-3.5', isActive ? 'text-foreground' : 'text-muted-foreground')}
-          />
-        ) : (
-          <EyeOffIcon className='size-3.5 text-muted-foreground/40' />
-        )}
-      </Button>
-
-      {/* Layer type indicator */}
+    <div className='flex flex-col gap-3 px-2 pt-2'>
       <div
-        className={cn(
-          'flex size-5 shrink-0 items-center justify-center rounded',
-          !layer.hasContent && !isLocked ? 'text-muted-foreground/40' : 'text-muted-foreground',
-        )}
+        className='grid grid-cols-3 gap-0.5 rounded-md border border-border bg-muted/60 p-0.5'
+        role='radiogroup'
+        aria-label={t('layers.title')}
       >
-        {layer.icon === 'RAW' ? (
-          <span className='text-[8px] font-bold'>RAW</span>
-        ) : (
-          <layer.icon className='size-3.5' />
-        )}
+        {views.map((v) => (
+          <button
+            key={v.id}
+            type='button'
+            role='radio'
+            aria-checked={view === v.id}
+            data-testid={`view-${v.id}`}
+            disabled={!v.enabled}
+            onClick={() => setView(v.id)}
+            className={cn(
+              'rounded-[5px] px-1 py-1 text-xs transition-colors',
+              view === v.id
+                ? 'bg-background font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground',
+              v.enabled ? 'cursor-pointer hover:text-foreground' : 'cursor-default opacity-40',
+            )}
+          >
+            {v.label}
+          </button>
+        ))}
       </div>
 
-      {/* Layer name */}
-      <span
-        className={cn(
-          'flex-1 truncate text-xs',
-          !layer.hasContent && !isLocked
-            ? 'text-muted-foreground/60'
-            : isActive
-              ? 'text-foreground'
-              : 'text-muted-foreground',
-        )}
-      >
-        {t(layer.labelKey)}
-      </span>
-
-      {/* Content indicator */}
-      <div
-        className={cn(
-          'size-1.5 shrink-0 rounded-full',
-          layer.hasContent ? 'bg-rose-500' : 'bg-muted-foreground/20',
-        )}
-      />
-    </motion.div>
+      <div className='flex flex-col gap-1'>
+        {overlays.map((o) => (
+          <label
+            key={o.id}
+            data-testid={`overlay-${o.id}`}
+            className={cn(
+              'flex cursor-pointer items-center justify-between gap-2 rounded px-1 py-1',
+              !o.enabled && 'cursor-default opacity-40',
+            )}
+          >
+            <span
+              className={cn('text-xs', o.checked ? 'text-foreground' : 'text-muted-foreground')}
+            >
+              {o.label}
+            </span>
+            <Switch
+              checked={o.checked}
+              disabled={!o.enabled}
+              onCheckedChange={o.setChecked}
+              className='scale-90'
+            />
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }

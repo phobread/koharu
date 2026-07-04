@@ -95,13 +95,13 @@
     "render": "渲染"
   },
   "layers": {
-    "title": "图层",
-    "rendered": "渲染文本",
+    "title": "视图",
     "textBlocks": "文本框",
-    "brush": "笔刷图层",
-    "inpainted": "修补图像",
-    "mask": "分割遮罩",
-    "base": "原始图像"
+    "brush": "笔刷",
+    "mask": "检测文本",
+    "viewOriginal": "原图",
+    "viewCleaned": "去字",
+    "viewTranslated": "翻译后"
   },
   "processing": {
     "detect": "检测",

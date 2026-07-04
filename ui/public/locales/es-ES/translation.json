@@ -95,13 +95,13 @@
     "render": "Renderizado"
   },
   "layers": {
-    "title": "Capas",
-    "rendered": "Texto renderizado",
-    "textBlocks": "Bloques de texto",
-    "brush": "Capa de pincel",
-    "inpainted": "Rellenado",
-    "mask": "Máscara de segmentación",
-    "base": "Imagen original"
+    "title": "Vista",
+    "textBlocks": "Cuadros de texto",
+    "brush": "Pinceladas",
+    "mask": "Texto detectado",
+    "viewOriginal": "Original",
+    "viewCleaned": "Limpio",
+    "viewTranslated": "Traducido"
   },
   "processing": {
     "detect": "Detectar",

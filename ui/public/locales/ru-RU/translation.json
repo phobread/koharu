@@ -95,13 +95,13 @@
     "render": "Рендер"
   },
   "layers": {
-    "title": "Слои",
-    "rendered": "Отрендеренный текст",
-    "textBlocks": "Текстовые блоки",
-    "brush": "Слой кисти",
-    "inpainted": "Инпейнтинг",
-    "mask": "Маска сегментации",
-    "base": "Исходное изображение"
+    "title": "Вид",
+    "textBlocks": "Текстовые рамки",
+    "brush": "Кисть",
+    "mask": "Найденный текст",
+    "viewOriginal": "Оригинал",
+    "viewCleaned": "Очищено",
+    "viewTranslated": "Перевод"
   },
   "processing": {
     "detect": "Детекция",

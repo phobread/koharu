@@ -115,13 +115,13 @@
     "render": "Render"
   },
   "layers": {
-    "title": "Layers",
-    "rendered": "Rendered Text",
-    "textBlocks": "Text Blocks",
-    "brush": "Brush Layer",
-    "inpainted": "Inpainted",
-    "mask": "Segmentation Mask",
-    "base": "Original Image"
+    "title": "View",
+    "textBlocks": "Text boxes",
+    "brush": "Brush strokes",
+    "mask": "Detected text",
+    "viewOriginal": "Original",
+    "viewCleaned": "Cleaned",
+    "viewTranslated": "Translated"
   },
   "processing": {
     "detect": "Detect",

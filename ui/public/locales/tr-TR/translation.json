@@ -95,13 +95,13 @@
     "render": "Render"
   },
   "layers": {
-    "title": "Katmanlar",
-    "rendered": "Render Edilmiş Metin",
-    "textBlocks": "Metin Blokları",
-    "brush": "Fırça Katmanı",
-    "inpainted": "İnpaint",
-    "mask": "Segmentasyon Maskesi",
-    "base": "Özgün Görsel"
+    "title": "Görünüm",
+    "textBlocks": "Metin kutuları",
+    "brush": "Fırça",
+    "mask": "Algılanan metin",
+    "viewOriginal": "Orijinal",
+    "viewCleaned": "Temizlenmiş",
+    "viewTranslated": "Çevrilmiş"
   },
   "processing": {
     "detect": "Algıla",

@@ -1,6 +1,6 @@
 'use client'
 
-import { LayersIcon, SlidersHorizontalIcon, SparklesIcon, TypeIcon } from 'lucide-react'
+import { EyeIcon, SlidersHorizontalIcon, SparklesIcon, TypeIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -31,7 +31,7 @@ export function Panels() {
       >
         <TabsList className='m-2 mb-0 grid w-[calc(100%-1rem)] grid-cols-2 bg-muted/70'>
           <TabsTrigger value='layers' data-testid='panels-tab-layers' className='gap-1'>
-            <LayersIcon className='size-3.5' />
+            <EyeIcon className='size-3.5' />
             <span className='text-xs font-semibold tracking-wide uppercase'>
               {t('layers.title')}
             </span>

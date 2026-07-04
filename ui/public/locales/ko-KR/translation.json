@@ -101,13 +101,13 @@
     "render": "렌더"
   },
   "layers": {
-    "title": "레이어",
-    "rendered": "렌더링된 텍스트",
-    "textBlocks": "텍스트 블록",
-    "brush": "브러시 레이어",
-    "inpainted": "인페인트 이미지",
-    "mask": "세그멘테이션 마스크",
-    "base": "원본 이미지"
+    "title": "보기",
+    "textBlocks": "텍스트 상자",
+    "brush": "브러시",
+    "mask": "감지된 텍스트",
+    "viewOriginal": "원본",
+    "viewCleaned": "텍스트 제거",
+    "viewTranslated": "번역본"
   },
   "processing": {
     "detect": "감지",

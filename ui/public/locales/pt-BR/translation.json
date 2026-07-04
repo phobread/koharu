@@ -96,13 +96,13 @@
     "render": "Renderização"
   },
   "layers": {
-    "title": "Camadas",
-    "rendered": "Texto renderizado",
-    "textBlocks": "Blocos de texto",
-    "brush": "Camada de pincel",
-    "inpainted": "Inpainting",
-    "mask": "Máscara de segmentação",
-    "base": "Imagem original"
+    "title": "Visualização",
+    "textBlocks": "Caixas de texto",
+    "brush": "Pinceladas",
+    "mask": "Texto detectado",
+    "viewOriginal": "Original",
+    "viewCleaned": "Limpo",
+    "viewTranslated": "Traduzido"
   },
   "processing": {
     "detect": "Detectar",

@@ -95,13 +95,13 @@
     "render": "レンダー"
   },
   "layers": {
-    "title": "レイヤー",
-    "rendered": "レンダー済みテキスト",
+    "title": "表示",
     "textBlocks": "テキスト枠",
-    "brush": "ブラシレイヤー",
-    "inpainted": "インペイント",
-    "mask": "セグメンテーションマスク",
-    "base": "元画像"
+    "brush": "ブラシ",
+    "mask": "検出テキスト",
+    "viewOriginal": "原画",
+    "viewCleaned": "文字消去",
+    "viewTranslated": "翻訳後"
   },
   "processing": {
     "detect": "検出",
