@@ -19,11 +19,6 @@ export function LlmAutoLoader() {
   const llmModels = useMemo(() => flattenCatalogModels(llmCatalog), [llmCatalog])
   const selectedTarget = useEditorUiStore((s) => s.selectedTarget)
 
-  const selectedModel = useMemo(
-    () => llmModels.find(({ model }) => sameLlmTarget(model.target, selectedTarget)),
-    [llmModels, selectedTarget],
-  )
-
   useEffect(() => {
     const unsubscribe = useEditorUiStore.persist.onFinishHydration(() => setEditorHydrated(true))
     if (useEditorUiStore.persist.hasHydrated()) setEditorHydrated(true)
@@ -59,9 +54,7 @@ export function LlmAutoLoader() {
 
   useEffect(() => {
     if (!editorHydrated) return
-    if (!llmCatalog) return
     if (!selectedTarget) return
-    if (!selectedModel) return
     if (!llmState) return
     if (llmState.status === 'loading') return
     if (llmState.status === 'ready' && sameLlmTarget(llmState.target, selectedTarget)) return
@@ -73,7 +66,7 @@ export function LlmAutoLoader() {
     void putCurrentLlm({ target: selectedTarget }).catch((e) =>
       useEditorUiStore.getState().showError(String(e)),
     )
-  }, [editorHydrated, llmCatalog, llmState, selectedModel, selectedTarget])
+  }, [editorHydrated, llmState, selectedTarget])
 
   return null
 }

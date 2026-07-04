@@ -62,4 +62,28 @@ describe('LlmAutoLoader', () => {
     await waitFor(() => expect(loadRequests).toHaveLength(1))
     expect(loadRequests[0]).toEqual({ target })
   })
+
+  it('auto-loads a persisted target before catalog discovery lists it', async () => {
+    const loadRequests: unknown[] = []
+    server.use(
+      http.get('/api/v1/llm/catalog', () =>
+        HttpResponse.json({
+          localModels: [],
+          providers: [],
+        }),
+      ),
+      http.get('/api/v1/llm/current', () =>
+        HttpResponse.json({ status: 'empty', target: null, error: null }),
+      ),
+      http.put('/api/v1/llm/current', async ({ request }) => {
+        loadRequests.push(await request.json())
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+
+    renderWithQuery(<LlmAutoLoader />)
+
+    await waitFor(() => expect(loadRequests).toHaveLength(1))
+    expect(loadRequests[0]).toEqual({ target })
+  })
 })
