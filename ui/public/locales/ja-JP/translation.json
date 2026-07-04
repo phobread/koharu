@@ -224,7 +224,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} イタリック",
       "regularItalic": "標準 イタリック"
-    }
+    },
+    "resetToAuto": "自動（モデル予測）に戻す"
   },
   "textBlocks": {
     "emptyPrompt": "画像を開くとテキストブロックが表示されます。",
@@ -247,7 +248,8 @@
     "importPrompt": "ページを読み込んで編集を開始してください。",
     "splitBlock": "ブロックを分割",
     "mergeBlocks": "ブロックを結合",
-    "deleteBlock": "ブロックを削除"
+    "deleteBlock": "ブロックを削除",
+    "uninpaintBlock": "元の絵を復元（インペイント解除）"
   },
   "statusBar": {
     "zoom": "ズーム",
@@ -404,7 +406,15 @@
     "shortcutReset": "ショートカットのリセット",
     "shortcutResetDescription": "すべてのショートカットをデフォルト値に戻します。保存された変更は失われます。",
     "shortcutConflict": "そのキーの組み合わせは既に使用されています",
-    "shortcutInvalid": "このキーはショートカットとして使用できません"
+    "shortcutInvalid": "このキーはショートカットとして使用できません",
+    "resetToAuto": "自動に戻す",
+    "autoFont": "自動（言語に合わせる）",
+    "borderAuto": "自動（モデル予測）",
+    "borderCustom": "カスタム",
+    "borderOff": "オフ",
+    "textDefaults": "フォントの既定値",
+    "textDefaultsDescription": "描画テキストの全体既定値です。「自動」は各ブロックのモデル予測に従います。選択中のブロックへの編集が常に優先されます。再起動後も保持されます。",
+    "borderDescription": "翻訳テキストの縁取りです。「自動」は各ブロックのモデル予測の縁取りを使い、「オフ」は個別設定のないブロックの縁取りを無効にします。"
   },
   "updater": {
     "available": {

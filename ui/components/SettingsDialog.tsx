@@ -27,7 +27,6 @@ import {
   ItalicIcon,
   MinusIcon,
   PlusIcon,
-  SquareIcon,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -604,9 +603,16 @@ function TextDefaultsPane() {
   }
 
   const size = defaultFontSize
-  const strokeEnabled = renderStroke?.enabled === true
+  // Border default is three-state: auto (per-block model prediction), a
+  // custom global outline, or explicitly off for blocks without their own.
+  const strokeMode: 'auto' | 'custom' | 'off' =
+    renderStroke === undefined ? 'auto' : renderStroke.enabled ? 'custom' : 'off'
   const strokeWidth = renderStroke?.widthPx ?? STROKE_DEFAULT_WIDTH
   const strokeColor = renderStroke?.color ?? STROKE_DEFAULT_COLOR
+  const setStrokeMode = (mode: 'auto' | 'custom' | 'off') => {
+    if (mode === 'auto') updateStroke(undefined)
+    else updateStroke({ enabled: mode === 'custom', color: strokeColor, widthPx: strokeWidth })
+  }
 
   const effects: { key: 'bold' | 'italic'; label: string; Icon: typeof BoldIcon }[] = [
     { key: 'bold', label: t('render.effectBold'), Icon: BoldIcon },
@@ -621,16 +627,35 @@ function TextDefaultsPane() {
       >
         <div className='space-y-1.5'>
           <Label className='text-xs'>{t('render.fontLabel')}</Label>
-          <FontSelect
-            value={currentFamily}
-            options={familyOptions}
-            favoriteFonts={favoriteFonts}
-            onToggleFavorite={toggleFavoriteFont}
-            disabled={familyOptions.length === 0}
-            placeholder={t('render.fontPlaceholder')}
-            triggerStyle={currentFamily ? { fontFamily: currentFamily } : undefined}
-            onChange={pickFont}
-          />
+          <div className='flex items-center gap-1'>
+            <div className='min-w-0 flex-1'>
+              <FontSelect
+                value={currentFamily}
+                options={familyOptions}
+                favoriteFonts={favoriteFonts}
+                onToggleFavorite={toggleFavoriteFont}
+                disabled={familyOptions.length === 0}
+                placeholder={t('settings.autoFont')}
+                triggerStyle={currentFamily ? { fontFamily: currentFamily } : undefined}
+                onChange={pickFont}
+              />
+            </div>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon-sm'
+              aria-label={t('settings.resetToAuto')}
+              title={t('settings.resetToAuto')}
+              disabled={!defaultFont}
+              className='size-7 shrink-0 text-muted-foreground hover:text-foreground'
+              onClick={() => {
+                setDefaultFont(undefined)
+                rerender()
+              }}
+            >
+              <RotateCcwIcon className='size-3.5' />
+            </Button>
+          </div>
         </div>
 
         <div className='flex flex-wrap items-end gap-6'>
@@ -673,6 +698,18 @@ function TextDefaultsPane() {
               >
                 <PlusIcon className='size-3' />
               </Button>
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-sm'
+                aria-label={t('settings.resetToAuto')}
+                title={t('settings.resetToAuto')}
+                disabled={size === undefined}
+                className='size-7 shrink-0 rounded-l-none border-l text-muted-foreground hover:text-foreground'
+                onClick={() => setSize(undefined)}
+              >
+                <RotateCcwIcon className='size-3.5' />
+              </Button>
             </div>
           </div>
 
@@ -703,27 +740,17 @@ function TextDefaultsPane() {
 
       <Section title={t('render.effectBorder')} description={t('settings.borderDescription')}>
         <div className='flex items-center gap-2'>
-          <Button
-            type='button'
-            variant='outline'
-            size='icon-sm'
-            aria-label={t('render.effectBorder')}
-            className={cn(
-              'size-7',
-              strokeEnabled &&
-                'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-            )}
-            onClick={() =>
-              updateStroke(
-                strokeEnabled
-                  ? undefined
-                  : { enabled: true, color: strokeColor, widthPx: strokeWidth },
-              )
-            }
-          >
-            <SquareIcon className='size-3.5' />
-          </Button>
-          {strokeEnabled && (
+          <Select value={strokeMode} onValueChange={(v) => setStrokeMode(v as typeof strokeMode)}>
+            <SelectTrigger className='h-8 w-44 text-xs'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='auto'>{t('settings.borderAuto')}</SelectItem>
+              <SelectItem value='custom'>{t('settings.borderCustom')}</SelectItem>
+              <SelectItem value='off'>{t('settings.borderOff')}</SelectItem>
+            </SelectContent>
+          </Select>
+          {strokeMode === 'custom' && (
             <>
               <ColorPicker
                 value={colorToHex(strokeColor)}

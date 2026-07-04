@@ -225,7 +225,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} Itálico",
       "regularItalic": "Regular Itálico"
-    }
+    },
+    "resetToAuto": "Redefinir para automático (previsão do modelo)"
   },
   "textBlocks": {
     "emptyPrompt": "Abra uma imagem para ver os blocos de texto.",
@@ -248,7 +249,8 @@
     "importPrompt": "Importe uma página para começar a editar.",
     "splitBlock": "Dividir bloco",
     "mergeBlocks": "Mesclar blocos",
-    "deleteBlock": "Excluir bloco"
+    "deleteBlock": "Excluir bloco",
+    "uninpaintBlock": "Restaurar arte original (remover inpainting)"
   },
   "statusBar": {
     "zoom": "Zoom",
@@ -405,7 +407,15 @@
     "shortcutReset": "Redefinir Atalhos",
     "shortcutResetDescription": "Isso restaurará todos os atalhos para seus valores padrão. Suas alterações salvas serão perdidas.",
     "shortcutConflict": "Combinação de teclas já em uso",
-    "shortcutInvalid": "Esta tecla não pode ser usada como atalho"
+    "shortcutInvalid": "Esta tecla não pode ser usada como atalho",
+    "resetToAuto": "Redefinir para automático",
+    "autoFont": "Automático (conforme o idioma)",
+    "borderAuto": "Automático (previsão do modelo)",
+    "borderCustom": "Personalizado",
+    "borderOff": "Desativado",
+    "textDefaults": "Padrões de fonte",
+    "textDefaultsDescription": "Padrões globais para o texto renderizado. «Automático» segue a previsão do modelo por bloco; edições em um bloco selecionado sempre têm prioridade. Mantidos entre reinicializações.",
+    "borderDescription": "Contorno desenhado ao redor do texto traduzido. «Automático» usa o contorno previsto pelo modelo por bloco; «Desativado» desativa o contorno nos blocos sem ajuste próprio."
   },
   "updater": {
     "available": {

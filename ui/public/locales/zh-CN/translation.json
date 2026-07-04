@@ -224,7 +224,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} 斜体",
       "regularItalic": "常规斜体"
-    }
+    },
+    "resetToAuto": "重置为自动（模型预测）"
   },
   "textBlocks": {
     "emptyPrompt": "打开图像以查看文本块。",
@@ -247,7 +248,8 @@
     "importPrompt": "导入页面以开始编辑。",
     "splitBlock": "拆分文本块",
     "mergeBlocks": "合并文本块",
-    "deleteBlock": "删除块"
+    "deleteBlock": "删除块",
+    "uninpaintBlock": "恢复原图（取消修复）"
   },
   "statusBar": {
     "zoom": "缩放",
@@ -404,7 +406,15 @@
     "shortcutReset": "重置快捷键",
     "shortcutResetDescription": "这将恢复所有快捷键到默认值。您保存的更改将丢失。",
     "shortcutConflict": "此按键组合已在使用中",
-    "shortcutInvalid": "此按键不能用作快捷键"
+    "shortcutInvalid": "此按键不能用作快捷键",
+    "resetToAuto": "重置为自动",
+    "autoFont": "自动（按文本语言）",
+    "borderAuto": "自动（模型预测）",
+    "borderCustom": "自定义",
+    "borderOff": "关闭",
+    "textDefaults": "字体默认值",
+    "textDefaultsDescription": "渲染文本的全局默认值。“自动”跟随模型对每个文本块的预测；对选中文本块的编辑始终优先。重启后仍会保留。",
+    "borderDescription": "在译文周围绘制的描边。“自动”使用模型为每个文本块预测的描边；“关闭”将禁用没有自身设置的文本块的描边。"
   },
   "updater": {
     "available": {

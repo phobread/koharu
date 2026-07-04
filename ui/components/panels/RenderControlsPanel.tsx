@@ -8,6 +8,7 @@ import {
   ItalicIcon,
   MinusIcon,
   PlusIcon,
+  RotateCcwIcon,
   SquareIcon,
 } from 'lucide-react'
 import { type ComponentType, useMemo, useRef, useEffect, useState } from 'react'
@@ -40,7 +41,6 @@ import type {
   TextAlign,
   TextShaderEffect,
   TextStrokeStyle,
-  TextStyle,
 } from '@/lib/api/schemas'
 import {
   findFontFace,
@@ -53,7 +53,7 @@ import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
-import { effectiveTextColor, mergeTextStyle } from '@/lib/textStyle'
+import { effectiveTextColor, mergeTextStyle, type TextStyleUpdates } from '@/lib/textStyle'
 import { cn } from '@/lib/utils'
 
 const DEFAULT_STROKE_COLOR: number[] = [255, 255, 255, 255]
@@ -115,6 +115,43 @@ const normalizeEffect = (effect?: TextShaderEffect | null): TextShaderEffect => 
 
 const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?.color)
 
+/** Small ↺ button that clears an override back to the model-predicted value. */
+function ResetToAutoButton({
+  label,
+  disabled,
+  onClick,
+  testId,
+  className,
+}: {
+  label: string
+  disabled?: boolean
+  onClick: () => void
+  testId: string
+  className?: string
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type='button'
+          variant='ghost'
+          size='icon-sm'
+          aria-label={label}
+          data-testid={testId}
+          disabled={disabled}
+          className={cn('shrink-0 text-muted-foreground hover:text-foreground', className)}
+          onClick={onClick}
+        >
+          <RotateCcwIcon className='size-3' />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side='bottom' sideOffset={4}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function RenderControlsPanel() {
   const { t } = useTranslation()
   const page = useCurrentPage()
@@ -132,6 +169,7 @@ export function RenderControlsPanel() {
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
   const setRenderEffect = useEditorUiStore((s) => s.setRenderEffect)
+  const renderStroke = useEditorUiStore((s) => s.renderStroke)
   const setRenderStroke = useEditorUiStore((s) => s.setRenderStroke)
 
   const sortedFonts = useMemo(() => {
@@ -280,18 +318,14 @@ export function RenderControlsPanel() {
   // Mutations
   // ---------------------------------------------------------------------------
 
-  const buildStyleOp = (n: TextNodeEntry, updates: Partial<TextStyle>): Op => {
+  const buildStyleOp = (n: TextNodeEntry, updates: TextStyleUpdates): Op => {
     const nextStyle = mergeTextStyle(n.data.style, n.data.fontPrediction, updates)
     return ops.updateNode(page!.id, n.id, {
       data: { text: { style: nextStyle } } as never,
     })
   }
 
-  const applyStyleToNodes = (
-    nodes: TextNodeEntry[],
-    updates: Partial<TextStyle>,
-    label: string,
-  ) => {
+  const applyStyleToNodes = (nodes: TextNodeEntry[], updates: TextStyleUpdates, label: string) => {
     if (!page || nodes.length === 0) return
     void (async () => {
       const op =
@@ -306,14 +340,48 @@ export function RenderControlsPanel() {
     })()
   }
 
-  const applyStyleToSelected = (updates: Partial<TextStyle>): boolean => {
+  const applyStyleToSelected = (updates: TextStyleUpdates): boolean => {
     if (selectedNodes.length === 0) return false
     applyStyleToNodes(selectedNodes, updates, 'Multi-block style update')
     return true
   }
 
-  const applyStyleToAll = (updates: Partial<TextStyle>) => {
+  const applyStyleToAll = (updates: TextStyleUpdates) => {
     applyStyleToNodes(textNodes, updates, 'Bulk style update')
+  }
+
+  // ── Reset to auto (model-predicted) ─────────────────────────────────────
+  // With blocks selected, resets clear those blocks' overrides; with nothing
+  // selected they clear the global default AND every block's override, so
+  // the whole page genuinely returns to auto. Only blocks that actually hold
+  // an override are patched — touching a clean block would materialise an
+  // explicit style (freezing its predicted color) for no reason.
+
+  const resetTargets = selectedNodes.length > 0 ? selectedNodes : textNodes
+
+  const canResetFontSize =
+    resetTargets.some((n) => n.data.style?.fontSize != null) ||
+    (selectedNodes.length === 0 && appDefaultFontSize !== undefined)
+  const resetFontSizeToAuto = () => {
+    if (selectedNodes.length === 0) setAppDefaultFontSize(undefined)
+    const targets = resetTargets.filter((n) => n.data.style?.fontSize != null)
+    if (targets.length > 0) applyStyleToNodes(targets, { fontSize: null }, 'Reset font size')
+    else if (page) queueAutoRender(page.id)
+  }
+
+  const canResetStroke =
+    resetTargets.some((n) => n.data.style?.stroke != null) ||
+    (selectedNodes.length === 0 && renderStroke !== undefined)
+  const resetStrokeToAuto = () => {
+    if (selectedNodes.length === 0) setRenderStroke(undefined)
+    const targets = resetTargets.filter((n) => n.data.style?.stroke != null)
+    if (targets.length > 0) applyStyleToNodes(targets, { stroke: null }, 'Reset outline')
+    else if (page) queueAutoRender(page.id)
+  }
+
+  const canResetColor = resetTargets.some(hasExplicitColor)
+  const resetColorToAuto = () => {
+    applyStyleToNodes(resetTargets.filter(hasExplicitColor), { color: null }, 'Reset text color')
   }
 
   const commitCurrentFontColorIfImplicit = () => {
@@ -329,6 +397,7 @@ export function RenderControlsPanel() {
       color: (nextStroke.color ?? DEFAULT_STROKE_COLOR) as [number, number, number, number],
       widthPx: nextStroke.widthPx ?? undefined,
     })
+    if (page) queueAutoRender(page.id)
   }
 
   const updateStrokeWidth = (value: number) => {
@@ -464,6 +533,7 @@ export function RenderControlsPanel() {
                   return
                 }
                 usePreferencesStore.getState().setDefaultFont(face.postScriptName)
+                if (page) queueAutoRender(page.id)
               }}
             />
           </div>
@@ -489,6 +559,7 @@ export function RenderControlsPanel() {
                     return
                   }
                   usePreferencesStore.getState().setDefaultFont(value)
+                  if (page) queueAutoRender(page.id)
                 }}
               >
                 <SelectTrigger
@@ -544,6 +615,13 @@ export function RenderControlsPanel() {
             }}
             className='size-7'
           />
+          <ResetToAutoButton
+            label={t('render.resetToAuto')}
+            disabled={!canResetColor}
+            onClick={resetColorToAuto}
+            testId='render-color-reset'
+            className='size-7'
+          />
         </div>
       </div>
 
@@ -559,57 +637,68 @@ export function RenderControlsPanel() {
           {t('render.alignLabel')}
         </span>
 
-        <div className='flex min-w-0 items-center rounded-md border border-input bg-background shadow-xs'>
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            className='size-6 shrink-0 rounded-r-none border-r'
-            onClick={() =>
-              applyFontSize(Math.max(6, Math.round((activeFontSize ?? renderedFontSize ?? 16) - 1)))
-            }
-          >
-            <MinusIcon className='size-3' />
-          </Button>
-          <Input
-            type='number'
-            step='1'
-            min='6'
-            max='300'
-            inputMode='numeric'
-            className='h-6 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-0.5 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
-            data-testid='render-font-size'
-            value={activeFontSize !== undefined ? Math.round(activeFontSize) : ''}
-            placeholder={
-              selectedNode && renderedFontSize !== undefined
-                ? `auto (${Math.round(renderedFontSize)})`
-                : 'auto'
-            }
-            onChange={(event) => {
-              const value = event.target.value.trim()
-              if (value === '') {
-                // Clearing only makes sense for the global default (→ auto-fit).
-                if (!selectedNode) applyFontSize(undefined)
-                return
+        <div className='flex min-w-0 items-center gap-0.5'>
+          <div className='flex min-w-0 flex-1 items-center rounded-md border border-input bg-background shadow-xs'>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon-sm'
+              className='size-6 shrink-0 rounded-r-none border-r'
+              onClick={() =>
+                applyFontSize(
+                  Math.max(6, Math.round((activeFontSize ?? renderedFontSize ?? 16) - 1)),
+                )
               }
-              const parsed = Number.parseInt(value, 10)
-              if (!Number.isFinite(parsed) || parsed < 1) return
-              applyFontSize(Math.min(300, parsed))
-            }}
+            >
+              <MinusIcon className='size-3' />
+            </Button>
+            <Input
+              type='number'
+              step='1'
+              min='6'
+              max='300'
+              inputMode='numeric'
+              className='h-6 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-0.5 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+              data-testid='render-font-size'
+              value={activeFontSize !== undefined ? Math.round(activeFontSize) : ''}
+              placeholder={
+                selectedNode && renderedFontSize !== undefined
+                  ? `auto (${Math.round(renderedFontSize)})`
+                  : 'auto'
+              }
+              onChange={(event) => {
+                const value = event.target.value.trim()
+                if (value === '') {
+                  // Clearing only makes sense for the global default (→ auto-fit).
+                  if (!selectedNode) applyFontSize(undefined)
+                  return
+                }
+                const parsed = Number.parseInt(value, 10)
+                if (!Number.isFinite(parsed) || parsed < 1) return
+                applyFontSize(Math.min(300, parsed))
+              }}
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon-sm'
+              className='size-6 shrink-0 rounded-l-none border-l'
+              onClick={() =>
+                applyFontSize(
+                  Math.min(300, Math.round((activeFontSize ?? renderedFontSize ?? 16) + 1)),
+                )
+              }
+            >
+              <PlusIcon className='size-3' />
+            </Button>
+          </div>
+          <ResetToAutoButton
+            label={t('render.resetToAuto')}
+            disabled={!canResetFontSize}
+            onClick={resetFontSizeToAuto}
+            testId='render-font-size-reset'
+            className='size-6'
           />
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            className='size-6 shrink-0 rounded-l-none border-l'
-            onClick={() =>
-              applyFontSize(
-                Math.min(300, Math.round((activeFontSize ?? renderedFontSize ?? 16) + 1)),
-              )
-            }
-          >
-            <PlusIcon className='size-3' />
-          </Button>
         </div>
 
         <div className='flex items-center gap-0.5'>
@@ -639,6 +728,7 @@ export function RenderControlsPanel() {
                         bold: nextEffect.bold ?? false,
                         italic: nextEffect.italic ?? false,
                       })
+                      if (page) queueAutoRender(page.id)
                     }}
                   >
                     <Icon className='size-3' />
@@ -782,6 +872,13 @@ export function RenderControlsPanel() {
               <PlusIcon className='size-3' />
             </Button>
           </div>
+          <ResetToAutoButton
+            label={t('render.resetToAuto')}
+            disabled={!canResetStroke}
+            onClick={resetStrokeToAuto}
+            testId='render-stroke-reset'
+            className='size-7'
+          />
         </div>
       </div>
 

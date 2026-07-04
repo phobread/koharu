@@ -257,7 +257,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} Italic",
       "regularItalic": "Regular Italic"
-    }
+    },
+    "resetToAuto": "Reset to auto (model-predicted)"
   },
   "textBlocks": {
     "emptyPrompt": "Open an image to see text blocks.",
@@ -280,7 +281,8 @@
     "importPrompt": "Import a page to begin editing.",
     "splitBlock": "Split block",
     "mergeBlocks": "Merge blocks",
-    "deleteBlock": "Delete block"
+    "deleteBlock": "Delete block",
+    "uninpaintBlock": "Restore original art (un-inpaint)"
   },
   "statusBar": {
     "zoom": "Zoom",
@@ -344,11 +346,11 @@
     "title": "Settings",
     "appearance": "Appearance",
     "appearanceDescription": "Customize how Koharu looks on your device.",
-    "textDefaults": "Text defaults",
-    "textDefaultsDescription": "Defaults applied to translated text that has no per-block override. Saved across restarts and used on the next render.",
+    "textDefaults": "Font defaults",
+    "textDefaultsDescription": "Global defaults for rendered text. Auto follows the model's prediction for each block; edits made on a selected block always win. Saved across restarts.",
     "defaultFontSize": "Default size",
     "autoSize": "Auto",
-    "borderDescription": "Outline drawn around translated text. When off, Koharu auto-picks a contrasting outline per block.",
+    "borderDescription": "Outline drawn around translated text. Auto uses the model-predicted outline for each block; Off disables outlines for blocks without their own.",
     "boxPadding": "Text edge padding",
     "boxPaddingDescription": "Pixels to inset text from each edge of its box so letters and outlines aren't clipped at the bubble border. Increase if text touches the edges.",
     "theme": "Theme",
@@ -448,7 +450,12 @@
     "shortcutReset": "Reset Keybinds",
     "shortcutResetDescription": "This will restore all shortcuts to their default values. Your saved changes will be lost.",
     "shortcutConflict": "Key combination already in use",
-    "shortcutInvalid": "This key cannot be used as a shortcut"
+    "shortcutInvalid": "This key cannot be used as a shortcut",
+    "resetToAuto": "Reset to auto",
+    "autoFont": "Auto (match text language)",
+    "borderAuto": "Auto (model-predicted)",
+    "borderCustom": "Custom",
+    "borderOff": "Off"
   },
   "updater": {
     "available": {

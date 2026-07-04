@@ -224,7 +224,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} İtalik",
       "regularItalic": "Normal İtalik"
-    }
+    },
+    "resetToAuto": "Otomatiğe sıfırla (model tahmini)"
   },
   "textBlocks": {
     "emptyPrompt": "Metin bloklarını görmek için bir görsel açın.",
@@ -247,7 +248,8 @@
     "importPrompt": "Düzenlemeye başlamak için bir sayfa içe aktarın.",
     "splitBlock": "Bloğu böl",
     "mergeBlocks": "Blokları birleştir",
-    "deleteBlock": "Bloğu sil"
+    "deleteBlock": "Bloğu sil",
+    "uninpaintBlock": "Orijinal çizimi geri yükle (inpaint kaldır)"
   },
   "statusBar": {
     "zoom": "Yakınlaştırma",
@@ -404,7 +406,15 @@
     "shortcutReset": "Kısayolları Sıfırla",
     "shortcutResetDescription": "Bu, tüm klavye kısayollarını varsayılan değerlerine döndürecektir. Kaydedilen değişiklikleriniz kaybolacaktır.",
     "shortcutConflict": "Tuş kombinasyonu zaten kullanılıyor",
-    "shortcutInvalid": "Bu tuş kısayol olarak kullanılamaz"
+    "shortcutInvalid": "Bu tuş kısayol olarak kullanılamaz",
+    "resetToAuto": "Otomatiğe sıfırla",
+    "autoFont": "Otomatik (metin diline göre)",
+    "borderAuto": "Otomatik (model tahmini)",
+    "borderCustom": "Özel",
+    "borderOff": "Kapalı",
+    "textDefaults": "Yazı tipi varsayılanları",
+    "textDefaultsDescription": "Oluşturulan metin için genel varsayılanlar. «Otomatik», her blok için modelin tahminini izler; seçili bloktaki düzenlemeler her zaman önceliklidir. Yeniden başlatmalarda korunur.",
+    "borderDescription": "Çevrilen metnin etrafına çizilen kontur. «Otomatik», her blok için modelin tahmin ettiği konturu kullanır; «Kapalı», kendi ayarı olmayan blokların konturunu devre dışı bırakır."
   },
   "updater": {
     "available": {

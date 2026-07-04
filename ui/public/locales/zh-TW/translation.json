@@ -224,7 +224,8 @@
     "fontStyles": {
       "italicWithName": "{{name}} 斜體",
       "regularItalic": "正規斜體"
-    }
+    },
+    "resetToAuto": "重設為自動（模型預測）"
   },
   "textBlocks": {
     "emptyPrompt": "開啟影像以查看文字區塊。",
@@ -247,7 +248,8 @@
     "importPrompt": "匯入頁面以開始編輯。",
     "splitBlock": "分割文字區塊",
     "mergeBlocks": "合併文字區塊",
-    "deleteBlock": "刪除區塊"
+    "deleteBlock": "刪除區塊",
+    "uninpaintBlock": "還原原圖（取消修復）"
   },
   "statusBar": {
     "zoom": "縮放",
@@ -404,7 +406,15 @@
     "shortcutReset": "重置快捷鍵",
     "shortcutResetDescription": "這將恢復所有快捷鍵到默認值。您保存的更改將丟失。",
     "shortcutConflict": "按鍵組合已被使用",
-    "shortcutInvalid": "此按鍵不能用作快捷鍵"
+    "shortcutInvalid": "此按鍵不能用作快捷鍵",
+    "resetToAuto": "重設為自動",
+    "autoFont": "自動（依文字語言）",
+    "borderAuto": "自動（模型預測）",
+    "borderCustom": "自訂",
+    "borderOff": "關閉",
+    "textDefaults": "字型預設值",
+    "textDefaultsDescription": "算繪文字的全域預設值。「自動」會依模型對每個文字區塊的預測；對選取區塊的編輯永遠優先。重新啟動後仍會保留。",
+    "borderDescription": "在譯文周圍繪製的描邊。「自動」使用模型為每個文字區塊預測的描邊；「關閉」會停用沒有自身設定之區塊的描邊。"
   },
   "updater": {
     "available": {
