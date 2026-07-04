@@ -1,5 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "KoharuFORK",
+  "mainBinaryName": "KoharuFORK",
   "identifier": "Koharu",
   "build": {
     "beforeDevCommand": "bun --cwd ui dev",
@@ -21,7 +23,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "center": true,
-        "title": "Koharu",
+        "title": "KoharuFORK",
         "decorations": false
       }
     ]
