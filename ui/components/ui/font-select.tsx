@@ -15,7 +15,7 @@ const MAX_VISIBLE = 10
 type FontOption = {
   familyName: string
   postScriptName: string
-  source: 'system' | 'google'
+  source: 'system' | 'google' | 'custom'
   category?: string | null
   cached: boolean
 }
@@ -38,7 +38,9 @@ type FontSelectProps = {
 }
 
 export function useGoogleFontPreview(family: string, source: string, isVisible: boolean) {
-  const [state, setState] = useState<FontLoadState>(source === 'system' ? 'ready' : 'idle')
+  // Only Google Fonts are fetched on demand; system and custom faces are
+  // already installed locally, so they start ready.
+  const [state, setState] = useState<FontLoadState>(source === 'google' ? 'idle' : 'ready')
   const stateRef = useRef(state)
   stateRef.current = state
 

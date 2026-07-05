@@ -290,6 +290,46 @@
         }
       }
     },
+    "/fonts/upload": {
+      "post": {
+        "summary": "Import a font from the raw file bytes in the request body. The font is\nvalidated, registered for immediate use, and cached so it persists across\nrestarts. Returns the added face(s).",
+        "operationId": "upload_font",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "description": "Original filename, used to name the cached copy on disk.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FontFaceInfo"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty body or unreadable font file"
+          }
+        }
+      }
+    },
     "/google-fonts": {
       "get": {
         "operationId": "get_google_fonts_catalog",
@@ -1705,7 +1745,7 @@
       },
       "FontSource": {
         "type": "string",
-        "enum": ["system", "google"]
+        "enum": ["system", "google", "custom"]
       },
       "GoogleFontCatalog": {
         "type": "object",

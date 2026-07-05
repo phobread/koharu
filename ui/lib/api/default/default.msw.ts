@@ -524,6 +524,18 @@ export const getListFontsResponseMock = (): FontFaceInfo[] =>
     source: faker.helpers.arrayElement(Object.values(FontSource)),
   }))
 
+export const getUploadFontResponseMock = (): FontFaceInfo[] =>
+  Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() => ({
+    cached: faker.datatype.boolean(),
+    category: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.string.alpha({ length: { min: 10, max: 20 } }), null]),
+      undefined,
+    ]),
+    familyName: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    postScriptName: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    source: faker.helpers.arrayElement(Object.values(FontSource)),
+  }))
+
 export const getGetGoogleFontsCatalogResponseMock = (
   overrideResponse: Partial<Extract<GoogleFontCatalog, object>> = {},
 ): GoogleFontCatalog => ({
@@ -1394,6 +1406,30 @@ export const getListFontsMockHandler = (
   )
 }
 
+export const getUploadFontMockHandler = (
+  overrideResponse?:
+    | FontFaceInfo[]
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<FontFaceInfo[]> | FontFaceInfo[]),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/fonts/upload',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadFontResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getGetGoogleFontsCatalogMockHandler = (
   overrideResponse?:
     | GoogleFontCatalog
@@ -2065,6 +2101,7 @@ export const getDefaultMock = () => [
   getGetEngineCatalogMockHandler(),
   getEventsMockHandler(),
   getListFontsMockHandler(),
+  getUploadFontMockHandler(),
   getGetGoogleFontsCatalogMockHandler(),
   getFetchGoogleFontMockHandler(),
   getGetGoogleFontFileMockHandler(),

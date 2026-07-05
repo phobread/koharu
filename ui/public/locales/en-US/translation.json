@@ -262,7 +262,9 @@
       "italicWithName": "{{name}} Italic",
       "regularItalic": "Regular Italic"
     },
-    "resetToAuto": "Reset to auto (black/white contrast)"
+    "resetToAuto": "Reset to auto (black/white contrast)",
+    "uploadFont": "Upload font",
+    "uploadFontError": "Could not import that font file"
   },
   "textBlocks": {
     "emptyPrompt": "Open an image to see text blocks.",

@@ -31,4 +31,6 @@ pub struct GoogleFontCatalog {
 pub enum FontSource {
     System,
     Google,
+    /// A font file the user imported from disk, cached under `fonts/custom`.
+    Custom,
 }

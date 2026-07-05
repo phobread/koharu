@@ -31,6 +31,7 @@ use koharu_renderer::{
     types::{RenderBlock, TextDirection as RendererTextDirection},
 };
 
+use crate::custom_fonts::{CustomFontFace, CustomFontStore};
 use crate::google_fonts::GoogleFontService;
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ pub struct Renderer {
     renderer: TinySkiaRenderer,
     symbol_fallbacks: Vec<Font>,
     pub google_fonts: Arc<GoogleFontService>,
+    custom_fonts: Arc<CustomFontStore>,
 }
 
 impl Renderer {
@@ -108,12 +110,48 @@ impl Renderer {
             GoogleFontService::new(&app_data_root)
                 .context("failed to initialize Google Fonts service")?,
         );
+        let custom_fonts = Arc::new(
+            CustomFontStore::new(&app_data_root)
+                .context("failed to initialize custom fonts store")?,
+        );
+        load_custom_fonts(&mut fontbook, &custom_fonts);
         Ok(Self {
             fontbook: Arc::new(Mutex::new(fontbook)),
             renderer: TinySkiaRenderer::new()?,
             symbol_fallbacks,
             google_fonts,
+            custom_fonts,
         })
+    }
+
+    /// Import a font file the user uploaded: validate it parses, register it in
+    /// the font book, and cache it under `fonts/custom` so it survives restart.
+    /// Returns the added face(s) for the API to hand back to the picker.
+    pub fn import_custom_font(&self, filename: &str, bytes: Vec<u8>) -> Result<Vec<FontFaceInfo>> {
+        let face = {
+            let mut fontbook = self
+                .fontbook
+                .lock()
+                .map_err(|_| anyhow::anyhow!("failed to lock fontbook"))?;
+            let font = fontbook
+                .load_from_bytes(bytes.clone())
+                .context("file is not a valid font")?;
+            font_to_custom_face(&font)
+        };
+        if face.post_script_name.is_empty() {
+            anyhow::bail!("font has no PostScript name");
+        }
+        self.custom_fonts
+            .store_bytes(filename, &bytes)
+            .context("failed to save custom font")?;
+        self.custom_fonts.record(face.clone());
+        Ok(vec![FontFaceInfo {
+            family_name: face.family_name,
+            post_script_name: face.post_script_name,
+            source: FontSource::Custom,
+            category: None,
+            cached: true,
+        }])
     }
 
     /// List system + cached Google Fonts for the API.
@@ -132,10 +170,15 @@ impl Renderer {
                     .first()
                     .map(|(family, _)| family.clone())
                     .unwrap_or_else(|| face.post_script_name.clone());
+                let source = if self.custom_fonts.is_custom(&face.post_script_name) {
+                    FontSource::Custom
+                } else {
+                    FontSource::System
+                };
                 FontFaceInfo {
                     family_name,
                     post_script_name: face.post_script_name,
-                    source: FontSource::System,
+                    source,
                     category: None,
                     cached: true,
                 }
@@ -942,6 +985,34 @@ fn resolve_layout_boxes(
 fn apply_default_font_families(font_families: &mut Vec<String>, text: &str) {
     if font_families.is_empty() {
         *font_families = font_families_for_text(text);
+    }
+}
+
+/// Register every cached custom font file into the book at startup, recording
+/// each face so `available_fonts` can label it. Failures are logged and
+/// skipped — one bad file shouldn't block the rest.
+fn load_custom_fonts(fontbook: &mut FontBook, store: &CustomFontStore) {
+    for path in store.files() {
+        match std::fs::read(path.as_std_path()) {
+            Ok(bytes) => match fontbook.load_from_bytes(bytes) {
+                Ok(font) => store.record(font_to_custom_face(&font)),
+                Err(e) => tracing::warn!(%path, "skipping invalid custom font: {e:#}"),
+            },
+            Err(e) => tracing::warn!(%path, "failed to read custom font: {e:#}"),
+        }
+    }
+}
+
+fn font_to_custom_face(font: &Font) -> CustomFontFace {
+    let face = font.face_info();
+    let family_name = face
+        .families
+        .first()
+        .map(|(family, _)| family.clone())
+        .unwrap_or_else(|| face.post_script_name.clone());
+    CustomFontFace {
+        post_script_name: face.post_script_name.clone(),
+        family_name,
     }
 }
 

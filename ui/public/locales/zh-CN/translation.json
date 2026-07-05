@@ -225,7 +225,9 @@
       "italicWithName": "{{name}} 斜体",
       "regularItalic": "常规斜体"
     },
-    "resetToAuto": "重置为自动（模型预测）"
+    "resetToAuto": "重置为自动（模型预测）",
+    "uploadFont": "上传字体",
+    "uploadFontError": "无法导入该字体文件"
   },
   "textBlocks": {
     "emptyPrompt": "打开图像以查看文本块。",

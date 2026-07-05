@@ -226,7 +226,9 @@
       "italicWithName": "{{name}} Itálico",
       "regularItalic": "Regular Itálico"
     },
-    "resetToAuto": "Redefinir para automático (previsão do modelo)"
+    "resetToAuto": "Redefinir para automático (previsão do modelo)",
+    "uploadFont": "Enviar fonte",
+    "uploadFontError": "Não foi possível importar esse arquivo de fonte"
   },
   "textBlocks": {
     "emptyPrompt": "Abra uma imagem para ver os blocos de texto.",

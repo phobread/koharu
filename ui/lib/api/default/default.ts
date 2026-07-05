@@ -57,6 +57,7 @@ import type {
   StartDownloadResponse,
   StartPipelineRequest,
   StartPipelineResponse,
+  UploadFontParams,
 } from '../schemas'
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1]
@@ -1273,6 +1274,101 @@ export function useListFonts<TData = Awaited<ReturnType<typeof listFonts>>, TErr
   return { ...query, queryKey: queryOptions.queryKey }
 }
 
+export const getUploadFontUrl = (params: UploadFontParams) => {
+  const normalizedParams = new URLSearchParams()
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  })
+
+  const stringifiedParams = normalizedParams.toString()
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/fonts/upload?${stringifiedParams}`
+    : `/api/v1/fonts/upload`
+}
+
+/**
+ * @summary Import a font from the raw file bytes in the request body. The font is
+validated, registered for immediate use, and cached so it persists across
+restarts. Returns the added face(s).
+ */
+export const uploadFont = async (
+  params: UploadFontParams,
+  uploadFontBody?: Blob,
+  options?: RequestInit,
+): Promise<FontFaceInfo[]> => {
+  return fetchApi<FontFaceInfo[]>(getUploadFontUrl(params), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', ...options?.headers },
+    body: uploadFontBody,
+  })
+}
+
+export const getUploadFontMutationOptions = <TError = void, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadFont>>,
+    TError,
+    { params: UploadFontParams; data?: Blob },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadFont>>,
+  TError,
+  { params: UploadFontParams; data?: Blob },
+  TContext
+> => {
+  const mutationKey = ['uploadFont']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadFont>>,
+    { params: UploadFontParams; data?: Blob }
+  > = (props) => {
+    const { params, data } = props ?? {}
+
+    return uploadFont(params, data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type UploadFontMutationResult = NonNullable<Awaited<ReturnType<typeof uploadFont>>>
+export type UploadFontMutationBody = Blob | undefined
+export type UploadFontMutationError = void
+
+/**
+ * @summary Import a font from the raw file bytes in the request body. The font is
+validated, registered for immediate use, and cached so it persists across
+restarts. Returns the added face(s).
+ */
+export const useUploadFont = <TError = void, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof uploadFont>>,
+      TError,
+      { params: UploadFontParams; data?: Blob },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof uploadFont>>,
+  TError,
+  { params: UploadFontParams; data?: Blob },
+  TContext
+> => {
+  return useMutation(getUploadFontMutationOptions(options), queryClient)
+}
 export const getGetGoogleFontsCatalogUrl = () => {
   return `/api/v1/google-fonts`
 }

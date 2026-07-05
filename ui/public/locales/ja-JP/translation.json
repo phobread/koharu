@@ -225,7 +225,9 @@
       "italicWithName": "{{name}} イタリック",
       "regularItalic": "標準 イタリック"
     },
-    "resetToAuto": "自動（モデル予測）に戻す"
+    "resetToAuto": "自動（モデル予測）に戻す",
+    "uploadFont": "フォントを追加",
+    "uploadFontError": "このフォントファイルを読み込めませんでした"
   },
   "textBlocks": {
     "emptyPrompt": "画像を開くとテキストブロックが表示されます。",

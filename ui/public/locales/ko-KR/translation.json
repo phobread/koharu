@@ -247,7 +247,9 @@
       "italicWithName": "{{name}} 이탤릭",
       "regularItalic": "레귤러 이탤릭"
     },
-    "resetToAuto": "자동(모델 예측)으로 재설정"
+    "resetToAuto": "자동(모델 예측)으로 재설정",
+    "uploadFont": "폰트 추가",
+    "uploadFontError": "해당 폰트 파일을 불러올 수 없습니다"
   },
   "textBlocks": {
     "emptyPrompt": "텍스트 블록을 보려면 이미지를 열어주세요.",

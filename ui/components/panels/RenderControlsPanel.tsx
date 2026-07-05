@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { ColorPicker } from '@/components/ui/color-picker'
 import { FontSelect, useGoogleFontPreview } from '@/components/ui/font-select'
+import { FontUploadButton } from '@/components/ui/font-upload-button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -537,6 +538,17 @@ export function RenderControlsPanel() {
               }}
             />
           </div>
+          <FontUploadButton
+            className='size-7'
+            onUploaded={(postScriptName) => {
+              if (selectedNode) {
+                applyStyleToSelected({ fontFamilies: [postScriptName] })
+                return
+              }
+              usePreferencesStore.getState().setDefaultFont(postScriptName)
+              if (page) queueAutoRender(page.id)
+            }}
+          />
           {currentVariants && currentVariants.length > 1 && (
             <div className='min-w-0 flex-1'>
               <Select

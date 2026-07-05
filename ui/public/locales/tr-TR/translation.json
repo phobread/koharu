@@ -225,7 +225,9 @@
       "italicWithName": "{{name}} İtalik",
       "regularItalic": "Normal İtalik"
     },
-    "resetToAuto": "Otomatiğe sıfırla (model tahmini)"
+    "resetToAuto": "Otomatiğe sıfırla (model tahmini)",
+    "uploadFont": "Yazı tipi yükle",
+    "uploadFontError": "Bu yazı tipi dosyası içe aktarılamadı"
   },
   "textBlocks": {
     "emptyPrompt": "Metin bloklarını görmek için bir görsel açın.",

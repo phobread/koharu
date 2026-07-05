@@ -225,7 +225,9 @@
       "italicWithName": "{{name}} cursiva",
       "regularItalic": "Regular cursiva"
     },
-    "resetToAuto": "Restablecer a automático (predicción del modelo)"
+    "resetToAuto": "Restablecer a automático (predicción del modelo)",
+    "uploadFont": "Subir fuente",
+    "uploadFontError": "No se pudo importar ese archivo de fuente"
   },
   "textBlocks": {
     "emptyPrompt": "Abre una imagen para ver los bloques de texto.",
