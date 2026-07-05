@@ -245,7 +245,9 @@
     "readingOrderRtl": "从右至左 (RTL)",
     "readingOrderLtr": "从左至右 (LTR)",
     "readingOrderCustom": "自定义",
-    "peekOriginal": "在文本块下方显示原图"
+    "peekOriginal": "在文本块下方显示原图",
+    "slant": "倾斜",
+    "straighten": "恢复水平（0°）"
   },
   "workspace": {
     "importPrompt": "导入页面以开始编辑。",

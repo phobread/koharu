@@ -245,7 +245,9 @@
     "readingOrderRtl": "Справа налево (RTL)",
     "readingOrderLtr": "Слева направо (LTR)",
     "readingOrderCustom": "Свой",
-    "peekOriginal": "Показывать оригинал под блоком"
+    "peekOriginal": "Показывать оригинал под блоком",
+    "slant": "Наклон",
+    "straighten": "Выровнять (0°)"
   },
   "workspace": {
     "importPrompt": "Импортируйте страницу, чтобы начать редактирование.",

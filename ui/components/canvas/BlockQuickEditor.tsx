@@ -1,6 +1,7 @@
 'use client'
 
 import { ImageIcon, XIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -12,7 +13,7 @@ import { ops } from '@/lib/ops'
 
 const EDITOR_WIDTH = 240
 const EDITOR_GAP = 10
-const EDITOR_APPROX_HEIGHT = 170
+const EDITOR_APPROX_HEIGHT = 200
 
 /**
  * Small floating editor anchored beside the selected block: the OCR'd source
@@ -48,6 +49,37 @@ export function BlockQuickEditor({
   const patch = (p: TextDataPatch) => {
     void (async () => {
       await applyOp(ops.updateNode(page.id, node.id, { data: { text: p } as never }))
+      queueAutoRender(page.id)
+    })()
+  }
+
+  // Slant: rotation about the box centre, matching the canvas outline and
+  // the baked-in sprite rotation. Draft state commits on blur / Enter so
+  // typing "-1" doesn't fire a re-render at "-".
+  const rotation = box.rotationDeg ?? 0
+  const [slantDraft, setSlantDraft] = useState(String(Math.round(rotation * 10) / 10))
+  useEffect(() => {
+    setSlantDraft(String(Math.round(rotation * 10) / 10))
+  }, [rotation, node.id])
+
+  const commitSlant = (raw: string) => {
+    const parsed = Number.parseFloat(raw)
+    if (!Number.isFinite(parsed)) {
+      setSlantDraft(String(Math.round(rotation * 10) / 10))
+      return
+    }
+    const deg = Math.max(-180, Math.min(180, Math.round(parsed * 10) / 10))
+    setSlantDraft(String(deg))
+    if (deg === rotation) return
+    void (async () => {
+      await applyOp(
+        ops.updateNode(page.id, node.id, {
+          transform: { ...box, rotationDeg: deg },
+          // Keep the user's box footprint: a slant tweak must not hand the
+          // block back to bubble-fit expansion.
+          data: { text: { lockLayoutBox: true } } as never,
+        }),
+      )
       queueAutoRender(page.id)
     })()
   }
@@ -119,6 +151,38 @@ export function BlockQuickEditor({
           onValueChange={(value) => patch({ translation: value })}
           className='min-h-0 resize-none bg-background px-1.5 py-1 text-xs'
         />
+      </div>
+      <div className='flex items-center gap-1.5'>
+        <span className='flex-1 text-[10px] text-muted-foreground uppercase'>
+          {t('textBlocks.slant')}
+        </span>
+        <input
+          data-testid='quick-editor-slant'
+          type='number'
+          step={1}
+          min={-180}
+          max={180}
+          value={slantDraft}
+          onChange={(e) => setSlantDraft(e.target.value)}
+          onBlur={(e) => commitSlant(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitSlant((e.target as HTMLInputElement).value)
+          }}
+          className='h-6 w-16 rounded-md border border-input bg-background px-1.5 text-right text-xs outline-none focus-visible:border-ring'
+        />
+        <span className='text-[10px] text-muted-foreground'>°</span>
+        <Button
+          variant='ghost'
+          size='icon-xs'
+          className='size-5 text-muted-foreground hover:text-foreground'
+          aria-label={t('textBlocks.straighten')}
+          title={t('textBlocks.straighten')}
+          data-testid='quick-editor-straighten'
+          disabled={rotation === 0}
+          onClick={() => commitSlant('0')}
+        >
+          <span className='text-[10px] font-semibold'>0°</span>
+        </Button>
       </div>
     </div>
   )

@@ -267,7 +267,9 @@
     "readingOrderRtl": "우에서 좌 (RTL)",
     "readingOrderLtr": "좌에서 우 (LTR)",
     "readingOrderCustom": "사용자 정의",
-    "peekOriginal": "블록 아래에 원본 그림 표시"
+    "peekOriginal": "블록 아래에 원본 그림 표시",
+    "slant": "기울기",
+    "straighten": "똑바로 (0°)"
   },
   "workspace": {
     "importPrompt": "편집을 시작하려면 페이지를 가져오세요.",

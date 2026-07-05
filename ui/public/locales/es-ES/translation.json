@@ -245,7 +245,9 @@
     "readingOrderRtl": "Derecha a izquierda (RTL)",
     "readingOrderLtr": "Izquierda a derecha (LTR)",
     "readingOrderCustom": "Personalizado",
-    "peekOriginal": "Mostrar el arte original bajo el bloque"
+    "peekOriginal": "Mostrar el arte original bajo el bloque",
+    "slant": "Inclinación",
+    "straighten": "Enderezar (0°)"
   },
   "workspace": {
     "importPrompt": "Importa una página para comenzar a editar.",

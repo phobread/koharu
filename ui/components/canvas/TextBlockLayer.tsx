@@ -16,6 +16,7 @@ import {
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
+import { cornerScaleFactor, resizeRotatedBox, scaleRotatedBox, type Box } from '@/lib/rotatedBox'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 import { mergeTextStyle } from '@/lib/textStyle'
@@ -219,19 +220,35 @@ function TextBlockItem({
   onScalePreview,
 }: TextBlockItemProps) {
   const boxRef = useRef<HTMLDivElement>(null)
-  const dragStart = useRef({ x: 0, y: 0, w: 0, h: 0 })
+  const dragStart = useRef<Box>({ x: 0, y: 0, width: 0, height: 0 })
   const edgeRef = useRef<ResizeEdge | null>(null)
   const isResizeRef = useRef(false)
+
+  const t = node.transform
+  // Slant: boxes rotate about their centre, matching the baked-in sprite
+  // rotation on the render side.
+  const deg = t.rotationDeg ?? 0
 
   const setBox = (x: number, y: number, w: number, h: number) => {
     const el = boxRef.current
     if (!el) return
-    el.style.transform = `translate(${x}px, ${y}px)`
+    el.style.transform = `translate(${x}px, ${y}px) rotate(${deg}deg)`
     el.style.width = `${w}px`
     el.style.height = `${h}px`
   }
 
-  const t = node.transform
+  const commitBox = (b: Box, scaleFactor?: number) => {
+    onCommit(
+      {
+        x: Math.round(b.x / scale),
+        y: Math.round(b.y / scale),
+        width: Math.max(4, Math.round(b.width / scale)),
+        height: Math.max(4, Math.round(b.height / scale)),
+        rotationDeg: deg,
+      },
+      scaleFactor,
+    )
+  }
 
   const bind = useDrag(
     ({ first, last, movement: [mx, my], event, tap }) => {
@@ -246,86 +263,49 @@ function TextBlockItem({
         dragStart.current = {
           x: t.x * scale,
           y: t.y * scale,
-          w: t.width * scale,
-          h: t.height * scale,
+          width: t.width * scale,
+          height: t.height * scale,
         }
         // Keep multi-selection intact when dragging a node that's already selected;
         // otherwise this click is a single-select (unless the modifier is held).
         if (additive || !selected) onSelect(node.id, additive)
       }
-      const { x: sx, y: sy, w: sw, h: sh } = dragStart.current
+      const start = dragStart.current
       const edge = edgeRef.current
       const isCorner = !!edge && (edge.left || edge.right) && (edge.top || edge.bottom)
       if (isResizeRef.current && edge && isCorner) {
         // Corner drag scales the whole block Canva-style: uniform factor
-        // (aspect locked), opposite corner anchored, text size follows on
-        // commit. The dominant drag axis drives the factor.
-        const wR = (edge.right ? sw + mx : sw - mx) / sw
-        const hR = (edge.bottom ? sh + my : sh - my) / sh
-        let factor = Math.abs(wR - 1) >= Math.abs(hR - 1) ? wR : hR
-        const minFactor = Math.max((4 * scale) / sw, (4 * scale) / sh)
-        factor = Math.max(factor, minFactor)
-        const w = sw * factor
-        const h = sh * factor
-        const dx = edge.left ? sw - w : 0
-        const dy = edge.top ? sh - h : 0
-        setBox(sx + dx, sy + dy, w, h)
+        // (aspect locked), opposite corner anchored on screen, text size
+        // follows on commit. The dominant drag axis (in the box's local
+        // frame, so slanted blocks feel right) drives the factor.
+        const minFactor = Math.max((4 * scale) / start.width, (4 * scale) / start.height)
+        const factor = cornerScaleFactor(start, edge, mx, my, deg, minFactor)
+        const b = scaleRotatedBox(start, edge, factor, deg)
+        setBox(b.x, b.y, b.width, b.height)
         onScalePreview(factor)
         if (last) {
           isResizeRef.current = false
           edgeRef.current = null
           onScalePreview(null)
-          onCommit(
-            {
-              x: Math.round((sx + dx) / scale),
-              y: Math.round((sy + dy) / scale),
-              width: Math.max(4, Math.round(w / scale)),
-              height: Math.max(4, Math.round(h / scale)),
-              rotationDeg: t.rotationDeg ?? 0,
-            },
-            factor,
-          )
+          commitBox(b, factor)
         }
       } else if (isResizeRef.current && edge) {
-        let dx = 0
-        let dy = 0
-        let w = sw
-        let h = sh
-        if (edge.right) w += mx
-        if (edge.left) {
-          w -= mx
-          dx = mx
-        }
-        if (edge.bottom) h += my
-        if (edge.top) {
-          h -= my
-          dy = my
-        }
-        w = Math.max(4 * scale, w)
-        h = Math.max(4 * scale, h)
-        if (edge.left && w === 4 * scale) dx = sw - 4 * scale
-        if (edge.top && h === 4 * scale) dy = sh - 4 * scale
-        setBox(sx + dx, sy + dy, w, h)
+        const b = resizeRotatedBox(start, edge, mx, my, deg, 4 * scale)
+        setBox(b.x, b.y, b.width, b.height)
         if (last) {
           isResizeRef.current = false
           edgeRef.current = null
-          onCommit({
-            x: Math.round((sx + dx) / scale),
-            y: Math.round((sy + dy) / scale),
-            width: Math.max(4, Math.round(w / scale)),
-            height: Math.max(4, Math.round(h / scale)),
-            rotationDeg: t.rotationDeg ?? 0,
-          })
+          commitBox(b)
         }
       } else {
-        setBox(sx + mx, sy + my, sw, sh)
+        setBox(start.x + mx, start.y + my, start.width, start.height)
         if (last) {
           onCommit({
-            x: Math.round((sx + mx) / scale),
-            y: Math.round((sy + my) / scale),
+            x: Math.round((start.x + mx) / scale),
+            y: Math.round((start.y + my) / scale),
             width: t.width,
             height: t.height,
-            rotationDeg: t.rotationDeg ?? 0,
+            rotationDeg: deg,
           })
         }
       }
@@ -355,7 +335,7 @@ function TextBlockItem({
         position: 'absolute',
         top: 0,
         left: 0,
-        transform: `translate(${t.x * scale}px, ${t.y * scale}px)`,
+        transform: `translate(${t.x * scale}px, ${t.y * scale}px) rotate(${deg}deg)`,
         width: w,
         height: h,
         pointerEvents: interactive ? 'auto' : 'none',
@@ -400,6 +380,7 @@ function OriginalArtPeek({
   src: string
 }) {
   const t = node.transform
+  const deg = t.rotationDeg ?? 0
   return (
     <div
       data-testid='original-art-peek'
@@ -409,6 +390,9 @@ function OriginalArtPeek({
         top: t.y * scale,
         width: t.width * scale,
         height: t.height * scale,
+        // The window follows the block's slant; the image inside counter-
+        // rotates about the same centre so the art itself stays upright.
+        transform: `rotate(${deg}deg)`,
       }}
     >
       <img
@@ -422,6 +406,8 @@ function OriginalArtPeek({
           top: -t.y * scale,
           width: page.width * scale,
           height: page.height * scale,
+          transform: `rotate(${-deg}deg)`,
+          transformOrigin: `${(t.x + t.width / 2) * scale}px ${(t.y + t.height / 2) * scale}px`,
         }}
       />
     </div>

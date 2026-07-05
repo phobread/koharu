@@ -245,7 +245,9 @@
     "readingOrderRtl": "Sağdan Sola (RTL)",
     "readingOrderLtr": "Soldan Sağa (LTR)",
     "readingOrderCustom": "Özel",
-    "peekOriginal": "Bloğun altında orijinal çizimi göster"
+    "peekOriginal": "Bloğun altında orijinal çizimi göster",
+    "slant": "Eğim",
+    "straighten": "Düzelt (0°)"
   },
   "workspace": {
     "importPrompt": "Düzenlemeye başlamak için bir sayfa içe aktarın.",

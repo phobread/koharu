@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use image::{DynamicImage, GrayImage, RgbaImage, imageops};
+use image::{DynamicImage, GrayImage, Rgba, RgbaImage, imageops};
 use koharu_core::{
     FontFaceInfo, FontPrediction, FontSource, NodeId, TextAlign, TextDirection, TextShaderEffect,
     TextStrokeStyle, TextStyle, Transform,
@@ -380,6 +380,13 @@ impl Renderer {
             .as_ref(),
         );
         let fit_box = inset_layout_box(layout_box, fit_clearance);
+        // Slanted text: the layout/fit runs in the block's local (unrotated)
+        // frame, then the sprite raster is rotated about its centre and the
+        // emitted transform becomes the rotated AABB with rotation 0 (baked
+        // in). Downstream consumers — page composite, UI overlay, PSD export
+        // — all place sprites by that transform and need no rotation logic,
+        // and mask-collision fitting below tests the true rotated footprint.
+        let rotation_deg = effective_rotation(block.transform.rotation_deg);
         let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
             let resolved_stroke = resolve_stroke_style(
                 block.font_prediction.as_ref(),
@@ -402,12 +409,12 @@ impl Renderer {
                     ..Default::default()
                 },
             )?;
-            let transform = centred_sprite_transform(
-                layout_box,
-                rendered.width(),
-                rendered.height(),
-                block.transform.rotation_deg,
-            );
+            let rendered = match rotation_deg {
+                Some(deg) => rotate_sprite(&rendered, deg),
+                None => rendered,
+            };
+            let transform =
+                centred_sprite_transform(layout_box, rendered.width(), rendered.height(), 0.0);
             Ok(RenderedTextCandidate {
                 image: rendered,
                 transform,
@@ -1314,6 +1321,91 @@ fn rendered_direction_for_writing_mode(writing_mode: WritingMode) -> TextDirecti
 // Helpers: placement
 // ---------------------------------------------------------------------------
 
+/// Rotation angles under half a degree are detector noise / straight text —
+/// skip the resample entirely so the common case stays pixel-identical.
+fn effective_rotation(rotation_deg: f32) -> Option<f32> {
+    let deg = rotation_deg % 360.0;
+    let deg = if deg > 180.0 {
+        deg - 360.0
+    } else if deg < -180.0 {
+        deg + 360.0
+    } else {
+        deg
+    };
+    (deg.abs() >= 0.5).then_some(deg)
+}
+
+/// Rotate a sprite clockwise about its centre (screen convention: y-down,
+/// positive = clockwise, matching CSS `rotate`). The output is sized to the
+/// rotated bounding box with transparent fill; sampling is bilinear on
+/// premultiplied alpha so anti-aliased glyph edges don't pick up dark fringes.
+fn rotate_sprite(src: &RgbaImage, deg: f32) -> RgbaImage {
+    let rad = deg.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    let (w, h) = (src.width() as f32, src.height() as f32);
+    // Snap before ceil: cos(90°) in f32 is ~-4e-8, which would otherwise
+    // bloat an exact quarter-turn AABB by a pixel.
+    let snap = |v: f32| ((v * 1024.0).round() / 1024.0).ceil().max(1.0) as u32;
+    let out_w = snap(w * cos.abs() + h * sin.abs());
+    let out_h = snap(w * sin.abs() + h * cos.abs());
+    let (cx, cy) = (w * 0.5, h * 0.5);
+    let (ocx, ocy) = (out_w as f32 * 0.5, out_h as f32 * 0.5);
+
+    let mut out = RgbaImage::new(out_w, out_h);
+    for y in 0..out_h {
+        for x in 0..out_w {
+            // Inverse-map the output pixel centre back into the source frame
+            // (the inverse of a clockwise rotation is the counter-clockwise
+            // one).
+            let dx = x as f32 + 0.5 - ocx;
+            let dy = y as f32 + 0.5 - ocy;
+            let sx = dx * cos + dy * sin + cx - 0.5;
+            let sy = -dx * sin + dy * cos + cy - 0.5;
+            out.put_pixel(x, y, sample_bilinear_premultiplied(src, sx, sy));
+        }
+    }
+    out
+}
+
+/// Bilinear sample at a fractional source position; out-of-bounds taps are
+/// transparent. Interpolates premultiplied components, then un-premultiplies.
+fn sample_bilinear_premultiplied(src: &RgbaImage, sx: f32, sy: f32) -> Rgba<u8> {
+    let x0 = sx.floor();
+    let y0 = sy.floor();
+    let fx = sx - x0;
+    let fy = sy - y0;
+
+    let mut acc = [0.0f32; 4];
+    for (dx, dy, weight) in [
+        (0.0, 0.0, (1.0 - fx) * (1.0 - fy)),
+        (1.0, 0.0, fx * (1.0 - fy)),
+        (0.0, 1.0, (1.0 - fx) * fy),
+        (1.0, 1.0, fx * fy),
+    ] {
+        let px = x0 + dx;
+        let py = y0 + dy;
+        if px < 0.0 || py < 0.0 || px >= src.width() as f32 || py >= src.height() as f32 {
+            continue;
+        }
+        let p = src.get_pixel(px as u32, py as u32).0;
+        let a = p[3] as f32 / 255.0;
+        acc[0] += p[0] as f32 * a * weight;
+        acc[1] += p[1] as f32 * a * weight;
+        acc[2] += p[2] as f32 * a * weight;
+        acc[3] += a * weight;
+    }
+
+    if acc[3] <= f32::EPSILON {
+        return Rgba([0, 0, 0, 0]);
+    }
+    Rgba([
+        (acc[0] / acc[3]).round().clamp(0.0, 255.0) as u8,
+        (acc[1] / acc[3]).round().clamp(0.0, 255.0) as u8,
+        (acc[2] / acc[3]).round().clamp(0.0, 255.0) as u8,
+        (acc[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+    ])
+}
+
 fn centred_sprite_transform(
     anchor_box: LayoutBox,
     sprite_width: u32,
@@ -1363,6 +1455,47 @@ mod tests {
         let mut font_families = Vec::new();
         apply_default_font_families(&mut font_families, "hello");
         assert!(!font_families.is_empty());
+    }
+
+    #[test]
+    fn effective_rotation_ignores_noise_and_normalizes() {
+        assert_eq!(effective_rotation(0.0), None);
+        assert_eq!(effective_rotation(0.4), None);
+        assert_eq!(effective_rotation(-0.49), None);
+        assert_eq!(effective_rotation(12.5), Some(12.5));
+        assert_eq!(effective_rotation(-30.0), Some(-30.0));
+        // Wrapped angles come back into (-180, 180].
+        assert_eq!(effective_rotation(350.0), Some(-10.0));
+        assert_eq!(effective_rotation(-350.0), Some(10.0));
+        assert_eq!(effective_rotation(360.0), None);
+    }
+
+    #[test]
+    fn rotate_sprite_quarter_turn_swaps_dimensions_and_moves_pixels() {
+        // 4×2 sprite, opaque red at top-left.
+        let mut src = RgbaImage::from_pixel(4, 2, Rgba([0, 0, 0, 0]));
+        src.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+
+        let out = rotate_sprite(&src, 90.0);
+        assert_eq!((out.width(), out.height()), (2, 4));
+        // Clockwise: the top-left source pixel lands at the top-right.
+        assert_eq!(out.get_pixel(1, 0).0, [255, 0, 0, 255]);
+        assert_eq!(out.get_pixel(0, 3).0[3], 0);
+    }
+
+    #[test]
+    fn rotate_sprite_slant_expands_bounds_and_keeps_content() {
+        let src = RgbaImage::from_pixel(40, 10, Rgba([0, 255, 0, 255]));
+        let out = rotate_sprite(&src, 30.0);
+        // AABB of a 40×10 rect at 30°: w' = 40·cos30 + 10·sin30 ≈ 39.6,
+        // h' = 40·sin30 + 10·cos30 ≈ 28.7.
+        assert_eq!((out.width(), out.height()), (40, 29));
+        // The centre pixel stays inside the rotated rect and keeps its colour.
+        let c = out.get_pixel(out.width() / 2, out.height() / 2).0;
+        assert_eq!(c, [0, 255, 0, 255]);
+        // Corners of the expanded canvas fall outside the rotated rect.
+        assert_eq!(out.get_pixel(0, 0).0[3], 0);
+        assert_eq!(out.get_pixel(out.width() - 1, out.height() - 1).0[3], 0);
     }
 
     #[test]
