@@ -25,6 +25,8 @@ type Blob = Record<string, string>
 
 const LEGACY_LOCALSTORAGE_KEY = 'koharu-config'
 const FLUSH_DELAY_MS = 400
+const LOAD_RETRIES = 5
+const LOAD_RETRY_BASE_MS = 300
 
 let cache: Blob | null = null
 let loadPromise: Promise<Blob> | null = null
@@ -40,13 +42,32 @@ function readLegacyBlob(): Blob | null {
   return legacy ? { [LEGACY_LOCALSTORAGE_KEY]: legacy } : null
 }
 
+/**
+ * `GET /config` with retries. A single transient failure at startup must not
+ * poison hydration: settings would silently fall back to defaults for the
+ * whole session (and the first write would overwrite the real saved settings
+ * server-side — how "the LLM keeps resetting" bugs are born).
+ */
+async function getConfigWithRetry(): Promise<Awaited<ReturnType<typeof getConfig>>> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < LOAD_RETRIES; attempt += 1) {
+    try {
+      return await getConfig()
+    } catch (err) {
+      lastError = err
+      await new Promise((r) => setTimeout(r, LOAD_RETRY_BASE_MS * 2 ** attempt))
+    }
+  }
+  throw lastError
+}
+
 async function load(): Promise<Blob> {
   if (cache) return cache
   if (loadPromise) return loadPromise
   loadPromise = (async () => {
     let blob: Blob = {}
     try {
-      const config = await getConfig()
+      const config = await getConfigWithRetry()
       const raw = config.editor?.client
       if (raw) {
         try {
@@ -57,13 +78,11 @@ async function load(): Promise<Blob> {
         }
       }
     } catch (err) {
-      const legacy = readLegacyBlob()
-      if (legacy) {
-        cache = legacy
-        return legacy
-      }
-      // Do not cache an empty blob after a failed config read: a later write
-      // would overwrite existing settings with partial startup defaults.
+      // Do not cache anything after a failed config read — not even the
+      // legacy localStorage blob (it predates some stores, so treating it as
+      // the full truth would hydrate those stores as "empty" and let a later
+      // flush overwrite their real server-side settings). Failing keeps
+      // hydration pending, which is the safe state.
       loadPromise = null
       throw err
     }

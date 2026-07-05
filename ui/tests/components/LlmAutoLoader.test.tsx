@@ -63,6 +63,40 @@ describe('LlmAutoLoader', () => {
     expect(loadRequests[0]).toEqual({ target })
   })
 
+  it('never auto-selects or loads a local model when nothing is saved', async () => {
+    useEditorUiStore.setState({ selectedTarget: undefined, selectedLanguage: undefined })
+    const loadRequests: unknown[] = []
+    server.use(
+      http.get('/api/v1/llm/catalog', () =>
+        HttpResponse.json({
+          localModels: [
+            {
+              name: 'vntl-llama3-8b-v2',
+              languages: ['ja-JP'],
+              target: { kind: 'local', modelId: 'vntl-llama3-8b-v2' },
+            },
+          ],
+          providers: [],
+        }),
+      ),
+      http.get('/api/v1/llm/current', () =>
+        HttpResponse.json({ status: 'empty', target: null, error: null }),
+      ),
+      http.put('/api/v1/llm/current', async ({ request }) => {
+        loadRequests.push(await request.json())
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+
+    renderWithQuery(<LlmAutoLoader />)
+
+    // Auto-loading a local model here would silently start a multi-GB
+    // weights download; the selection must stay empty instead.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(loadRequests).toHaveLength(0)
+    expect(useEditorUiStore.getState().selectedTarget).toBeUndefined()
+  })
+
   it('auto-loads a persisted target before catalog discovery lists it', async () => {
     const loadRequests: unknown[] = []
     server.use(

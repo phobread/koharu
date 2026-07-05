@@ -32,7 +32,12 @@ import {
   useGetCatalog,
   useGetCurrentLlm,
 } from '@/lib/api/default/default'
-import { flattenCatalogModels, llmTargetKey, sameLlmTarget } from '@/lib/llmTargets'
+import {
+  flattenCatalogModels,
+  llmTargetKey,
+  sameLlmTarget,
+  withSelectedTarget,
+} from '@/lib/llmTargets'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -222,16 +227,23 @@ function LlmStatusPopover() {
   const setCustomSystemPrompt = usePreferencesStore((s) => s.setCustomSystemPrompt)
   const llmSelectedLanguage = useEditorUiStore((s) => s.selectedLanguage)
 
+  // Keep the saved selection visible even while provider discovery is slow
+  // or failing — otherwise the picker shows a placeholder and the selection
+  // looks reset when it isn't.
+  const displayModels = useMemo(
+    () => withSelectedTarget(llmModels, selectedTarget, llmSelectedLanguage),
+    [llmModels, selectedTarget, llmSelectedLanguage],
+  )
   const selectedModel = useMemo(
-    () => llmModels.find(({ model }) => sameLlmTarget(model.target, selectedTarget)),
-    [llmModels, selectedTarget],
+    () => displayModels.find(({ model }) => sameLlmTarget(model.target, selectedTarget)),
+    [displayModels, selectedTarget],
   )
   const selectedTargetKey = selectedTarget ? llmTargetKey(selectedTarget) : undefined
   const selectedModelLanguages = selectedModel?.model.languages ?? []
   const selectedIsLoaded = llmReady && sameLlmTarget(llmState?.target, selectedTarget)
 
   const handleSetSelectedModel = (key: string) => {
-    const next = llmModels.find(({ model }) => llmTargetKey(model.target) === key)
+    const next = displayModels.find(({ model }) => llmTargetKey(model.target) === key)
     if (!next) return
     const nextLanguages = next.model.languages
     const nextLanguage =
@@ -311,7 +323,7 @@ function LlmStatusPopover() {
             <LlmModelSelect
               data-testid='llm-model-select'
               value={selectedTargetKey}
-              options={llmModels}
+              options={displayModels}
               getKey={({ model }) => llmTargetKey(model.target)}
               placeholder={t('llm.selectPlaceholder')}
               onChange={handleSetSelectedModel}
