@@ -248,20 +248,26 @@ pub fn image_dimensions(image: &DynamicImage) -> (u32, u32) {
 /// Collapse a multi-line OCR result into one line. OCR line breaks mirror
 /// the bubble's layout, not sentence structure — the renderer re-wraps to
 /// the box anyway, and single-line text is easier to proofread and edit.
-/// CJK lines join without a separator; other scripts join with a space,
-/// and a hyphen at a line break is treated as a soft hyphen and dropped.
+///
+/// Japanese and Chinese run words together with no inter-word spaces, so
+/// their lines join bare. Korean, Latin, Cyrillic and the like DO separate
+/// words with spaces — joining those bare would fuse the last word of one
+/// line with the first word of the next, so they join with a space. A hyphen
+/// at a line break is treated as a soft hyphen and dropped.
 pub fn single_line_ocr_text(text: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
-    let cjk = text.chars().any(is_cjk_char);
+    // Korean shares the CJK code blocks but spaces its words, so a page with
+    // any Hangul is treated as space-separated even if it also carries Hanja.
+    let space_less = !text.chars().any(is_hangul) && text.chars().any(is_han_or_kana);
     let mut out = String::with_capacity(text.len());
     for line in lines {
         if out.is_empty() {
             out.push_str(line);
-        } else if cjk {
+        } else if space_less {
             out.push_str(line);
         } else if out.ends_with('-') {
             out.pop();
@@ -274,15 +280,25 @@ pub fn single_line_ocr_text(text: &str) -> String {
     out
 }
 
-fn is_cjk_char(c: char) -> bool {
+/// Hangul: Korean writes with spaces between words.
+fn is_hangul(c: char) -> bool {
     matches!(c as u32,
-        0x3000..=0x303F     // CJK punctuation
-        | 0x3040..=0x30FF   // hiragana + katakana
+        0x1100..=0x11FF     // hangul jamo
+        | 0x3130..=0x318F   // hangul compatibility jamo
+        | 0xA960..=0xA97F   // hangul jamo extended-A
+        | 0xAC00..=0xD7AF   // hangul syllables + extended-B
+    )
+}
+
+/// Han ideographs or Japanese kana: scripts that run words together with no
+/// inter-word spaces.
+fn is_han_or_kana(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30FF     // hiragana + katakana
         | 0x3400..=0x4DBF   // CJK extension A
         | 0x4E00..=0x9FFF   // CJK unified ideographs
-        | 0xAC00..=0xD7AF   // hangul syllables
         | 0xF900..=0xFAFF   // CJK compatibility ideographs
-        | 0xFF00..=0xFFEF   // fullwidth forms
+        | 0xFF66..=0xFF9F   // halfwidth katakana
     )
 }
 
@@ -540,6 +556,14 @@ mod tests {
             single_line_ocr_text("こんな告白\nされても\n困る…"),
             "こんな告白されても困る…"
         );
+        // Korean shares the CJK blocks but spaces its words, so join with a
+        // space instead of fusing the adjacent words into one.
+        assert_eq!(
+            single_line_ocr_text("반가워요\n오늘도\n좋은 하루"),
+            "반가워요 오늘도 좋은 하루"
+        );
+        // Korean carrying a stray Hanja still counts as space-separated.
+        assert_eq!(single_line_ocr_text("한국\n語"), "한국 語");
         // Latin scripts: space-separated, soft hyphens at breaks dropped.
         assert_eq!(
             single_line_ocr_text("even this confe-\nssion is\ntoo much"),
