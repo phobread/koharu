@@ -27,6 +27,11 @@ impl Engine for Model {
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect();
 
+        // NOTE: auto-rotation from the segmentation ink was tried here
+        // (`estimate_block_rotation`, still available in koharu-ml) and
+        // reverted — on real pages it flagged straight blocks as slanted and
+        // hurt OCR. Rotation is manual now: the canvas rotator / slant input
+        // sets the node's angle, and OCR deskews its crop from the transform.
         let mask = refine_segmentation_mask(&image, &prob_mask, &regions);
         let mask_blob = ctx.blobs.put_webp(&DynamicImage::ImageLuma8(mask))?;
 

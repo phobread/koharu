@@ -81,12 +81,243 @@ pub fn crop_text_block_bbox(image: &DynamicImage, block: &TextRegion) -> Dynamic
     image.crop_imm(x1, y1, x2.saturating_sub(x1), y2.saturating_sub(y1))
 }
 
+/// Minimum block angle (degrees) before a crop is worth deskewing; below
+/// this the axis-aligned crop is effectively identical.
+const DESKEW_MIN_DEG: f32 = 0.5;
+
+/// Crop `block` out of `image`, warping it upright first when the block
+/// carries a meaningful `rotation_deg`. The block geometry is the upright
+/// `x/y/width/height` rect rotated about its own centre — the same
+/// convention as the scene `Transform` and the renderer — so the returned
+/// image contains the text as if it had been printed horizontally.
+///
+/// Straight blocks fall back to [`crop_text_block_bbox`] unchanged.
+pub fn crop_text_block_deskewed(image: &DynamicImage, block: &TextRegion) -> DynamicImage {
+    let angle = block.rotation_deg.unwrap_or(0.0);
+    if !angle.is_finite() || angle.abs() < DESKEW_MIN_DEG {
+        return crop_text_block_bbox(image, block);
+    }
+
+    // Pad the upright rect a little: rotation estimates hug the ink and OCR
+    // models prefer a small margin around the glyphs.
+    let pad = (block.width.min(block.height) * 0.08).clamp(2.0, 12.0);
+    let w = block.width + 2.0 * pad;
+    let h = block.height + 2.0 * pad;
+    let cx = block.x + block.width * 0.5;
+    let cy = block.y + block.height * 0.5;
+    let (sin, cos) = angle.to_radians().sin_cos();
+
+    // Corners of the padded upright rect rotated into image space
+    // (clockwise from top-left, screen convention: y-down, CW-positive).
+    let local = [
+        [-w * 0.5, -h * 0.5],
+        [w * 0.5, -h * 0.5],
+        [w * 0.5, h * 0.5],
+        [-w * 0.5, h * 0.5],
+    ];
+    let quad: Quad = local.map(|[lx, ly]| [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly]);
+
+    // Warp from a crop of the quad's bounding box, not the whole page, so
+    // the source stays small; pixels outside the page fill white (manga
+    // margins are white, and OCR reads dark-on-light).
+    let bbox = quad_bbox(&quad);
+    let x1 = bbox[0].floor().max(0.0) as u32;
+    let y1 = bbox[1].floor().max(0.0) as u32;
+    let x2 = (bbox[2].ceil().min(image.width() as f32) as u32).max(x1 + 1);
+    let y2 = (bbox[3].ceil().min(image.height() as f32) as u32).max(y1 + 1);
+    let cropped = image.crop_imm(x1, y1, x2 - x1, y2 - y1).to_rgb8();
+    let src = quad.map(|[px, py]| (px - x1 as f32, py - y1 as f32));
+
+    let out_w = (w.round() as u32).max(1);
+    let out_h = (h.round() as u32).max(1);
+    let dst = [
+        (0.0f32, 0.0f32),
+        ((out_w - 1) as f32, 0.0),
+        ((out_w - 1) as f32, (out_h - 1) as f32),
+        (0.0, (out_h - 1) as f32),
+    ];
+    let Some(projection) = Projection::from_control_points(src, dst) else {
+        return crop_text_block_bbox(image, block);
+    };
+
+    let mut out = RgbImage::from_pixel(out_w, out_h, Rgb([255, 255, 255]));
+    warp_into(
+        &cropped,
+        projection,
+        Interpolation::Bilinear,
+        imageproc::geometric_transformations::Border::Constant(Rgb([255, 255, 255])),
+        &mut out,
+    );
+    DynamicImage::ImageRgb8(out)
+}
+
+// ---------------------------------------------------------------------------
+// Rotation estimation from the segmentation mask
+// ---------------------------------------------------------------------------
+
+/// The tightest rotated rectangle around a block's ink. `angle_deg` follows
+/// the scene `Transform` / CSS convention: clockwise-positive on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotatedRect {
+    pub cx: f32,
+    pub cy: f32,
+    pub width: f32,
+    pub height: f32,
+    pub angle_deg: f32,
+}
+
+/// Too little ink and any angle estimate is noise.
+const ROTATION_MIN_INK_PIXELS: usize = 64;
+/// Angles below this are treated as straight — keeps ordinary pages
+/// byte-identical and avoids jittering every box by fractions of a degree.
+const ROTATION_MIN_DEG: f32 = 3.0;
+/// Manga text slants; it rarely lies past 45°, and beyond that the
+/// line-vs-column ambiguity makes the estimate unreliable.
+const ROTATION_MAX_DEG: f32 = 45.0;
+/// The best angle's profile score must beat the straight score by this
+/// factor, otherwise the block is straight text with a ragged outline.
+const ROTATION_SCORE_MARGIN: f32 = 1.2;
+/// Profile scoring is O(samples × angles); cap the ink sample count.
+const ROTATION_MAX_SAMPLES: usize = 20_000;
+
+/// Estimate the rotation of the text inside `block` from the page-level
+/// segmentation probability mask (`pred_mask`, one byte per pixel).
+///
+/// Uses projection-profile scoring: at the true angle the ink collapses
+/// into sharp line/gap bands, which maximises the variance of the profile
+/// histogram. This is robust for single slanted lines *and* multi-line
+/// paragraphs, and — unlike a min-area rectangle — is not fooled by
+/// straight text with ragged line lengths.
+///
+/// Returns `None` when the block reads as straight (the common case) or
+/// there is too little ink to judge.
+pub fn estimate_block_rotation(pred_mask: &GrayImage, block: &TextRegion) -> Option<RotatedRect> {
+    let [x1, y1, x2, y2] =
+        expanded_text_block_crop_bounds(pred_mask.width(), pred_mask.height(), block);
+    let mut points: Vec<[f32; 2]> = Vec::new();
+    for y in y1..y2 {
+        for x in x1..x2 {
+            if pred_mask.get_pixel(x, y)[0] > super::BINARY_THRESHOLD {
+                points.push([x as f32, y as f32]);
+            }
+        }
+    }
+    if points.len() < ROTATION_MIN_INK_PIXELS {
+        return None;
+    }
+    if points.len() > ROTATION_MAX_SAMPLES {
+        let stride = points.len().div_ceil(ROTATION_MAX_SAMPLES);
+        points = points.iter().step_by(stride).copied().collect();
+    }
+
+    // Coarse sweep across the full range, then refine around the winner.
+    let straight_score = profile_score(&points, 0.0);
+    let mut best_angle = 0.0f32;
+    let mut best_score = straight_score;
+    let mut deg = -ROTATION_MAX_DEG;
+    while deg <= ROTATION_MAX_DEG {
+        let score = profile_score(&points, deg);
+        if score > best_score {
+            best_score = score;
+            best_angle = deg;
+        }
+        deg += 1.5;
+    }
+    let mut deg = best_angle - 1.25;
+    let fine_end = best_angle + 1.25;
+    while deg <= fine_end {
+        let score = profile_score(&points, deg);
+        if score > best_score {
+            best_score = score;
+            best_angle = deg;
+        }
+        deg += 0.25;
+    }
+
+    if best_angle.abs() < ROTATION_MIN_DEG
+        || best_angle.abs() > ROTATION_MAX_DEG
+        || best_score < straight_score * ROTATION_SCORE_MARGIN
+    {
+        return None;
+    }
+
+    // Tight rect: extents of the ink in the derotated frame, centre mapped
+    // back into image space. +1 accounts for the pixel's own footprint.
+    let (sin, cos) = best_angle.to_radians().sin_cos();
+    let mut min_u = f32::MAX;
+    let mut max_u = f32::MIN;
+    let mut min_v = f32::MAX;
+    let mut max_v = f32::MIN;
+    for [x, y] in &points {
+        let u = cos * x + sin * y;
+        let v = -sin * x + cos * y;
+        min_u = min_u.min(u);
+        max_u = max_u.max(u);
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
+    }
+    let cu = (min_u + max_u) * 0.5;
+    let cv = (min_v + max_v) * 0.5;
+    Some(RotatedRect {
+        cx: cos * cu - sin * cv,
+        cy: sin * cu + cos * cv,
+        width: max_u - min_u + 1.0,
+        height: max_v - min_v + 1.0,
+        angle_deg: best_angle,
+    })
+}
+
+/// Score how "text-like at angle `deg`" the ink is: derotate the points and
+/// take the larger variance of the row / column occupancy histograms. Sharp
+/// line (or column) bands with clean gaps → high variance.
+fn profile_score(points: &[[f32; 2]], deg: f32) -> f32 {
+    let (sin, cos) = deg.to_radians().sin_cos();
+    let mut rows: Vec<f32> = Vec::new();
+    let mut cols: Vec<f32> = Vec::new();
+    let mut min_u = f32::MAX;
+    let mut min_v = f32::MAX;
+    let derot: Vec<[f32; 2]> = points
+        .iter()
+        .map(|[x, y]| {
+            let u = cos * x + sin * y;
+            let v = -sin * x + cos * y;
+            min_u = min_u.min(u);
+            min_v = min_v.min(v);
+            [u, v]
+        })
+        .collect();
+    for [u, v] in derot {
+        let col = (u - min_u) as usize;
+        let row = (v - min_v) as usize;
+        if cols.len() <= col {
+            cols.resize(col + 1, 0.0);
+        }
+        if rows.len() <= row {
+            rows.resize(row + 1, 0.0);
+        }
+        cols[col] += 1.0;
+        rows[row] += 1.0;
+    }
+    f32::max(histogram_variance(&rows), histogram_variance(&cols))
+}
+
+fn histogram_variance(bins: &[f32]) -> f32 {
+    if bins.is_empty() {
+        return 0.0;
+    }
+    let n = bins.len() as f32;
+    let mean = bins.iter().sum::<f32>() / n;
+    bins.iter().map(|b| (b - mean) * (b - mean)).sum::<f32>() / n
+}
+
 pub fn extract_text_block_regions(image: &DynamicImage, block: &TextRegion) -> Vec<DynamicImage> {
+    // Without per-line polygons the whole-block crop must carry the deskew:
+    // a rotated block cropped axis-aligned hands the OCR slanted glyphs.
     let Some(line_polygons) = block.line_polygons.as_ref() else {
-        return vec![crop_text_block_bbox(image, block)];
+        return vec![crop_text_block_deskewed(image, block)];
     };
     if line_polygons.is_empty() {
-        return vec![crop_text_block_bbox(image, block)];
+        return vec![crop_text_block_deskewed(image, block)];
     }
 
     let rgb = image.to_rgb8();
@@ -98,7 +329,7 @@ pub fn extract_text_block_regions(image: &DynamicImage, block: &TextRegion) -> V
     }
 
     if regions.is_empty() {
-        vec![crop_text_block_bbox(image, block)]
+        vec![crop_text_block_deskewed(image, block)]
     } else {
         regions
     }
@@ -413,5 +644,122 @@ mod tests {
         let crop = crop_text_block_bbox(&image, &block);
         assert!(crop.width() > 12);
         assert!(crop.height() > 8);
+    }
+
+    /// Paint `lines` parallel "text lines" of ink rotated by `deg` (clockwise,
+    /// screen convention) around `centre` into a fresh mask.
+    fn slanted_lines_mask(size: u32, centre: f32, deg: f32, lines: i32) -> GrayImage {
+        let mut mask = GrayImage::new(size, size);
+        let (sin, cos) = deg.to_radians().sin_cos();
+        for line in 0..lines {
+            let offset = (line - lines / 2) as f32 * 14.0;
+            for t in -60..60 {
+                for d in 0..4 {
+                    let lx = t as f32;
+                    let ly = offset + d as f32;
+                    let x = centre + cos * lx - sin * ly;
+                    let y = centre + sin * lx + cos * ly;
+                    if x >= 0.0 && y >= 0.0 && (x as u32) < size && (y as u32) < size {
+                        mask.put_pixel(x as u32, y as u32, Luma([255]));
+                    }
+                }
+            }
+        }
+        mask
+    }
+
+    fn full_block(size: u32) -> TextRegion {
+        TextRegion {
+            x: 4.0,
+            y: 4.0,
+            width: size as f32 - 8.0,
+            height: size as f32 - 8.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn estimate_block_rotation_recovers_slanted_lines() {
+        let mask = slanted_lines_mask(200, 100.0, 12.0, 3);
+        let rect = estimate_block_rotation(&mask, &full_block(200))
+            .expect("slanted lines should yield a rotation");
+        assert!(
+            (rect.angle_deg - 12.0).abs() <= 1.5,
+            "angle {} not near 12°",
+            rect.angle_deg
+        );
+        // Tight rect hugs the ink: ~120 long, 3 lines spanning ~32 tall.
+        assert!((rect.width - 120.0).abs() < 10.0, "width {}", rect.width);
+        assert!((rect.height - 32.0).abs() < 8.0, "height {}", rect.height);
+        assert!((rect.cx - 100.0).abs() < 4.0);
+        assert!((rect.cy - 100.0).abs() < 4.0);
+    }
+
+    #[test]
+    fn estimate_block_rotation_leaves_straight_text_alone() {
+        let mask = slanted_lines_mask(200, 100.0, 0.0, 3);
+        assert_eq!(estimate_block_rotation(&mask, &full_block(200)), None);
+        // Near-straight raggedness stays below the reporting threshold too.
+        let mask = slanted_lines_mask(200, 100.0, 1.0, 3);
+        assert_eq!(estimate_block_rotation(&mask, &full_block(200)), None);
+    }
+
+    #[test]
+    fn estimate_block_rotation_needs_enough_ink() {
+        let mut mask = GrayImage::new(64, 64);
+        for x in 20..40 {
+            mask.put_pixel(x, 30, Luma([255]));
+        }
+        assert_eq!(estimate_block_rotation(&mask, &full_block(64)), None);
+    }
+
+    #[test]
+    fn crop_text_block_deskewed_uprights_a_rotated_stripe() {
+        // Black stripe (80×6) rotated 20° about (60, 60) on a white page.
+        let mut image = RgbImage::from_pixel(120, 120, Rgb([255, 255, 255]));
+        let (sin, cos) = 20.0f32.to_radians().sin_cos();
+        for t in -40..40 {
+            for d in -3..3 {
+                let x = 60.0 + cos * t as f32 - sin * d as f32;
+                let y = 60.0 + sin * t as f32 + cos * d as f32;
+                if x >= 0.0 && y >= 0.0 && (x as u32) < 120 && (y as u32) < 120 {
+                    image.put_pixel(x as u32, y as u32, Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let image = DynamicImage::ImageRgb8(image);
+        // Block sits around the stripe with a little margin, like a detector
+        // box would.
+        let block = TextRegion {
+            x: 22.0,
+            y: 54.0,
+            width: 76.0,
+            height: 12.0,
+            rotation_deg: Some(20.0),
+            ..Default::default()
+        };
+
+        let crop = crop_text_block_deskewed(&image, &block).to_rgb8();
+        let mid_y = crop.height() / 2;
+        // The stripe lies flat across the whole midline — including both
+        // ends, which an axis-aligned crop of rotated art would miss.
+        for x in [4, crop.width() / 2, crop.width() - 5] {
+            assert!(
+                crop.get_pixel(x, mid_y)[0] < 100,
+                "midline at x={x} should be ink"
+            );
+        }
+        // Corners are background again.
+        assert!(crop.get_pixel(1, 1)[0] > 200);
+        assert!(crop.get_pixel(crop.width() - 2, crop.height() - 2)[0] > 200);
+
+        // A straight block passes through the plain bbox crop.
+        let straight = TextRegion {
+            rotation_deg: Some(0.0),
+            ..block.clone()
+        };
+        let plain = crop_text_block_deskewed(&image, &straight);
+        assert_eq!(plain.width(), 76);
+        assert_eq!(plain.height(), 12);
     }
 }

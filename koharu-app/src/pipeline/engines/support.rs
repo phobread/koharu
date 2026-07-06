@@ -83,7 +83,12 @@ pub fn text_node_to_region(transform: &Transform, text: &TextData) -> koharu_ml:
         confidence: text.confidence,
         line_polygons: text.line_polygons.clone(),
         source_direction: text.source_direction.map(core_text_direction_to_ml),
-        rotation_deg: text.rotation_deg,
+        // The node transform is the live truth for the block's angle:
+        // detectors seed it and the slant editor mutates it, while
+        // `TextData::rotation_deg` only records what a detector last
+        // reported. Preferring the transform lets a manual slant (or
+        // straighten) drive OCR deskewing on a re-run.
+        rotation_deg: (transform.rotation_deg.abs() > 0.05).then_some(transform.rotation_deg),
         detected_font_size_px: text.detected_font_size_px,
         detector: text.detector.clone(),
     }

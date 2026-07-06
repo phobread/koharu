@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use image::DynamicImage;
 use koharu_core::{NodeDataPatch, NodePatch, Op, TextDataPatch};
-use koharu_ml::comic_text_detector::crop_text_block_bbox;
+use koharu_ml::comic_text_detector::crop_text_block_deskewed;
 use koharu_ml::manga_ocr::MangaOcr;
 
 use crate::pipeline::artifacts::Artifact;
@@ -28,7 +28,7 @@ impl Engine for Model {
             .iter()
             .map(|(_, transform, text)| {
                 let region = text_node_to_region(transform, text);
-                crop_text_block_bbox(&image, &region)
+                crop_text_block_deskewed(&image, &region)
             })
             .collect();
         let recognised = self.0.inference(&crops)?;
