@@ -90,3 +90,28 @@ export function cornerScaleFactor(
 export function scaleRotatedBox(box: Box, edge: ResizeEdge, factor: number, deg: number): Box {
   return anchored(box, edge, deg, box.width * factor, box.height * factor)
 }
+
+/** Bring an angle into [-180, 180). */
+export function normalizeRotationDeg(deg: number): number {
+  return ((((deg + 180) % 360) + 360) % 360) - 180
+}
+
+/** How close (degrees) a rotation drag sticks to the cardinal angles. */
+export const ROTATE_SNAP_DEG = 3
+/** Angle step when Shift is held during a rotation drag. */
+export const ROTATE_STEP_DEG = 15
+
+/**
+ * Post-process a rotation-drag angle: Shift quantises to 15° steps, and the
+ * cardinal angles (0 / ±90 / 180) act magnetic within ±3° so straightening a
+ * box by hand is effortless. Fine off-cardinal angles remain available via
+ * the quick editor's number input.
+ */
+export function snapRotationDeg(deg: number, stepped: boolean): number {
+  let next = normalizeRotationDeg(deg)
+  if (stepped) next = normalizeRotationDeg(Math.round(next / ROTATE_STEP_DEG) * ROTATE_STEP_DEG)
+  for (const cardinal of [0, 90, -90, 180, -180]) {
+    if (Math.abs(next - cardinal) < ROTATE_SNAP_DEG) return normalizeRotationDeg(cardinal)
+  }
+  return next
+}

@@ -309,7 +309,14 @@ export function Workspace() {
   )
 
   const handleCanvasPointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (mode !== 'block' && event.target === event.currentTarget) {
+    // Clicking the artwork deselects. Anything interactive for blocks (the
+    // boxes, their handles, the quick editor) lives inside the
+    // `data-text-block-layer` subtree, so a pointerdown outside it is the
+    // picture itself. Other modes keep their own semantics: block mode
+    // clears via drafting, brush strokes shouldn't drop the selection.
+    if (mode !== 'select') return
+    const target = event.target instanceof Element ? event.target : null
+    if (!target?.closest('[data-text-block-layer]')) {
       clearSelection()
     }
   }

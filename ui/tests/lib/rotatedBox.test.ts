@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   cornerScaleFactor,
+  normalizeRotationDeg,
   resizeRotatedBox,
   rotateVec,
   scaleRotatedBox,
+  snapRotationDeg,
   type Box,
   type ResizeEdge,
 } from '@/lib/rotatedBox'
@@ -109,5 +111,47 @@ describe('corner scaling', () => {
       width: 100,
       height: 40,
     })
+  })
+})
+
+describe('normalizeRotationDeg', () => {
+  it('wraps into [-180, 180)', () => {
+    expect(normalizeRotationDeg(0)).toBe(0)
+    expect(normalizeRotationDeg(190)).toBe(-170)
+    expect(normalizeRotationDeg(-190)).toBe(170)
+    expect(normalizeRotationDeg(360)).toBe(0)
+    expect(normalizeRotationDeg(180)).toBe(-180)
+    expect(normalizeRotationDeg(-540)).toBe(-180)
+  })
+})
+
+describe('snapRotationDeg', () => {
+  it('magnetises cardinal angles within the snap window', () => {
+    expect(snapRotationDeg(2.4, false)).toBe(0)
+    expect(snapRotationDeg(-2.9, false)).toBe(0)
+    expect(snapRotationDeg(91.5, false)).toBe(90)
+    expect(snapRotationDeg(-88.2, false)).toBe(-90)
+    expect(snapRotationDeg(179.5, false)).toBe(-180)
+  })
+
+  it('leaves ordinary angles alone', () => {
+    expect(snapRotationDeg(12.3, false)).toBeCloseTo(12.3, 6)
+    expect(snapRotationDeg(-37.7, false)).toBeCloseTo(-37.7, 6)
+    expect(snapRotationDeg(3.0, false)).toBeCloseTo(3.0, 6)
+  })
+
+  it('quantises to 15-degree steps when shift is held', () => {
+    expect(snapRotationDeg(22.4, true)).toBe(15)
+    expect(snapRotationDeg(23.0, true)).toBe(30)
+    expect(snapRotationDeg(-52.4, true)).toBe(-45)
+    expect(snapRotationDeg(-52.6, true)).toBe(-60)
+    // Steps landing on a cardinal still resolve through the magnet.
+    expect(snapRotationDeg(4.0, true)).toBe(0)
+    expect(snapRotationDeg(86.0, true)).toBe(90)
+  })
+
+  it('handles wrapped inputs', () => {
+    expect(snapRotationDeg(361, false)).toBe(0)
+    expect(snapRotationDeg(271.0, false)).toBe(-90)
   })
 })

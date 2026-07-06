@@ -16,7 +16,13 @@ import {
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
-import { cornerScaleFactor, resizeRotatedBox, scaleRotatedBox, type Box } from '@/lib/rotatedBox'
+import {
+  cornerScaleFactor,
+  resizeRotatedBox,
+  scaleRotatedBox,
+  snapRotationDeg,
+  type Box,
+} from '@/lib/rotatedBox'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 import { mergeTextStyle } from '@/lib/textStyle'
@@ -223,6 +229,8 @@ function TextBlockItem({
   const dragStart = useRef<Box>({ x: 0, y: 0, width: 0, height: 0 })
   const edgeRef = useRef<ResizeEdge | null>(null)
   const isResizeRef = useRef(false)
+  const isRotateRef = useRef(false)
+  const rotateStart = useRef({ cx: 0, cy: 0, pointerDeg: 0, boxDeg: 0 })
 
   const t = node.transform
   // Slant: boxes rotate about their centre, matching the baked-in sprite
@@ -251,12 +259,53 @@ function TextBlockItem({
   }
 
   const bind = useDrag(
-    ({ first, last, movement: [mx, my], event, tap }) => {
+    ({ first, last, movement: [mx, my], xy, event, tap }) => {
       if (!interactive) return
       event?.stopPropagation()
       const additive = isAdditiveEvent(event)
       if (tap) {
+        // A tap on a handle armed a mode that never got its drag — disarm.
+        isRotateRef.current = false
+        isResizeRef.current = false
+        edgeRef.current = null
         onSelect(node.id, additive)
+        return
+      }
+      if (isRotateRef.current) {
+        // Rotate about the box centre: the angle change follows the pointer's
+        // bearing from the centre. Rotation preserves the centre, so the
+        // bounding rect's centre IS the box centre, at any zoom.
+        const el = boxRef.current
+        if (first && el) {
+          const rect = el.getBoundingClientRect()
+          const cx = rect.left + rect.width / 2
+          const cy = rect.top + rect.height / 2
+          rotateStart.current = {
+            cx,
+            cy,
+            pointerDeg: (Math.atan2(xy[1] - cy, xy[0] - cx) * 180) / Math.PI,
+            boxDeg: deg,
+          }
+        }
+        const rs = rotateStart.current
+        const pointerDeg = (Math.atan2(xy[1] - rs.cy, xy[0] - rs.cx) * 180) / Math.PI
+        const shift = !!(event as { shiftKey?: boolean } | undefined)?.shiftKey
+        const next =
+          Math.round(snapRotationDeg(rs.boxDeg + pointerDeg - rs.pointerDeg, shift) * 10) / 10
+        if (el)
+          el.style.transform = `translate(${t.x * scale}px, ${t.y * scale}px) rotate(${next}deg)`
+        if (last) {
+          isRotateRef.current = false
+          if (next !== deg) {
+            onCommit({
+              x: t.x,
+              y: t.y,
+              width: t.width,
+              height: t.height,
+              rotationDeg: next,
+            })
+          }
+        }
         return
       }
       if (first) {
@@ -324,6 +373,11 @@ function TextBlockItem({
     edgeRef.current = edge
   }
 
+  const handleRotatePointerDown = () => {
+    if (!interactive || !selected) return
+    isRotateRef.current = true
+  }
+
   const w = t.width * scale
   const h = t.height * scale
 
@@ -359,6 +413,36 @@ function TextBlockItem({
         {index + 1}
       </div>
       {selected && interactive && <ResizeHandles onEdgePointerDown={handleEdgePointerDown} />}
+      {selected && interactive && (
+        <>
+          {/* Rotator: drag the knob above the box to slant it about its
+              centre. Lives inside the rotated frame, so it stays glued to
+              the box's top edge at any angle. */}
+          <div
+            className='pointer-events-none absolute bg-primary/60'
+            style={{ top: -14, left: '50%', width: 1, height: 12 }}
+          />
+          <div
+            data-testid='block-rotate-handle'
+            onPointerDown={handleRotatePointerDown}
+            style={{
+              position: 'absolute',
+              top: -28,
+              left: '50%',
+              marginLeft: -9,
+              width: 18,
+              height: 18,
+              cursor: 'grab',
+              zIndex: 30,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div className='h-3 w-3 rounded-full border-2 border-primary bg-background shadow-sm' />
+          </div>
+        </>
+      )}
     </div>
   )
 }
