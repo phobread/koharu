@@ -48,6 +48,10 @@ import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 const BRUSH_CURSOR = 'none'
 
+// Wheel-zoom multiplier per notch — multiplicative, so spanning the whole
+// 10–100% range takes ~25 notches instead of 90 one-percent steps.
+const ZOOM_WHEEL_FACTOR = 1.1
+
 /**
  * Primary canvas viewport.
  *
@@ -258,28 +262,59 @@ export function Workspace() {
 
   useGesture(
     {
-      onDrag: ({ first, movement: [mx, my], memo, cancel, ctrlKey }) => {
+      onDrag: ({ first, movement: [mx, my], memo, cancel, ctrlKey, event }) => {
         if (!page) return memo
-        if (!ctrlKey) {
-          if (first && cancel) cancel()
-          return memo
-        }
         const viewport = viewportRef.current
-        if (!viewport) return memo
         if (first) {
+          // Pan with ctrl+drag or a middle-button drag; a plain left drag
+          // belongs to selection/drafting, so hand the gesture back untouched.
+          const middle = 'buttons' in event && ((event.buttons as number) & 4) !== 0
+          if (!ctrlKey && !middle) {
+            if (cancel) cancel()
+            return memo
+          }
+          if (!viewport) return memo
           return { scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop }
         }
-        if (!memo) return memo
+        if (!memo || !viewport) return memo
         viewport.scrollLeft = memo.scrollLeft - mx
         viewport.scrollTop = memo.scrollTop - my
         return memo
       },
-      onWheel: ({ ctrlKey, delta: [, dy], event }) => {
-        if (!page || !ctrlKey) return
-        if (event.cancelable) event.preventDefault()
-        const direction = Math.sign(dy)
-        if (!direction) return
-        applyScale(useEditorUiStore.getState().scale - direction)
+      onWheel: ({ ctrlKey, shiftKey, delta: [dx, dy], event }) => {
+        if (!page) return
+        const viewport = viewportRef.current
+        if (ctrlKey) {
+          if (event.cancelable) event.preventDefault()
+          const direction = Math.sign(dy)
+          if (!direction) return
+          const oldScale = useEditorUiStore.getState().scale
+          const canvas = canvasRef.current
+          const before = canvas?.getBoundingClientRect()
+          applyScale(direction > 0 ? oldScale / ZOOM_WHEEL_FACTOR : oldScale * ZOOM_WHEEL_FACTOR)
+          // Keep the document point under the cursor fixed: once the resized
+          // canvas has laid out, shift the scroll offsets by however far that
+          // point moved. Without overflow the browser clamps the scroll back
+          // to 0 and the centred layout takes over, which is what we want.
+          if (!canvas || !before || !viewport) return
+          const { clientX, clientY } = event
+          const docX = (clientX - before.left) / (oldScale / 100)
+          const docY = (clientY - before.top) / (oldScale / 100)
+          requestAnimationFrame(() => {
+            const applied = useEditorUiStore.getState().scale / 100
+            const after = canvas.getBoundingClientRect()
+            viewport.scrollLeft += after.left + docX * applied - clientX
+            viewport.scrollTop += after.top + docY * applied - clientY
+          })
+          return
+        }
+        // Shift+wheel pans horizontally. Some browsers swap the axes
+        // themselves (the delta arrives on X), others don't — take whichever
+        // axis actually moved.
+        if (shiftKey && viewport) {
+          if (event.cancelable) event.preventDefault()
+          viewport.scrollLeft += dx !== 0 ? dx : dy
+        }
       },
       onPinch: ({ canceled, movement: [movementScale], memo }) => {
         if (!page || canceled) return memo
@@ -295,7 +330,7 @@ export function Workspace() {
     {
       target: viewportRef,
       eventOptions: { passive: false },
-      drag: { filterTaps: true, pointer: { mouse: true } },
+      drag: { filterTaps: true, pointer: { mouse: true, buttons: [1, 4] } },
       wheel: { preventDefault: false },
       pinch: {
         threshold: 0.1,
@@ -348,6 +383,11 @@ export function Workspace() {
             ref={handleViewportRef}
             data-testid='workspace-viewport'
             className='grid size-full place-content-center-safe'
+            onMouseDown={(e) => {
+              // The middle button starts our pan drag — suppress the
+              // browser's autoscroll marker.
+              if (e.button === 1) e.preventDefault()
+            }}
           >
             {page ? (
               <ContextMenu
