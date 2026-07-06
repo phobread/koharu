@@ -9,8 +9,13 @@ import { useSelectionStore } from '@/lib/stores/selectionStore'
  * Apply a computed block split to the scene: the original node keeps half A;
  * a new node takes half B (style / font prediction / direction copied, stale
  * sprite dropped so it re-renders). Both halves lock their layout box — the
- * split is an explicit size choice. Selects both halves and queues a
- * re-render.
+ * split is an explicit size choice.
+ *
+ * Only half A stays selected. Splitting exists mostly to isolate unwanted
+ * text (dates, SFX) from dialogue — keeping both halves selected made the
+ * follow-up right-click act on BOTH (e.g. un-inpaint restored the half the
+ * user wanted to keep). A single selection also reopens the quick editor on
+ * the surviving half.
  */
 export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSplit) {
   const node = page.nodes[nodeId]
@@ -46,7 +51,7 @@ export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSp
     },
   }
   await applyOp(ops.batch('Split block', [updateA, ops.addNode(page.id, at, newNode)]))
-  useSelectionStore.getState().selectMany([nodeId, newId])
+  useSelectionStore.getState().selectMany([nodeId])
   queueAutoRender(page.id)
 }
 
