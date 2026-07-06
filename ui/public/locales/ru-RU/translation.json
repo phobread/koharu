@@ -40,7 +40,9 @@
     "language": "Язык",
     "customPipeline": "Пользовательский конвейер",
     "runCustomCurrent": "Запуск настраиваемого (Текущая)",
-    "runCustomAll": "Запуск настраиваемого (Все страницы)"
+    "runCustomAll": "Запуск настраиваемого (Все страницы)",
+    "ocrLanguage": "Язык OCR",
+    "ocrLanguageAuto": "Автоопределение"
   },
   "welcome": {
     "title": "Koharu",

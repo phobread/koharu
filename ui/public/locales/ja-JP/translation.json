@@ -40,7 +40,9 @@
     "language": "言語",
     "customPipeline": "カスタムパイプライン",
     "runCustomCurrent": "カスタム実行 (現在のページ)",
-    "runCustomAll": "カスタム実行 (すべてのページ)"
+    "runCustomAll": "カスタム実行 (すべてのページ)",
+    "ocrLanguage": "OCR言語",
+    "ocrLanguageAuto": "自動検出"
   },
   "welcome": {
     "title": "Koharu",

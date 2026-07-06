@@ -78,6 +78,7 @@ impl Cli {
         PaddleOcrVlGenerateOptions {
             max_new_tokens: self.max_new_tokens,
             repetition_penalty: self.repetition_penalty,
+            language: None,
         }
     }
 }

@@ -9,8 +9,8 @@ use std::sync::Mutex;
 use anyhow::Result;
 use async_trait::async_trait;
 use koharu_core::{NodeDataPatch, NodePatch, Op, TextDataPatch};
-use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlTask};
-use koharu_ml::comic_text_detector::crop_text_block_bbox;
+use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOcrVlTask};
+use koharu_ml::comic_text_detector::crop_text_block_deskewed;
 
 use crate::app::shared_llama_backend;
 use crate::pipeline::artifacts::Artifact;
@@ -35,16 +35,40 @@ impl Engine for Model {
             .iter()
             .map(|(_, transform, text)| {
                 let region = text_node_to_region(transform, text);
-                crop_text_block_bbox(&image, &region)
+                crop_text_block_deskewed(&image, &region)
             })
             .collect();
 
+        let options = PaddleOcrVlGenerateOptions {
+            max_new_tokens: MAX_NEW_TOKENS,
+            language: ctx.options.source_language.clone(),
+            ..PaddleOcrVlGenerateOptions::default()
+        };
         let outputs = {
             let mut ocr = self
                 .0
                 .lock()
                 .map_err(|_| anyhow::anyhow!("PaddleOCR mutex poisoned"))?;
-            ocr.inference_images(&regions, PaddleOcrVlTask::Ocr, MAX_NEW_TOKENS)?
+            let mut outputs =
+                ocr.inference_images_with_options(&regions, PaddleOcrVlTask::Ocr, &options)?;
+            // The language hint steers script choice but is off the model's
+            // training prompt, and on some crops it derails generation into
+            // nothing at all. Any block that comes back empty gets one retry
+            // with the plain auto-detect prompt so a hint can only ever add
+            // accuracy, never lose text.
+            if options.language.is_some() {
+                let fallback = PaddleOcrVlGenerateOptions {
+                    max_new_tokens: MAX_NEW_TOKENS,
+                    ..PaddleOcrVlGenerateOptions::default()
+                };
+                for (region, out) in regions.iter().zip(outputs.iter_mut()) {
+                    if out.text.trim().is_empty() {
+                        *out =
+                            ocr.inference_with_options(region, PaddleOcrVlTask::Ocr, &fallback)?;
+                    }
+                }
+            }
+            outputs
         };
 
         let mut ops = Vec::with_capacity(texts.len());

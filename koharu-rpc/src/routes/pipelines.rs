@@ -45,6 +45,10 @@ pub struct StartPipelineRequest {
     pub text_node_ids: Option<Vec<NodeId>>,
     #[serde(default)]
     pub target_language: Option<String>,
+    /// Language of the source text, as an OCR hint (e.g. "Korean").
+    /// `None` = OCR model auto-detect.
+    #[serde(default)]
+    pub source_language: Option<String>,
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
@@ -99,6 +103,7 @@ async fn start_pipeline(
         steps: req.steps,
         options: PipelineRunOptions {
             target_language: req.target_language,
+            source_language: req.source_language,
             system_prompt: req.system_prompt,
             default_font: req.default_font,
             text_node_ids: req.text_node_ids,

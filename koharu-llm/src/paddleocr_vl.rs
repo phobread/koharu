@@ -88,11 +88,16 @@ pub struct PaddleOcrVlOutput {
     pub num_image_tokens: usize,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaddleOcrVlGenerateOptions {
     pub max_new_tokens: usize,
     pub repetition_penalty: f32,
+    /// Optional language hint (e.g. "Korean"). The model auto-detects the
+    /// script by default, but stylized fonts can fool it into the wrong CJK
+    /// language; a hint in the prompt steers the transcription. `None`
+    /// keeps the exact training-time prompt.
+    pub language: Option<String>,
 }
 
 impl Default for PaddleOcrVlGenerateOptions {
@@ -100,6 +105,7 @@ impl Default for PaddleOcrVlGenerateOptions {
         Self {
             max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
             repetition_penalty: DEFAULT_REPETITION_PENALTY,
+            language: None,
         }
     }
 }
@@ -254,7 +260,7 @@ impl PaddleOcrVl {
         let original_width = image.width();
         let original_height = image.height();
         let bitmap = bitmap_from_image(image)?;
-        let prompt = self.render_prompt(task)?;
+        let prompt = self.render_prompt(task, options.language.as_deref())?;
         let chunks = self
             .mtmd
             .tokenize(
@@ -421,12 +427,17 @@ impl PaddleOcrVl {
         token == self.eos_token || self.model.is_eog_token(token)
     }
 
-    fn render_prompt(&self, task: PaddleOcrVlTask) -> Result<RenderedPrompt> {
+    fn render_prompt(
+        &self,
+        task: PaddleOcrVlTask,
+        language: Option<&str>,
+    ) -> Result<RenderedPrompt> {
         let text = render_chat_prompt(
             &self.chat_template,
             &self.bos_token,
             &self.eos_token_text,
             task,
+            language,
         )
         .context("failed to render PaddleOCR-VL prompt from embedded chat template")?;
         Ok(RenderedPrompt {
@@ -594,13 +605,20 @@ fn bitmap_from_image(image: &DynamicImage) -> Result<MtmdBitmap> {
         .context("failed to create MTMD bitmap from image")
 }
 
-fn build_user_message_content(task: PaddleOcrVlTask) -> Vec<PromptContent> {
-    vec![
-        PromptContent::Image,
-        PromptContent::Text {
-            text: task.prompt().to_string(),
-        },
-    ]
+fn build_user_message_content(task: PaddleOcrVlTask, language: Option<&str>) -> Vec<PromptContent> {
+    // The hint goes BEFORE the task word so the training-time suffix
+    // ("OCR:" right at the generation boundary) stays intact.
+    let text = match language {
+        Some(lang) if !lang.trim().is_empty() => {
+            format!(
+                "The text in the image is {}. {}",
+                lang.trim(),
+                task.prompt()
+            )
+        }
+        _ => task.prompt().to_string(),
+    };
+    vec![PromptContent::Image, PromptContent::Text { text }]
 }
 
 fn render_chat_prompt(
@@ -608,6 +626,7 @@ fn render_chat_prompt(
     bos_token: &str,
     eos_token: &str,
     task: PaddleOcrVlTask,
+    language: Option<&str>,
 ) -> Result<String> {
     let env = jinja::environment();
     let tmpl = env
@@ -617,7 +636,7 @@ fn render_chat_prompt(
     tmpl.render(context! {
         messages => vec![PromptMessage {
             role: "user",
-            content: build_user_message_content(task),
+            content: build_user_message_content(task, language),
         }],
         bos_token => bos_token,
         eos_token => eos_token,
@@ -712,7 +731,30 @@ mod tests {
     #[test]
     fn user_message_places_image_before_task() {
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Ocr),
+            build_user_message_content(PaddleOcrVlTask::Ocr, None),
+            vec![
+                PromptContent::Image,
+                PromptContent::Text {
+                    text: "OCR:".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn user_message_language_hint_precedes_task_prompt() {
+        assert_eq!(
+            build_user_message_content(PaddleOcrVlTask::Ocr, Some("Korean")),
+            vec![
+                PromptContent::Image,
+                PromptContent::Text {
+                    text: "The text in the image is Korean. OCR:".to_string(),
+                },
+            ]
+        );
+        // Blank hints collapse to the plain training-time prompt.
+        assert_eq!(
+            build_user_message_content(PaddleOcrVlTask::Ocr, Some("  ")),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -725,7 +767,7 @@ mod tests {
     #[test]
     fn user_message_contents_match_paddleocr_tasks() {
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Table),
+            build_user_message_content(PaddleOcrVlTask::Table, None),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -734,7 +776,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Formula),
+            build_user_message_content(PaddleOcrVlTask::Formula, None),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -743,7 +785,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Chart),
+            build_user_message_content(PaddleOcrVlTask::Chart, None),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -752,7 +794,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Spotting),
+            build_user_message_content(PaddleOcrVlTask::Spotting, None),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -761,7 +803,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_user_message_content(PaddleOcrVlTask::Seal),
+            build_user_message_content(PaddleOcrVlTask::Seal, None),
             vec![
                 PromptContent::Image,
                 PromptContent::Text {
@@ -778,6 +820,7 @@ mod tests {
             "<|begin_of_sentence|>",
             "</s>",
             PaddleOcrVlTask::Formula,
+            None,
         )?;
         assert_eq!(
             rendered,

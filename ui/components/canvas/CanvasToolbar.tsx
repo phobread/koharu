@@ -107,6 +107,7 @@ function WorkflowButtons() {
       steps,
       pages: [pageId],
       targetLanguage: editor.selectedLanguage,
+      sourceLanguage: prefs.ocrLanguage,
       systemPrompt: prefs.customSystemPrompt,
       defaultFont: prefs.defaultFont,
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,

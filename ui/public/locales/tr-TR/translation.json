@@ -40,7 +40,9 @@
     "language": "Dil",
     "customPipeline": "Özel İşlem Hattı",
     "runCustomCurrent": "Özeli Çalıştır (Geçerli Sayfa)",
-    "runCustomAll": "Özeli Çalıştır (Tüm Sayfalar)"
+    "runCustomAll": "Özeli Çalıştır (Tüm Sayfalar)",
+    "ocrLanguage": "OCR dili",
+    "ocrLanguageAuto": "Otomatik algıla"
   },
   "welcome": {
     "title": "Koharu",

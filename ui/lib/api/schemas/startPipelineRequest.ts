@@ -35,6 +35,12 @@ export interface StartPipelineRequest {
   region?: null | Region
   shaderEffect?: null | TextShaderEffect
   shaderStroke?: null | TextStrokeStyle
+  /**
+   * Language of the source text, as an OCR hint (e.g. "Korean").
+   * `None` = OCR model auto-detect.
+   * @nullable
+   */
+  sourceLanguage?: string | null
   /** Engine ids (`inventory::submit!` ids) to run in order. */
   steps: string[]
   /** @nullable */

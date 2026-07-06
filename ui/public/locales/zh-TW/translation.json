@@ -40,7 +40,9 @@
     "language": "語言",
     "customPipeline": "自訂流水線",
     "runCustomCurrent": "執行自訂 (目前頁面)",
-    "runCustomAll": "執行自訂 (所有頁面)"
+    "runCustomAll": "執行自訂 (所有頁面)",
+    "ocrLanguage": "OCR 語言",
+    "ocrLanguageAuto": "自動偵測"
   },
   "welcome": {
     "title": "Koharu",

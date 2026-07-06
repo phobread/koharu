@@ -24,6 +24,9 @@ type PreferencesState = {
   toggleFavoriteFont: (font: string) => void
   customSystemPrompt?: string
   setCustomSystemPrompt: (prompt?: string) => void
+  /** OCR hint: language of the source text (e.g. "Korean"). undefined = auto. */
+  ocrLanguage?: string
+  setOcrLanguage: (lang?: string) => void
   codexImagePrompt?: string
   setCodexImagePrompt: (prompt?: string) => void
   codexImageModel?: string
@@ -113,6 +116,7 @@ export const usePreferencesStore = create<PreferencesState>()(
             : [...state.favoriteFonts, font],
         })),
       setCustomSystemPrompt: (prompt) => set({ customSystemPrompt: prompt }),
+      setOcrLanguage: (lang) => set({ ocrLanguage: lang }),
       setCodexImagePrompt: (prompt) => set({ codexImagePrompt: prompt }),
       setCodexImageModel: (model) => set({ codexImageModel: model }),
       setShortcuts: (shortcuts) =>
@@ -187,6 +191,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         boxPadding: state.boxPadding,
         favoriteFonts: state.favoriteFonts,
         customSystemPrompt: state.customSystemPrompt,
+        ocrLanguage: state.ocrLanguage,
         codexImagePrompt: state.codexImagePrompt,
         codexImageModel: state.codexImageModel,
         shortcuts: state.shortcuts,

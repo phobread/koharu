@@ -41,7 +41,9 @@
     "language": "Idioma",
     "customPipeline": "Pipeline personalizado",
     "runCustomCurrent": "Executar personalizado (Página atual)",
-    "runCustomAll": "Executar personalizado (Todas as páginas)"
+    "runCustomAll": "Executar personalizado (Todas as páginas)",
+    "ocrLanguage": "Idioma do OCR",
+    "ocrLanguageAuto": "Detecção automática"
   },
   "welcome": {
     "title": "Koharu",

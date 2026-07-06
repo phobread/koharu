@@ -55,6 +55,10 @@ pub struct EngineCtx<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct PipelineRunOptions {
     pub target_language: Option<String>,
+    /// Language of the SOURCE text, as an OCR hint (e.g. "Korean") — steers
+    /// PaddleOCR-VL away from misreading stylized fonts as the wrong CJK
+    /// script. `None` = model auto-detect (training-time prompt).
+    pub source_language: Option<String>,
     pub system_prompt: Option<String>,
     pub default_font: Option<String>,
     /// Optional text-node scope for engines that can operate on individual

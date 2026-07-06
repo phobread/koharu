@@ -13,6 +13,8 @@ import {
   MenubarContent,
   MenubarItem,
   MenubarMenu,
+  MenubarRadioGroup,
+  MenubarRadioItem,
   MenubarSeparator,
   MenubarShortcut,
   MenubarTrigger,
@@ -130,6 +132,8 @@ export function MenuBar() {
   const hasScene = useScene().scene !== null
   const shortcuts = usePreferencesStore((state) => state.shortcuts)
   const customPipeline = usePreferencesStore((state) => state.customPipeline)
+  const ocrLanguage = usePreferencesStore((state) => state.ocrLanguage)
+  const setOcrLanguage = usePreferencesStore((state) => state.setOcrLanguage)
   const setCustomPipeline = usePreferencesStore((state) => state.setCustomPipeline)
   const hasSelectedSteps = useMemo(
     () => Object.values(customPipeline).some(Boolean),
@@ -163,6 +167,7 @@ export function MenuBar() {
       steps,
       pages: opts.pageId ? [opts.pageId] : undefined,
       targetLanguage: editor.selectedLanguage,
+      sourceLanguage: prefs.ocrLanguage,
       systemPrompt: prefs.customSystemPrompt,
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
       ...renderDefaultsForPipeline(),
@@ -218,6 +223,7 @@ export function MenuBar() {
       steps,
       pages: opts.pageId ? [opts.pageId] : undefined,
       targetLanguage: editor.selectedLanguage,
+      sourceLanguage: prefs.ocrLanguage,
       systemPrompt: prefs.customSystemPrompt,
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
       ...renderDefaultsForPipeline(),
@@ -489,6 +495,45 @@ export function MenuBar() {
                 >
                   {t('llm.render')}
                 </MenubarCheckboxItem>
+              </MenubarSubContent>
+            </MenubarSub>
+            <MenubarSub>
+              <MenubarSubTrigger className='text-[13px]' data-testid='menu-ocr-language'>
+                {t('menu.ocrLanguage')}
+              </MenubarSubTrigger>
+              <MenubarSubContent className='min-w-40'>
+                {/* The value is the English language name — it goes verbatim
+                    into the OCR prompt as a hint ("The text in the image is
+                    Korean."). Auto keeps the model's own script detection. */}
+                <MenubarRadioGroup
+                  value={ocrLanguage ?? 'auto'}
+                  onValueChange={(value) => setOcrLanguage(value === 'auto' ? undefined : value)}
+                >
+                  <MenubarRadioItem
+                    value='auto'
+                    className='text-[13px]'
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    {t('menu.ocrLanguageAuto')}
+                  </MenubarRadioItem>
+                  {(
+                    [
+                      ['Korean', 'ko-KR'],
+                      ['Japanese', 'ja-JP'],
+                      ['Chinese', 'zh-CN'],
+                      ['English', 'en-US'],
+                    ] as const
+                  ).map(([value, localeKey]) => (
+                    <MenubarRadioItem
+                      key={value}
+                      value={value}
+                      className='text-[13px]'
+                      onSelect={(e) => e.preventDefault()}
+                    >
+                      {t(`llm.languages.${localeKey}`, { defaultValue: value })}
+                    </MenubarRadioItem>
+                  ))}
+                </MenubarRadioGroup>
               </MenubarSubContent>
             </MenubarSub>
           </MenubarContent>

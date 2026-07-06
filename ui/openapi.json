@@ -3117,6 +3117,10 @@
               }
             ]
           },
+          "sourceLanguage": {
+            "type": ["string", "null"],
+            "description": "Language of the source text, as an OCR hint (e.g. \"Korean\").\n`None` = OCR model auto-detect."
+          },
           "steps": {
             "type": "array",
             "items": {

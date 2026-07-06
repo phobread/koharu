@@ -58,7 +58,9 @@
       "tr-TR": "Türkçe",
       "ko-KR": "한국어",
       "pt-BR": "Português brasileiro"
-    }
+    },
+    "ocrLanguage": "OCR language",
+    "ocrLanguageAuto": "Auto-detect"
   },
   "welcome": {
     "title": "Koharu",
