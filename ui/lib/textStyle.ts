@@ -1,6 +1,7 @@
 import type {
   FontPrediction,
   TextAlign,
+  TextFillGradient,
   TextShaderEffect,
   TextStrokeStyle,
   TextStyle,
@@ -61,6 +62,7 @@ export type TextStyleUpdates = {
   effect?: TextShaderEffect | null
   stroke?: TextStrokeStyle | null
   textAlign?: TextAlign | null
+  gradient?: TextFillGradient | null
 }
 
 /**
@@ -84,4 +86,5 @@ export const mergeTextStyle = (
   effect: 'effect' in updates ? (updates.effect ?? null) : (current?.effect ?? null),
   stroke: 'stroke' in updates ? (updates.stroke ?? null) : (current?.stroke ?? null),
   textAlign: 'textAlign' in updates ? (updates.textAlign ?? null) : (current?.textAlign ?? null),
+  gradient: 'gradient' in updates ? (updates.gradient ?? null) : (current?.gradient ?? null),
 })

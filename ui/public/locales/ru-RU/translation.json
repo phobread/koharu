@@ -211,6 +211,10 @@
     "effectBold": "Жирный",
     "effectBorder": "Обводка",
     "strokeColorLabel": "Цвет обводки",
+    "gradientLabel": "Градиент",
+    "gradientEndColorLabel": "Конечный цвет градиента",
+    "gradientHorizontal": "Слева направо",
+    "gradientVertical": "Сверху вниз",
     "strokeWidthLabel": "Толщина обводки",
     "fontWeights": {
       "thin": "Тонкий",

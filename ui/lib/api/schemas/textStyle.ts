@@ -3,6 +3,7 @@
  * Do not edit manually.
  */
 import type { TextAlign } from './textAlign'
+import type { TextFillGradient } from './textFillGradient'
 import type { TextShaderEffect } from './textShaderEffect'
 import type { TextStrokeStyle } from './textStrokeStyle'
 
@@ -13,6 +14,7 @@ export interface TextStyle {
   fontFamilies: string[]
   /** @nullable */
   fontSize?: number | null
+  gradient?: null | TextFillGradient
   stroke?: null | TextStrokeStyle
   textAlign?: null | TextAlign
 }

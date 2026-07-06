@@ -44,8 +44,9 @@ const PROJECT_TOML: &str = "project.toml";
 /// written in and upgrade. Files without the magic predate versioning.
 const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 /// v1 (implicit, headerless): layout before `TextData.rendered_font_size_px`.
-/// v2: current layout, first to carry the header.
-const SCENE_FORMAT_VERSION: u16 = 2;
+/// v2: first to carry the header; layout before `TextStyle.gradient`.
+/// v3: current layout (`TextStyle` gained `gradient`).
+const SCENE_FORMAT_VERSION: u16 = 3;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -241,12 +242,15 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         }
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
-        if version != SCENE_FORMAT_VERSION {
-            anyhow::bail!(
+        return match version {
+            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v3)"),
+            2 => postcard::from_bytes::<compat::SnapshotV2>(payload)
+                .context("postcard decode (v2)")
+                .map(compat::SnapshotV2::upgrade),
+            _ => anyhow::bail!(
                 "unsupported scene.bin format version {version} (written by a newer build?)"
-            );
-        }
-        return postcard::from_bytes(payload).context("postcard decode (v2)");
+            ),
+        };
     }
 
     if let Ok((snap, rest)) = postcard::take_from_bytes::<Snapshot>(bytes)
@@ -272,7 +276,7 @@ mod compat {
     use indexmap::IndexMap;
     use koharu_core::{
         BlobRef, FontPrediction, ImageData, MaskData, Node, NodeId, NodeKind, Page, PageId,
-        ProjectMeta, Scene, TextData, TextDirection, TextStyle, Transform,
+        ProjectMeta, Scene, TextData, TextDirection, Transform,
     };
     use serde::Deserialize;
 
@@ -335,7 +339,8 @@ mod compat {
         pub(super) detector: Option<String>,
         pub(super) text: Option<String>,
         pub(super) translation: Option<String>,
-        pub(super) style: Option<TextStyle>,
+        // v1 files carried the pre-gradient TextStyle layout (same as v2's).
+        pub(super) style: Option<TextStyleV2>,
         pub(super) font_prediction: Option<FontPrediction>,
         pub(super) sprite: Option<BlobRef>,
         pub(super) sprite_transform: Option<Transform>,
@@ -402,12 +407,179 @@ mod compat {
                 detector: self.detector,
                 text: self.text,
                 translation: self.translation,
-                style: self.style,
+                style: self.style.map(TextStyleV2::upgrade),
                 font_prediction: self.font_prediction,
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
                 // The renderer refills this on the next render.
                 rendered_font_size_px: None,
+                lock_layout_box: self.lock_layout_box,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v2 → v3: `TextStyle` gained `gradient`.
+    // -----------------------------------------------------------------------
+
+    use koharu_core::{TextAlign, TextShaderEffect, TextStrokeStyle, TextStyle as TextStyleV3};
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV2 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV2,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV2 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV2>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV2 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV2>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV2 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV2,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV2 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV2),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// `TextData` as of v2 — identical to current except `style`.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV2 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyleV2>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    /// `TextStyle` before `gradient` was appended (v1 and v2 files).
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextStyleV2 {
+        pub(super) font_families: Vec<String>,
+        pub(super) font_size: Option<f32>,
+        pub(super) color: [u8; 4],
+        pub(super) effect: Option<TextShaderEffect>,
+        pub(super) stroke: Option<TextStrokeStyle>,
+        pub(super) text_align: Option<TextAlign>,
+    }
+
+    impl TextStyleV2 {
+        fn upgrade(self) -> TextStyleV3 {
+            TextStyleV3 {
+                font_families: self.font_families,
+                font_size: self.font_size,
+                color: self.color,
+                effect: self.effect,
+                stroke: self.stroke,
+                text_align: self.text_align,
+                gradient: None,
+            }
+        }
+    }
+
+    impl SnapshotV2 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV2 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV2::Image(d) => NodeKind::Image(d),
+                                    NodeKindV2::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV2::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV2 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style.map(TextStyleV2::upgrade),
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
                 lock_layout_box: self.lock_layout_box,
             }
         }
@@ -552,6 +724,89 @@ mod tests {
     }
 
     #[test]
+    fn v2_scene_bin_upgrades_on_open() {
+        // Regression: projects written before `TextStyle.gradient` existed
+        // (v2 header) must still open with styles intact.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v2").unwrap();
+            drop(session);
+        }
+
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            node_id,
+            compat::NodeV2 {
+                id: node_id,
+                transform: Transform {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 100.0,
+                    height: 40.0,
+                    rotation_deg: 12.5,
+                },
+                visible: true,
+                kind: compat::NodeKindV2::Text(compat::TextDataV2 {
+                    text: Some("안녕".to_string()),
+                    translation: Some("Hi".to_string()),
+                    style: Some(compat::TextStyleV2 {
+                        font_families: vec!["Arial".to_string()],
+                        font_size: Some(21.0),
+                        color: [10, 20, 30, 255],
+                        effect: None,
+                        stroke: None,
+                        text_align: None,
+                    }),
+                    rendered_font_size_px: Some(19.0),
+                    lock_layout_box: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV2 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v2 = compat::SnapshotV2 {
+            epoch: 9,
+            scene: compat::SceneV2 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v2).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v2 scene.bin must open");
+        let scene = session.scene.read();
+        let node = scene
+            .pages
+            .get(&page_id)
+            .and_then(|p| p.nodes.get(&node_id))
+            .expect("node survives upgrade");
+        let NodeKind::Text(text) = &node.kind else {
+            panic!("expected text node");
+        };
+        let style = text.style.as_ref().expect("style survives upgrade");
+        assert_eq!(style.font_size, Some(21.0));
+        assert_eq!(style.color, [10, 20, 30, 255]);
+        assert!(style.gradient.is_none(), "new field defaults to None");
+        assert_eq!(text.rendered_font_size_px, Some(19.0));
+        assert!(text.lock_layout_box, "trailing bool must decode intact");
+    }
+
+    #[test]
     fn future_scene_bin_version_is_rejected_cleanly() {
         let (_tmp, path) = tmp_dir();
         {
@@ -607,8 +862,7 @@ mod tests {
                                 italic: true,
                                 bold: true,
                             }),
-                            stroke: None,
-                            text_align: None,
+                            ..Default::default()
                         }),
                         ..Default::default()
                     }),

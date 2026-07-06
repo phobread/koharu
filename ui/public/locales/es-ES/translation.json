@@ -211,6 +211,10 @@
     "effectBold": "Negrita",
     "effectBorder": "Borde",
     "strokeColorLabel": "Color del borde",
+    "gradientLabel": "Degradado",
+    "gradientEndColorLabel": "Color final del degradado",
+    "gradientHorizontal": "De izquierda a derecha",
+    "gradientVertical": "De arriba abajo",
     "strokeWidthLabel": "Grosor del borde",
     "fontWeights": {
       "thin": "Fino",

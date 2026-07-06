@@ -217,6 +217,25 @@ const fn default_stroke_color() -> [u8; 4] {
 // Text style (scene-facing)
 // ---------------------------------------------------------------------------
 
+/// Axis of a two-colour fill gradient, in the text's local (unrotated) frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GradientDirection {
+    /// Left → right.
+    Horizontal,
+    /// Top → bottom.
+    Vertical,
+}
+
+/// Two-colour gradient across the text fill. The fill starts at
+/// `TextStyle::color` and ends at `to`; the stroke keeps its own colour.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TextFillGradient {
+    pub to: [u8; 4],
+    pub direction: GradientDirection,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TextStyle {
@@ -227,6 +246,10 @@ pub struct TextStyle {
     pub stroke: Option<TextStrokeStyle>,
     #[serde(default)]
     pub text_align: Option<TextAlign>,
+    /// NOTE: appended for scene format v3 — any layout change here needs a
+    /// SCENE_FORMAT_VERSION bump + a frozen copy in `session.rs::compat`.
+    #[serde(default)]
+    pub gradient: Option<TextFillGradient>,
 }
 
 impl Default for TextStyle {
@@ -238,13 +261,14 @@ impl Default for TextStyle {
             effect: None,
             stroke: None,
             text_align: None,
+            gradient: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TextShaderEffect, TextStyle};
+    use super::{GradientDirection, TextFillGradient, TextShaderEffect, TextStyle};
 
     #[test]
     fn parse_combined_effects() {
@@ -297,6 +321,10 @@ mod tests {
             }),
             stroke: None,
             text_align: None,
+            gradient: Some(TextFillGradient {
+                to: [200, 40, 90, 255],
+                direction: GradientDirection::Vertical,
+            }),
         };
         let bytes = postcard::to_allocvec(&style).expect("serialize");
         let decoded: TextStyle = postcard::from_bytes(&bytes).expect("deserialize");

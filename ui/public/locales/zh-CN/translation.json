@@ -211,6 +211,10 @@
     "effectBold": "粗体",
     "effectBorder": "描边",
     "strokeColorLabel": "描边颜色",
+    "gradientLabel": "渐变",
+    "gradientEndColorLabel": "渐变结束颜色",
+    "gradientHorizontal": "从左到右",
+    "gradientVertical": "从上到下",
     "strokeWidthLabel": "描边宽度",
     "fontWeights": {
       "thin": "极细",

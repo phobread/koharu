@@ -9,6 +9,7 @@ import type { RequestHandlerOptions } from 'msw'
 import {
   CodexAuthAttemptStatus,
   FontSource,
+  GradientDirection,
   ImageRole,
   JobStatus,
   LlmProviderCatalogStatus,
@@ -49,6 +50,7 @@ import type {
   SceneSnapshot,
   StartDownloadResponse,
   StartPipelineResponse,
+  TextFillGradient,
   TextShaderEffect,
   TextStrokeStyle,
   TextStyle,
@@ -853,6 +855,18 @@ export const getGetSceneJsonResponseTextShaderEffectMock = (
   ...overrideResponse,
 })
 
+export const getGetSceneJsonResponseTextFillGradientMock = (
+  overrideResponse: Partial<TextFillGradient> = {},
+): TextFillGradient => ({
+  ...{
+    direction: faker.helpers.arrayElement(Object.values(GradientDirection)),
+    to: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+      faker.number.int({ min: 0 }),
+    ),
+  },
+  ...overrideResponse,
+})
+
 export const getGetSceneJsonResponseTextStrokeStyleMock = (
   overrideResponse: Partial<TextStrokeStyle> = {},
 ): TextStrokeStyle => ({
@@ -889,6 +903,10 @@ export const getGetSceneJsonResponseTextStyleMock = (
     ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
     fontSize: faker.helpers.arrayElement([
       faker.helpers.arrayElement([faker.number.float({ fractionDigits: 2 }), null]),
+      undefined,
+    ]),
+    gradient: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([null, { ...getGetSceneJsonResponseTextFillGradientMock() }]),
       undefined,
     ]),
     stroke: faker.helpers.arrayElement([

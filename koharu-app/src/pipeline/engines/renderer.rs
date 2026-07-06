@@ -199,9 +199,7 @@ mod tests {
             font_families: vec!["Arial".to_string()],
             font_size: Some(18.0),
             color: [12, 34, 56, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
+            ..Default::default()
         };
         let preserved = preserve_existing_style(Some(style));
         let Some(Some(preserved)) = preserved else {

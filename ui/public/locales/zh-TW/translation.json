@@ -211,6 +211,10 @@
     "effectBold": "粗體",
     "effectBorder": "描邊",
     "strokeColorLabel": "描邊顏色",
+    "gradientLabel": "漸層",
+    "gradientEndColorLabel": "漸層結束顏色",
+    "gradientHorizontal": "從左到右",
+    "gradientVertical": "從上到下",
     "strokeWidthLabel": "描邊寬度",
     "fontWeights": {
       "thin": "極細",

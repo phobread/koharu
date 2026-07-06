@@ -38,4 +38,6 @@ pub use scene::{
     ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, NodeKindTag, Page, PageId,
     ProjectMeta, ProjectStyle, Scene, TextData, Transform,
 };
-pub use style::{TextAlign, TextShaderEffect, TextStrokeStyle, TextStyle};
+pub use style::{
+    GradientDirection, TextAlign, TextFillGradient, TextShaderEffect, TextStrokeStyle, TextStyle,
+};

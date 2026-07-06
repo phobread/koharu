@@ -4,9 +4,12 @@ import {
   AlignCenterIcon,
   AlignLeftIcon,
   AlignRightIcon,
+  BlendIcon,
   BoldIcon,
   ItalicIcon,
   MinusIcon,
+  MoveDownIcon,
+  MoveRightIcon,
   PlusIcon,
   RotateCcwIcon,
   SquareIcon,
@@ -32,8 +35,10 @@ import {
 import { fetchGoogleFont, useGetGoogleFontsCatalog, useListFonts } from '@/lib/api/default/default'
 import type {
   FontFaceInfo,
+  GradientDirection,
   Op,
   TextAlign,
+  TextFillGradient,
   TextShaderEffect,
   TextStrokeStyle,
 } from '@/lib/api/schemas'
@@ -295,6 +300,10 @@ export function RenderControlsPanel() {
   const currentStroke = normalizeStroke(selectedStyle?.stroke)
   const currentStrokeColorHex = colorToHex(currentStroke.color ?? DEFAULT_STROKE_COLOR)
   const currentStrokeWidth = currentStroke.widthPx ?? DEFAULT_STROKE_WIDTH
+  // Gradient fill: `style.color` is the start colour, `gradient.to` the end.
+  // No gradient stored = flat fill.
+  const currentGradient = selectedStyle?.gradient ?? null
+  const currentGradientToHex = colorToHex(currentGradient?.to ?? currentColor)
   const currentEffect = normalizeEffect(selectedStyle?.effect ?? renderEffect)
   // The scene only persists manual overrides in `style.fontSize`. Font detector
   // metadata describes the source text, not the renderer's current auto-fit size.
@@ -378,6 +387,20 @@ export function RenderControlsPanel() {
     const targets = resetTargets.filter((n) => n.data.style?.stroke != null)
     if (targets.length > 0) applyStyleToNodes(targets, { stroke: null }, 'Reset outline')
     else if (page) queueAutoRender(page.id)
+  }
+
+  const applyGradient = (gradient: TextFillGradient | null) => {
+    if (applyStyleToSelected({ gradient })) return
+    applyStyleToAll({ gradient })
+  }
+
+  const canResetGradient = resetTargets.some((n) => n.data.style?.gradient != null)
+  const resetGradientToAuto = () => {
+    applyStyleToNodes(
+      resetTargets.filter((n) => n.data.style?.gradient != null),
+      { gradient: null },
+      'Reset gradient',
+    )
   }
 
   const canResetColor = resetTargets.some(hasExplicitColor)
@@ -891,6 +914,122 @@ export function RenderControlsPanel() {
             disabled={!canResetStroke}
             onClick={resetStrokeToAuto}
             testId='render-stroke-reset'
+            className='size-7'
+          />
+        </div>
+      </div>
+
+      {/* Gradient fill — the text fades from the font colour into a second
+          colour, left→right or top→bottom. The outline keeps its own colour. */}
+      <div className='flex flex-col gap-0.5'>
+        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+          {t('render.gradientLabel')}
+        </span>
+        <div className='flex min-w-0 items-center gap-1'>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant='outline'
+                size='icon-sm'
+                aria-label={t('render.gradientLabel')}
+                data-testid='render-gradient-enable'
+                disabled={!hasNodes}
+                className={cn(
+                  'size-7 shrink-0',
+                  currentGradient &&
+                    'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                )}
+                onClick={() => {
+                  if (currentGradient) {
+                    applyGradient(null)
+                    return
+                  }
+                  commitCurrentFontColorIfImplicit()
+                  applyGradient({ to: currentColor, direction: 'horizontal' })
+                }}
+              >
+                <BlendIcon className='size-3.5' />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side='bottom' sideOffset={4}>
+              {t('render.gradientLabel')}
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div>
+                <ColorPicker
+                  value={currentGradientToHex}
+                  disabled={!hasNodes || !currentGradient}
+                  triggerTestId='render-gradient-color-trigger'
+                  pickerTestId='render-gradient-color-picker'
+                  swatchTestId='render-gradient-color-swatch'
+                  inputTestId='render-gradient-color-input'
+                  pickButtonTestId='render-gradient-color-pick'
+                  pickButtonLabel={t('render.eyedropper')}
+                  onChange={(hex) => {
+                    applyGradient({
+                      to: hexToColor(hex, (currentGradient?.to ?? currentColor)[3] ?? 255),
+                      direction: currentGradient?.direction ?? 'horizontal',
+                    })
+                  }}
+                  className='size-7'
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side='bottom' sideOffset={4}>
+              {t('render.gradientEndColorLabel')}
+            </TooltipContent>
+          </Tooltip>
+
+          <div className='flex flex-1 items-center gap-0.5'>
+            {(
+              [
+                {
+                  value: 'horizontal',
+                  label: t('render.gradientHorizontal'),
+                  Icon: MoveRightIcon,
+                },
+                { value: 'vertical', label: t('render.gradientVertical'), Icon: MoveDownIcon },
+              ] as {
+                value: GradientDirection
+                label: string
+                Icon: ComponentType<{ className?: string }>
+              }[]
+            ).map(({ value, label, Icon }) => (
+              <Tooltip key={value}>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant='outline'
+                    size='icon-sm'
+                    aria-label={label}
+                    data-testid={`render-gradient-direction-${value}`}
+                    disabled={!hasNodes || !currentGradient}
+                    className={cn(
+                      'size-7 shrink-0',
+                      currentGradient?.direction === value &&
+                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                    )}
+                    onClick={() => {
+                      if (!currentGradient) return
+                      applyGradient({ to: currentGradient.to, direction: value })
+                    }}
+                  >
+                    <Icon className='size-3.5' />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='bottom' sideOffset={4}>
+                  {label}
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+          <ResetToAutoButton
+            label={t('render.resetToAuto')}
+            disabled={!canResetGradient}
+            onClick={resetGradientToAuto}
+            testId='render-gradient-reset'
             className='size-7'
           />
         </div>

@@ -1800,6 +1800,11 @@
           }
         }
       },
+      "GradientDirection": {
+        "type": "string",
+        "description": "Axis of a two-colour fill gradient, in the text's local (unrotated) frame.",
+        "enum": ["horizontal", "vertical"]
+      },
       "HistoryResult": {
         "type": "object",
         "properties": {
@@ -3393,6 +3398,24 @@
         "description": "Reading axis of a text block.",
         "enum": ["horizontal", "vertical"]
       },
+      "TextFillGradient": {
+        "type": "object",
+        "description": "Two-colour gradient across the text fill. The fill starts at\n`TextStyle::color` and ends at `to`; the stroke keeps its own colour.",
+        "required": ["to", "direction"],
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/GradientDirection"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        }
+      },
       "TextShaderEffect": {
         "type": "object",
         "properties": {
@@ -3455,6 +3478,17 @@
           "fontSize": {
             "type": ["number", "null"],
             "format": "float"
+          },
+          "gradient": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextFillGradient",
+                "description": "NOTE: appended for scene format v3 — any layout change here needs a\nSCENE_FORMAT_VERSION bump + a frozen copy in `session.rs::compat`."
+              }
+            ]
           },
           "stroke": {
             "oneOf": [

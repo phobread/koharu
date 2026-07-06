@@ -15,8 +15,8 @@ use std::{
 use anyhow::{Context, Result};
 use image::{DynamicImage, GrayImage, Rgba, RgbaImage, imageops};
 use koharu_core::{
-    FontFaceInfo, FontPrediction, FontSource, NodeId, TextAlign, TextDirection, TextShaderEffect,
-    TextStrokeStyle, TextStyle, Transform,
+    FontFaceInfo, FontPrediction, FontSource, GradientDirection, NodeId, TextAlign, TextDirection,
+    TextShaderEffect, TextStrokeStyle, TextStyle, Transform,
 };
 
 use koharu_renderer::{
@@ -297,14 +297,7 @@ impl Renderer {
 
         let layout_source = layout_source_from_input(block, translation);
 
-        let mut style = block.style.clone().unwrap_or_else(|| TextStyle {
-            font_families: Vec::new(),
-            font_size: None,
-            color: [0, 0, 0, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
-        });
+        let mut style = block.style.clone().unwrap_or_default();
         if style.font_families.is_empty()
             && let Some(font) = document_font
         {
@@ -404,11 +397,34 @@ impl Renderer {
                     color,
                     effect: shader_core_to_renderer(block_effect),
                     padding: stroke_clearance(resolved_stroke.as_ref()),
-                    stroke: resolved_stroke,
+                    stroke: resolved_stroke.clone(),
                     raster,
                     ..Default::default()
                 },
             )?;
+            // Gradient fill: render the same layout a second time in the end
+            // colour — identical stroke, so glyph coverage matches pixel for
+            // pixel — and lerp between the two sprites along the gradient
+            // axis. Runs in the local frame, before any rotation is baked in.
+            let rendered = match style.gradient {
+                Some(gradient) => {
+                    let end = self.renderer.render(
+                        layout,
+                        writing_mode,
+                        &RenderOptions {
+                            font_size: layout.font_size,
+                            color: gradient.to,
+                            effect: shader_core_to_renderer(block_effect),
+                            padding: stroke_clearance(resolved_stroke.as_ref()),
+                            stroke: resolved_stroke,
+                            raster,
+                            ..Default::default()
+                        },
+                    )?;
+                    blend_gradient_sprites(rendered, &end, gradient.direction)
+                }
+                None => rendered,
+            };
             let rendered = match rotation_deg {
                 Some(deg) => rotate_sprite(&rendered, deg),
                 None => rendered,
@@ -1335,6 +1351,37 @@ fn effective_rotation(rotation_deg: f32) -> Option<f32> {
     (deg.abs() >= 0.5).then_some(deg)
 }
 
+/// Per-pixel lerp between two same-sized renders of one layout: `start` at
+/// the left/top edge fading into `end` at the right/bottom. Both passes share
+/// glyph coverage (same layout, stroke, and raster options), so stroke pixels
+/// — identical in both — pass through unchanged and only the fill shifts.
+fn blend_gradient_sprites(
+    mut start: RgbaImage,
+    end: &RgbaImage,
+    direction: GradientDirection,
+) -> RgbaImage {
+    debug_assert_eq!(start.dimensions(), end.dimensions());
+    let (w, h) = start.dimensions();
+    let span = match direction {
+        GradientDirection::Horizontal => w,
+        GradientDirection::Vertical => h,
+    }
+    .saturating_sub(1)
+    .max(1) as f32;
+    for (x, y, px) in start.enumerate_pixels_mut() {
+        let t = match direction {
+            GradientDirection::Horizontal => x,
+            GradientDirection::Vertical => y,
+        } as f32
+            / span;
+        let q = end.get_pixel(x, y).0;
+        for (channel, &target) in px.0.iter_mut().zip(q.iter()) {
+            *channel = (*channel as f32 + (target as f32 - *channel as f32) * t).round() as u8;
+        }
+    }
+    start
+}
+
 /// Rotate a sprite clockwise about its centre (screen convention: y-down,
 /// positive = clockwise, matching CSS `rotate`). The output is sized to the
 /// rotated bounding box with transparent fill; sampling is bilinear on
@@ -1499,6 +1546,27 @@ mod tests {
     }
 
     #[test]
+    fn blend_gradient_lerps_along_axis_and_keeps_identical_pixels() {
+        // 3×2: start solid red, end solid blue except one "stroke" pixel that
+        // is identical in both renders and must pass through unchanged.
+        let start = RgbaImage::from_pixel(3, 2, Rgba([255, 0, 0, 255]));
+        let mut end = RgbaImage::from_pixel(3, 2, Rgba([0, 0, 255, 255]));
+        end.put_pixel(2, 0, Rgba([255, 0, 0, 255]));
+
+        let out = blend_gradient_sprites(start.clone(), &end, GradientDirection::Horizontal);
+        assert_eq!(out.get_pixel(0, 0).0, [255, 0, 0, 255]); // t = 0
+        assert_eq!(out.get_pixel(1, 1).0, [128, 0, 128, 255]); // t = 0.5
+        assert_eq!(out.get_pixel(2, 1).0, [0, 0, 255, 255]); // t = 1
+        // Identical in both passes (a stroke pixel) → unchanged at t = 1.
+        assert_eq!(out.get_pixel(2, 0).0, [255, 0, 0, 255]);
+
+        let out = blend_gradient_sprites(start, &end, GradientDirection::Vertical);
+        // Vertical: top row is pure start, bottom row is pure end.
+        assert_eq!(out.get_pixel(1, 0).0, [255, 0, 0, 255]);
+        assert_eq!(out.get_pixel(1, 1).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
     fn default_stroke_color_uses_black_for_light_text() {
         let stroke = resolve_stroke_style(None, None, None, 16.0, [255, 255, 255, 255])
             .expect("default stroke should be present");
@@ -1540,14 +1608,7 @@ mod tests {
 
     #[test]
     fn auto_text_color_ignores_prediction_and_picks_black_on_light_background() {
-        let derived = TextStyle {
-            font_families: Vec::new(),
-            font_size: None,
-            color: [0, 0, 0, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
-        };
+        let derived = TextStyle::default();
         let prediction = FontPrediction {
             text_color: [12, 34, 56],
             ..Default::default()
@@ -1573,14 +1634,7 @@ mod tests {
 
     #[test]
     fn auto_text_color_picks_white_on_dark_background() {
-        let derived = TextStyle {
-            font_families: Vec::new(),
-            font_size: None,
-            color: [0, 0, 0, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
-        };
+        let derived = TextStyle::default();
         let background = RgbaImage::from_pixel(32, 32, Rgba([24, 24, 24, 255]));
         assert_eq!(
             resolve_text_color(
@@ -1603,12 +1657,8 @@ mod tests {
     #[test]
     fn manual_colored_text_wins_over_auto_contrast() {
         let explicit = TextStyle {
-            font_families: Vec::new(),
-            font_size: None,
             color: [200, 100, 50, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
+            ..Default::default()
         };
         let prediction = FontPrediction {
             text_color: [12, 34, 56],
@@ -1636,12 +1686,9 @@ mod tests {
     #[test]
     fn stale_predicted_style_color_is_treated_as_auto() {
         let style = TextStyle {
-            font_families: Vec::new(),
             font_size: Some(24.0),
             color: [12, 34, 56, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
+            ..Default::default()
         };
         let prediction = FontPrediction {
             text_color: [12, 34, 56],
