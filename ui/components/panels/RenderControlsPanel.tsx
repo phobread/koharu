@@ -118,8 +118,7 @@ const normalizeEffect = (effect?: TextShaderEffect | null): TextShaderEffect => 
   italic: effect?.italic ?? false,
 })
 
-const hasExplicitColor = (node: TextNodeEntry) =>
-  isManualTextColor(node.data.style?.color, node.data.fontPrediction)
+const hasExplicitColor = (node: TextNodeEntry) => isManualTextColor(node.data.style?.color)
 
 /** Small ↺ button that clears an override back to the renderer's automatic value. */
 function ResetToAutoButton({
@@ -295,7 +294,7 @@ export function RenderControlsPanel() {
 
   const selectedStyle = selectedNode?.data.style ?? firstNode?.data.style
   const colorSource = selectedNode ?? firstNode
-  const currentColor = effectiveTextColor(colorSource?.data.style, colorSource?.data.fontPrediction)
+  const currentColor = effectiveTextColor(colorSource?.data.style)
   const currentColorHex = colorToHex(currentColor)
   const currentStroke = normalizeStroke(selectedStyle?.stroke)
   const currentStrokeColorHex = colorToHex(currentStroke.color ?? DEFAULT_STROKE_COLOR)
@@ -329,7 +328,7 @@ export function RenderControlsPanel() {
   // ---------------------------------------------------------------------------
 
   const buildStyleOp = (n: TextNodeEntry, updates: TextStyleUpdates): Op => {
-    const nextStyle = mergeTextStyle(n.data.style, n.data.fontPrediction, updates)
+    const nextStyle = mergeTextStyle(n.data.style, updates)
     return ops.updateNode(page!.id, n.id, {
       data: { text: { style: nextStyle } } as never,
     })

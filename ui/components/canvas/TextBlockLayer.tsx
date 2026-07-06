@@ -113,7 +113,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       const base = data.style?.fontSize ?? data.renderedFontSizePx
       if (base) {
         const next = Math.min(Math.max(base * scaleFactor, MIN_SCALED_FONT_PX), MAX_SCALED_FONT_PX)
-        scaledStyle = mergeTextStyle(data.style, data.fontPrediction, {
+        scaledStyle = mergeTextStyle(data.style, {
           fontSize: Math.round(next * 10) / 10,
         })
       }

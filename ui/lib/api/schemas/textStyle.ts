@@ -8,8 +8,16 @@ import type { TextShaderEffect } from './textShaderEffect'
 import type { TextStrokeStyle } from './textStrokeStyle'
 
 export interface TextStyle {
-  /** @items.minimum 0 */
-  color: number[]
+  /**
+   * Explicit fill colour. `None` = automatic (renderer picks black/white
+   * by background contrast). Any stored value — including pure black or
+   * white — is honoured verbatim. Became `Option` in scene format v4;
+   * earlier formats used sentinel colours (pure black / the predicted
+   * colour) for "auto", converted on upgrade in `session.rs::compat`.
+   * @nullable
+   * @items.minimum 0
+   */
+  color?: number[] | null
   effect?: null | TextShaderEffect
   fontFamilies: string[]
   /** @nullable */

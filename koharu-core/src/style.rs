@@ -236,12 +236,18 @@ pub struct TextFillGradient {
     pub direction: GradientDirection,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TextStyle {
     pub font_families: Vec<String>,
     pub font_size: Option<f32>,
-    pub color: [u8; 4],
+    /// Explicit fill colour. `None` = automatic (renderer picks black/white
+    /// by background contrast). Any stored value — including pure black or
+    /// white — is honoured verbatim. Became `Option` in scene format v4;
+    /// earlier formats used sentinel colours (pure black / the predicted
+    /// colour) for "auto", converted on upgrade in `session.rs::compat`.
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
     pub effect: Option<TextShaderEffect>,
     pub stroke: Option<TextStrokeStyle>,
     #[serde(default)]
@@ -250,20 +256,6 @@ pub struct TextStyle {
     /// SCENE_FORMAT_VERSION bump + a frozen copy in `session.rs::compat`.
     #[serde(default)]
     pub gradient: Option<TextFillGradient>,
-}
-
-impl Default for TextStyle {
-    fn default() -> Self {
-        Self {
-            font_families: Vec::new(),
-            font_size: None,
-            color: [0, 0, 0, 255],
-            effect: None,
-            stroke: None,
-            text_align: None,
-            gradient: None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -314,7 +306,7 @@ mod tests {
         let style = TextStyle {
             font_families: vec!["Arial".to_string()],
             font_size: Some(18.0),
-            color: [12, 34, 56, 255],
+            color: Some([12, 34, 56, 255]),
             effect: Some(TextShaderEffect {
                 italic: true,
                 bold: false,

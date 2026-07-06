@@ -198,7 +198,7 @@ mod tests {
         let style = TextStyle {
             font_families: vec!["Arial".to_string()],
             font_size: Some(18.0),
-            color: [12, 34, 56, 255],
+            color: Some([12, 34, 56, 255]),
             ..Default::default()
         };
         let preserved = preserve_existing_style(Some(style));
@@ -207,7 +207,7 @@ mod tests {
         };
         assert_eq!(preserved.font_families, vec!["Arial".to_string()]);
         assert_eq!(preserved.font_size, Some(18.0));
-        assert_eq!(preserved.color, [12, 34, 56, 255]);
+        assert_eq!(preserved.color, Some([12, 34, 56, 255]));
         assert!(preserved.effect.is_none());
         assert!(preserved.stroke.is_none());
         assert!(preserved.text_align.is_none());

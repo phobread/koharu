@@ -45,8 +45,11 @@ const PROJECT_TOML: &str = "project.toml";
 const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 /// v1 (implicit, headerless): layout before `TextData.rendered_font_size_px`.
 /// v2: first to carry the header; layout before `TextStyle.gradient`.
-/// v3: current layout (`TextStyle` gained `gradient`).
-const SCENE_FORMAT_VERSION: u16 = 3;
+/// v3: `TextStyle` gained `gradient`; colour still a bare `[u8; 4]` with
+///     sentinel semantics (pure black / predicted colour = auto).
+/// v4: current layout (`TextStyle.color` became `Option` — `None` = auto,
+///     so pure black/white are finally expressible as manual picks).
+const SCENE_FORMAT_VERSION: u16 = 4;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -243,7 +246,10 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
         return match version {
-            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v3)"),
+            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v4)"),
+            3 => postcard::from_bytes::<compat::SnapshotV3>(payload)
+                .context("postcard decode (v3)")
+                .map(compat::SnapshotV3::upgrade),
             2 => postcard::from_bytes::<compat::SnapshotV2>(payload)
                 .context("postcard decode (v2)")
                 .map(compat::SnapshotV2::upgrade),
@@ -276,11 +282,34 @@ mod compat {
     use indexmap::IndexMap;
     use koharu_core::{
         BlobRef, FontPrediction, ImageData, MaskData, Node, NodeId, NodeKind, Page, PageId,
-        ProjectMeta, Scene, TextData, TextDirection, Transform,
+        ProjectMeta, Scene, TextData, TextDirection, TextStyle, Transform,
     };
     use serde::Deserialize;
 
     use super::Snapshot;
+
+    /// v1–v3 had no way to say "automatic colour": the UI stored pure black
+    /// as a reset placeholder and old pipelines froze the model's predicted
+    /// colour into the style, and the renderer sniffed both back out as
+    /// "auto". v4 makes auto a real `None`, so convert those sentinels here —
+    /// anything else was a genuine manual pick and stays verbatim.
+    fn upgrade_sentinel_color(
+        color: [u8; 4],
+        prediction: Option<&FontPrediction>,
+    ) -> Option<[u8; 4]> {
+        if color[3] != 255 {
+            return Some(color);
+        }
+        if color == [0, 0, 0, 255] {
+            return None;
+        }
+        if let Some(pred) = prediction
+            && pred.text_color == [color[0], color[1], color[2]]
+        {
+            return None;
+        }
+        Some(color)
+    }
 
     #[derive(Deserialize)]
     #[cfg_attr(test, derive(serde::Serialize))]
@@ -396,6 +425,7 @@ mod compat {
 
     impl TextDataV1 {
         fn upgrade(self) -> TextData {
+            let style = self.style.map(|s| s.upgrade(self.font_prediction.as_ref()));
             TextData {
                 confidence: self.confidence,
                 source_lang: self.source_lang,
@@ -407,7 +437,7 @@ mod compat {
                 detector: self.detector,
                 text: self.text,
                 translation: self.translation,
-                style: self.style.map(TextStyleV2::upgrade),
+                style,
                 font_prediction: self.font_prediction,
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
@@ -419,10 +449,10 @@ mod compat {
     }
 
     // -----------------------------------------------------------------------
-    // v2 → v3: `TextStyle` gained `gradient`.
+    // v2 → current: `TextStyle` gained `gradient` (v3), colour became Option (v4).
     // -----------------------------------------------------------------------
 
-    use koharu_core::{TextAlign, TextShaderEffect, TextStrokeStyle, TextStyle as TextStyleV3};
+    use koharu_core::{TextAlign, TextFillGradient, TextShaderEffect, TextStrokeStyle};
 
     #[derive(Deserialize)]
     #[cfg_attr(test, derive(serde::Serialize))]
@@ -502,11 +532,11 @@ mod compat {
     }
 
     impl TextStyleV2 {
-        fn upgrade(self) -> TextStyleV3 {
-            TextStyleV3 {
+        fn upgrade(self, prediction: Option<&FontPrediction>) -> TextStyle {
+            TextStyle {
                 font_families: self.font_families,
                 font_size: self.font_size,
-                color: self.color,
+                color: upgrade_sentinel_color(self.color, prediction),
                 effect: self.effect,
                 stroke: self.stroke,
                 text_align: self.text_align,
@@ -564,6 +594,7 @@ mod compat {
 
     impl TextDataV2 {
         fn upgrade(self) -> TextData {
+            let style = self.style.map(|s| s.upgrade(self.font_prediction.as_ref()));
             TextData {
                 confidence: self.confidence,
                 source_lang: self.source_lang,
@@ -575,7 +606,175 @@ mod compat {
                 detector: self.detector,
                 text: self.text,
                 translation: self.translation,
-                style: self.style.map(TextStyleV2::upgrade),
+                style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                lock_layout_box: self.lock_layout_box,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v3 → v4: `TextStyle.color` became `Option` (sentinels → real auto).
+    // -----------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV3 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV3,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV3 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV3>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV3 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV3>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV3 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV3,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV3 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV3),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// `TextData` as of v3 — identical to current except `style`.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV3 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyleV3>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    /// `TextStyle` as of v3 — `gradient` present, colour still a bare array
+    /// with sentinel semantics.
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextStyleV3 {
+        pub(super) font_families: Vec<String>,
+        pub(super) font_size: Option<f32>,
+        pub(super) color: [u8; 4],
+        pub(super) effect: Option<TextShaderEffect>,
+        pub(super) stroke: Option<TextStrokeStyle>,
+        pub(super) text_align: Option<TextAlign>,
+        pub(super) gradient: Option<TextFillGradient>,
+    }
+
+    impl TextStyleV3 {
+        fn upgrade(self, prediction: Option<&FontPrediction>) -> TextStyle {
+            TextStyle {
+                font_families: self.font_families,
+                font_size: self.font_size,
+                color: upgrade_sentinel_color(self.color, prediction),
+                effect: self.effect,
+                stroke: self.stroke,
+                text_align: self.text_align,
+                gradient: self.gradient,
+            }
+        }
+    }
+
+    impl SnapshotV3 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV3 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV3::Image(d) => NodeKind::Image(d),
+                                    NodeKindV3::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV3::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV3 {
+        fn upgrade(self) -> TextData {
+            let style = self.style.map(|s| s.upgrade(self.font_prediction.as_ref()));
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style,
                 font_prediction: self.font_prediction,
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
@@ -800,10 +999,122 @@ mod tests {
         };
         let style = text.style.as_ref().expect("style survives upgrade");
         assert_eq!(style.font_size, Some(21.0));
-        assert_eq!(style.color, [10, 20, 30, 255]);
+        assert_eq!(
+            style.color,
+            Some([10, 20, 30, 255]),
+            "manual colour survives as an explicit pick"
+        );
         assert!(style.gradient.is_none(), "new field defaults to None");
         assert_eq!(text.rendered_font_size_px, Some(19.0));
         assert!(text.lock_layout_box, "trailing bool must decode intact");
+    }
+
+    #[test]
+    fn v3_scene_bin_upgrades_sentinel_colors_to_auto() {
+        // v3 stored "auto" colour as sentinels: pure black, or the model's
+        // predicted colour frozen into the style. The v4 upgrade must turn
+        // both into `None` and keep genuine manual picks verbatim.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v3").unwrap();
+            drop(session);
+        }
+
+        let style_v3 = |color: [u8; 4]| compat::TextStyleV3 {
+            font_families: vec!["Arial".to_string()],
+            font_size: Some(21.0),
+            color,
+            effect: None,
+            stroke: None,
+            text_align: None,
+            gradient: None,
+        };
+        let text_node = |style: compat::TextStyleV3,
+                         prediction: Option<koharu_core::FontPrediction>| {
+            let id = NodeId::new();
+            (
+                id,
+                compat::NodeV3 {
+                    id,
+                    transform: Transform {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 40.0,
+                        rotation_deg: 0.0,
+                    },
+                    visible: true,
+                    kind: compat::NodeKindV3::Text(compat::TextDataV3 {
+                        text: Some("안녕".to_string()),
+                        style: Some(style),
+                        font_prediction: prediction,
+                        ..Default::default()
+                    }),
+                },
+            )
+        };
+
+        let predicted = koharu_core::FontPrediction {
+            text_color: [200, 40, 90],
+            ..Default::default()
+        };
+        let (black_id, black_node) = text_node(style_v3([0, 0, 0, 255]), None);
+        let (stale_id, stale_node) =
+            text_node(style_v3([200, 40, 90, 255]), Some(predicted.clone()));
+        let (manual_id, manual_node) = text_node(style_v3([255, 255, 255, 255]), Some(predicted));
+
+        let page_id = PageId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(black_id, black_node);
+        nodes.insert(stale_id, stale_node);
+        nodes.insert(manual_id, manual_node);
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV3 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v3 = compat::SnapshotV3 {
+            epoch: 4,
+            scene: compat::SceneV3 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&3u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v3).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v3 scene.bin must open");
+        let scene = session.scene.read();
+        let color_of = |id: &NodeId| {
+            let node = scene
+                .pages
+                .get(&page_id)
+                .and_then(|p| p.nodes.get(id))
+                .expect("node survives upgrade");
+            let NodeKind::Text(text) = &node.kind else {
+                panic!("expected text node");
+            };
+            text.style.as_ref().expect("style survives").color
+        };
+        assert_eq!(color_of(&black_id), None, "black sentinel becomes auto");
+        assert_eq!(
+            color_of(&stale_id),
+            None,
+            "prediction-equal colour becomes auto"
+        );
+        assert_eq!(
+            color_of(&manual_id),
+            Some([255, 255, 255, 255]),
+            "genuine manual pick (even pure white) stays"
+        );
     }
 
     #[test]
@@ -857,7 +1168,8 @@ mod tests {
                         style: Some(TextStyle {
                             font_families: vec!["Arial".to_string()],
                             font_size: Some(20.0),
-                            color: [0, 0, 0, 255],
+                            // v4: explicit pure black round-trips as manual.
+                            color: Some([0, 0, 0, 255]),
                             effect: Some(TextShaderEffect {
                                 italic: true,
                                 bold: true,

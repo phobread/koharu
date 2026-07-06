@@ -309,7 +309,6 @@ impl Renderer {
         let block_effect = style.effect.unwrap_or(*effect);
         let color = resolve_text_color(
             &style,
-            block.font_prediction.as_ref(),
             background,
             resolved_box.layout_box,
             bubble_mask,
@@ -1180,34 +1179,18 @@ fn resolve_stroke_style(
 
 fn resolve_text_color(
     derived_style: &TextStyle,
-    font_prediction: Option<&FontPrediction>,
     background: &RgbaImage,
     layout_box: LayoutBox,
     bubble_mask: Option<&GrayImage>,
     bubble_id: Option<u8>,
 ) -> [u8; 4] {
-    if is_manual_text_color(derived_style.color, font_prediction) {
-        return derived_style.color;
+    // A stored colour is always a manual pick (pure black/white included) —
+    // scene format v4 upgraded the old auto sentinels to a real `None`.
+    if let Some(color) = derived_style.color {
+        return color;
     }
 
     contrast_text_color(background, layout_box, bubble_mask, bubble_id)
-}
-
-fn is_manual_text_color(color: [u8; 4], font_prediction: Option<&FontPrediction>) -> bool {
-    if color[3] != 255 {
-        return true;
-    }
-    if color == [0, 0, 0, 255] {
-        return false;
-    }
-    if let Some(pred) = font_prediction
-        && color[0] == pred.text_color[0]
-        && color[1] == pred.text_color[1]
-        && color[2] == pred.text_color[2]
-    {
-        return false;
-    }
-    true
 }
 
 fn contrast_text_color(
@@ -1607,17 +1590,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_text_color_ignores_prediction_and_picks_black_on_light_background() {
+    fn auto_text_color_picks_black_on_light_background() {
         let derived = TextStyle::default();
-        let prediction = FontPrediction {
-            text_color: [12, 34, 56],
-            ..Default::default()
-        };
         let background = RgbaImage::from_pixel(32, 32, Rgba([245, 245, 245, 255]));
         assert_eq!(
             resolve_text_color(
                 &derived,
-                Some(&prediction),
                 &background,
                 LayoutBox {
                     x: 0.0,
@@ -1639,7 +1617,6 @@ mod tests {
         assert_eq!(
             resolve_text_color(
                 &derived,
-                None,
                 &background,
                 LayoutBox {
                     x: 0.0,
@@ -1657,18 +1634,13 @@ mod tests {
     #[test]
     fn manual_colored_text_wins_over_auto_contrast() {
         let explicit = TextStyle {
-            color: [200, 100, 50, 255],
-            ..Default::default()
-        };
-        let prediction = FontPrediction {
-            text_color: [12, 34, 56],
+            color: Some([200, 100, 50, 255]),
             ..Default::default()
         };
         let background = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 255]));
         assert_eq!(
             resolve_text_color(
                 &explicit,
-                Some(&prediction),
                 &background,
                 LayoutBox {
                     x: 0.0,
@@ -1684,21 +1656,48 @@ mod tests {
     }
 
     #[test]
-    fn stale_predicted_style_color_is_treated_as_auto() {
-        let style = TextStyle {
-            font_size: Some(24.0),
-            color: [12, 34, 56, 255],
+    fn manual_pure_black_and_white_beat_the_contrast_heuristic() {
+        // Regression: pre-v4 these were auto sentinels and got flipped by the
+        // background-contrast pick; now a stored colour always wins.
+        let black = TextStyle {
+            color: Some([0, 0, 0, 255]),
             ..Default::default()
         };
-        let prediction = FontPrediction {
-            text_color: [12, 34, 56],
+        let white = TextStyle {
+            color: Some([255, 255, 255, 255]),
+            ..Default::default()
+        };
+        let dark_bg = RgbaImage::from_pixel(32, 32, Rgba([20, 20, 20, 255]));
+        let light_bg = RgbaImage::from_pixel(32, 32, Rgba([245, 245, 245, 255]));
+        let layout_box = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 32.0,
+            height: 32.0,
+        };
+        // Contrast would pick white on the dark background — manual black stays.
+        assert_eq!(
+            resolve_text_color(&black, &dark_bg, layout_box, None, None),
+            [0, 0, 0, 255]
+        );
+        // Contrast would pick black on the light background — manual white stays.
+        assert_eq!(
+            resolve_text_color(&white, &light_bg, layout_box, None, None),
+            [255, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn missing_style_color_falls_back_to_contrast() {
+        let style = TextStyle {
+            font_size: Some(24.0),
+            color: None,
             ..Default::default()
         };
         let background = RgbaImage::from_pixel(32, 32, Rgba([20, 20, 20, 255]));
         assert_eq!(
             resolve_text_color(
                 &style,
-                Some(&prediction),
                 &background,
                 LayoutBox {
                     x: 0.0,

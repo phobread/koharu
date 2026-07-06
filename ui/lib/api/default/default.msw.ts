@@ -890,9 +890,12 @@ export const getGetSceneJsonResponseTextStyleMock = (
   overrideResponse: Partial<TextStyle> = {},
 ): TextStyle => ({
   ...{
-    color: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
-      faker.number.int({ min: 0 }),
-    ),
+    color: faker.helpers.arrayElement([
+      Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+        faker.number.int({ min: 0 }),
+      ),
+      undefined,
+    ]),
     effect: faker.helpers.arrayElement([
       faker.helpers.arrayElement([null, { ...getGetSceneJsonResponseTextShaderEffectMock() }]),
       undefined,

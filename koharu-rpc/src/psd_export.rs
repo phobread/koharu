@@ -271,7 +271,9 @@ fn convert_style(s: &TextStyle) -> PsdTextStyle {
     PsdTextStyle {
         font_families: s.font_families.clone(),
         font_size: s.font_size,
-        color: s.color,
+        // Auto colour has no PSD representation; the sprite raster carries the
+        // real rendered colour, this is just layer metadata.
+        color: s.color.unwrap_or([0, 0, 0, 255]),
         effect: s.effect.map(|e| PsdShaderEffect {
             italic: e.italic,
             bold: e.bold,

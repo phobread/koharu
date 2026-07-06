@@ -3449,15 +3449,16 @@
       },
       "TextStyle": {
         "type": "object",
-        "required": ["fontFamilies", "color"],
+        "required": ["fontFamilies"],
         "properties": {
           "color": {
-            "type": "array",
+            "type": ["array", "null"],
             "items": {
               "type": "integer",
               "format": "int32",
               "minimum": 0
-            }
+            },
+            "description": "Explicit fill colour. `None` = automatic (renderer picks black/white\nby background contrast). Any stored value — including pure black or\nwhite — is honoured verbatim. Became `Option` in scene format v4;\nearlier formats used sentinel colours (pure black / the predicted\ncolour) for \"auto\", converted on upgrade in `session.rs::compat`."
           },
           "effect": {
             "oneOf": [
