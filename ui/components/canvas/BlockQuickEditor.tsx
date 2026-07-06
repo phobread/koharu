@@ -5,11 +5,13 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { DraftTextarea } from '@/components/ui/draft-textarea'
+import { SplittableDraftTextarea } from '@/components/ui/splittable-draft-textarea'
 import type { TextNodeEntry } from '@/hooks/useCurrentPage'
 import type { Page, TextDataPatch } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
+import { applyBlockSplit } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
+import { splitTextBlockAt, type SplitField } from '@/lib/splitBlock'
 
 const EDITOR_WIDTH = 240
 const EDITOR_GAP = 10
@@ -51,6 +53,22 @@ export function BlockQuickEditor({
       await applyOp(ops.updateNode(page.id, node.id, { data: { text: p } as never }))
       queueAutoRender(page.id)
     })()
+  }
+
+  // Same caret split as the side panel's textareas: right-click at the split
+  // point → the block divides along its text flow. The editor closes itself
+  // afterwards because the edited node is replaced by the two halves.
+  const splitAt = (field: SplitField, offset: number) => {
+    const direction =
+      (field === 'text' ? node.data.sourceDirection : node.data.renderedDirection) ?? 'horizontal'
+    const split = splitTextBlockAt(
+      box,
+      { text: node.data.text, translation: node.data.translation },
+      { field, offset },
+      direction,
+    )
+    if (!split) return
+    void applyBlockSplit(page, node.id, split)
   }
 
   // Slant: rotation about the box centre, matching the canvas outline and
@@ -130,26 +148,30 @@ export function BlockQuickEditor({
         <span className='text-[10px] text-muted-foreground uppercase'>
           {t('textBlocks.ocrLabel')}
         </span>
-        <DraftTextarea
+        <SplittableDraftTextarea
           data-testid='quick-editor-ocr'
           value={node.data.text ?? ''}
           placeholder={t('textBlocks.addOcrPlaceholder')}
           rows={2}
           onValueChange={(value) => patch({ text: value })}
           className='min-h-0 resize-none bg-background px-1.5 py-1 text-xs'
+          splitLabel={t('textBlocks.splitAtCursor')}
+          onSplit={(offset) => splitAt('text', offset)}
         />
       </div>
       <div className='flex flex-col gap-0.5'>
         <span className='text-[10px] text-muted-foreground uppercase'>
           {t('textBlocks.translationLabel')}
         </span>
-        <DraftTextarea
+        <SplittableDraftTextarea
           data-testid='quick-editor-translation'
           value={node.data.translation ?? ''}
           placeholder={t('textBlocks.addTranslationPlaceholder')}
           rows={2}
           onValueChange={(value) => patch({ translation: value })}
           className='min-h-0 resize-none bg-background px-1.5 py-1 text-xs'
+          splitLabel={t('textBlocks.splitAtCursor')}
+          onSplit={(offset) => splitAt('translation', offset)}
         />
       </div>
       <div className='flex items-center gap-1.5'>
