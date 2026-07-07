@@ -1,5 +1,5 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "KoharuFORK",
   "mainBinaryName": "KoharuFORK",
   "identifier": "Koharu",
@@ -7,7 +7,7 @@
     "beforeDevCommand": "bun --cwd ui dev",
     "beforeBuildCommand": "bun --cwd ui build",
     "devUrl": "http://localhost:3000",
-    "frontendDist": "../ui/out"
+    "frontendDist": "../../ui/out"
   },
   "app": {
     "security": {

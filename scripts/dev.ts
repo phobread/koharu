@@ -62,6 +62,29 @@ async function setupCuda() {
 }
 
 async function setupCl() {
+  if (await pathExists("C:/Program Files (x86)/Microsoft Visual Studio/Installer/")) {
+    // This is the microsoft-approved way to discover VS installations. Microsoft guarantees vswhere will be at this path.
+    const { stdout, stderr } = await exec('vswhere -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath',
+      { env: process.env, cwd: "C:/Program Files (x86)/Microsoft Visual Studio/Installer/" })
+    const vsRoot = stdout.trim()
+    if (vsRoot !== "") {
+      const vcPath = path.join(vsRoot, 'VC/Tools/MSVC')
+      if (await pathExists(vcPath)) {
+        const msvcVersions = await readdir(vcPath)
+        for (const msvcVersion of msvcVersions) {
+          const binPath = path.join(vcPath, msvcVersion, 'bin/Hostx64/x64')
+          if (await pathExists(binPath)) {
+            process.env.PATH = `${binPath}${path.delimiter}${process.env.PATH}`
+            return
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: walk the standard VS install roots directly. Some installs
+  // (e.g. VS Community without the standalone Installer package) have no
+  // vswhere at the "guaranteed" path.
   const vsRoots = [
     'C:/Program Files/Microsoft Visual Studio',
     'C:/Program Files (x86)/Microsoft Visual Studio',
