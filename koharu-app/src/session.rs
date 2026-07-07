@@ -47,9 +47,11 @@ const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 /// v2: first to carry the header; layout before `TextStyle.gradient`.
 /// v3: `TextStyle` gained `gradient`; colour still a bare `[u8; 4]` with
 ///     sentinel semantics (pure black / predicted colour = auto).
-/// v4: current layout (`TextStyle.color` became `Option` — `None` = auto,
-///     so pure black/white are finally expressible as manual picks).
-const SCENE_FORMAT_VERSION: u16 = 4;
+/// v4: `TextStyle.color` became `Option` — `None` = auto, so pure
+///     black/white are finally expressible as manual picks.
+/// v5: current layout (`TextStrokeStyle.color` became `Option` too — `None`
+///     = contrast against the text colour instead of a hard-coded white).
+const SCENE_FORMAT_VERSION: u16 = 5;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -246,7 +248,10 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
         return match version {
-            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v4)"),
+            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v5)"),
+            4 => postcard::from_bytes::<compat::SnapshotV4>(payload)
+                .context("postcard decode (v4)")
+                .map(compat::SnapshotV4::upgrade),
             3 => postcard::from_bytes::<compat::SnapshotV3>(payload)
                 .context("postcard decode (v3)")
                 .map(compat::SnapshotV3::upgrade),
@@ -309,6 +314,33 @@ mod compat {
             return None;
         }
         Some(color)
+    }
+
+    /// `TextStrokeStyle` before v5 — colour was required and the UI
+    /// materialised a hard-coded white whenever any border control was
+    /// touched. Shared by every pre-v5 style layout.
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextStrokeStyleV4 {
+        pub(super) enabled: bool,
+        pub(super) color: [u8; 4],
+        pub(super) width_px: Option<f32>,
+    }
+
+    /// Pre-v5 stroke colours: pure white was overwhelmingly the materialised
+    /// default (and pure black its mirror), not a deliberate pick — and in
+    /// the cases where it *was* deliberate (white outline on black text),
+    /// auto contrast reproduces the same colour anyway. Convert both to
+    /// auto; anything else stays a manual pick.
+    fn upgrade_sentinel_stroke(stroke: TextStrokeStyleV4) -> TextStrokeStyle {
+        TextStrokeStyle {
+            enabled: stroke.enabled,
+            color: match stroke.color {
+                [255, 255, 255, 255] | [0, 0, 0, 255] => None,
+                other => Some(other),
+            },
+            width_px: stroke.width_px,
+        }
     }
 
     #[derive(Deserialize)]
@@ -527,7 +559,7 @@ mod compat {
         pub(super) font_size: Option<f32>,
         pub(super) color: [u8; 4],
         pub(super) effect: Option<TextShaderEffect>,
-        pub(super) stroke: Option<TextStrokeStyle>,
+        pub(super) stroke: Option<TextStrokeStyleV4>,
         pub(super) text_align: Option<TextAlign>,
     }
 
@@ -538,7 +570,7 @@ mod compat {
                 font_size: self.font_size,
                 color: upgrade_sentinel_color(self.color, prediction),
                 effect: self.effect,
-                stroke: self.stroke,
+                stroke: self.stroke.map(upgrade_sentinel_stroke),
                 text_align: self.text_align,
                 gradient: None,
             }
@@ -694,7 +726,7 @@ mod compat {
         pub(super) font_size: Option<f32>,
         pub(super) color: [u8; 4],
         pub(super) effect: Option<TextShaderEffect>,
-        pub(super) stroke: Option<TextStrokeStyle>,
+        pub(super) stroke: Option<TextStrokeStyleV4>,
         pub(super) text_align: Option<TextAlign>,
         pub(super) gradient: Option<TextFillGradient>,
     }
@@ -706,7 +738,7 @@ mod compat {
                 font_size: self.font_size,
                 color: upgrade_sentinel_color(self.color, prediction),
                 effect: self.effect,
-                stroke: self.stroke,
+                stroke: self.stroke.map(upgrade_sentinel_stroke),
                 text_align: self.text_align,
                 gradient: self.gradient,
             }
@@ -775,6 +807,174 @@ mod compat {
                 text: self.text,
                 translation: self.translation,
                 style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                lock_layout_box: self.lock_layout_box,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v4 → v5: `TextStrokeStyle.color` became `Option` (white sentinel → auto).
+    // -----------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV4 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV4,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV4 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV4>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV4 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV4>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV4 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV4,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV4 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV4),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// `TextData` as of v4 — identical to current except `style`.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV4 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyleV4>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    /// `TextStyle` as of v4 — colour already `Option`, stroke colour still a
+    /// bare array defaulting to white.
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextStyleV4 {
+        pub(super) font_families: Vec<String>,
+        pub(super) font_size: Option<f32>,
+        pub(super) color: Option<[u8; 4]>,
+        pub(super) effect: Option<TextShaderEffect>,
+        pub(super) stroke: Option<TextStrokeStyleV4>,
+        pub(super) text_align: Option<TextAlign>,
+        pub(super) gradient: Option<TextFillGradient>,
+    }
+
+    impl TextStyleV4 {
+        fn upgrade(self) -> TextStyle {
+            TextStyle {
+                font_families: self.font_families,
+                font_size: self.font_size,
+                // v4 text-colour semantics are already the current ones.
+                color: self.color,
+                effect: self.effect,
+                stroke: self.stroke.map(upgrade_sentinel_stroke),
+                text_align: self.text_align,
+                gradient: self.gradient,
+            }
+        }
+    }
+
+    impl SnapshotV4 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV4 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV4::Image(d) => NodeKind::Image(d),
+                                    NodeKindV4::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV4::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV4 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style.map(TextStyleV4::upgrade),
                 font_prediction: self.font_prediction,
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
@@ -1114,6 +1314,117 @@ mod tests {
             color_of(&manual_id),
             Some([255, 255, 255, 255]),
             "genuine manual pick (even pure white) stays"
+        );
+    }
+
+    #[test]
+    fn v4_scene_bin_upgrades_sentinel_stroke_colors_to_auto() {
+        // v4 stroke colours were required and the UI materialised pure white
+        // as the default; the v5 upgrade converts pure white/black to auto
+        // (contrast) and keeps everything else as a manual pick.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v4").unwrap();
+            drop(session);
+        }
+
+        let node_with_stroke = |color: [u8; 4]| {
+            let id = NodeId::new();
+            (
+                id,
+                compat::NodeV4 {
+                    id,
+                    transform: Transform {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 40.0,
+                        rotation_deg: 0.0,
+                    },
+                    visible: true,
+                    kind: compat::NodeKindV4::Text(compat::TextDataV4 {
+                        text: Some("안녕".to_string()),
+                        style: Some(compat::TextStyleV4 {
+                            font_families: vec!["Arial".to_string()],
+                            font_size: None,
+                            color: Some([255, 255, 255, 255]),
+                            effect: None,
+                            stroke: Some(compat::TextStrokeStyleV4 {
+                                enabled: true,
+                                color,
+                                width_px: Some(3.0),
+                            }),
+                            text_align: None,
+                            gradient: None,
+                        }),
+                        ..Default::default()
+                    }),
+                },
+            )
+        };
+
+        let (white_id, white_node) = node_with_stroke([255, 255, 255, 255]);
+        let (custom_id, custom_node) = node_with_stroke([255, 249, 249, 255]);
+
+        let page_id = PageId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(white_id, white_node);
+        nodes.insert(custom_id, custom_node);
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV4 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v4 = compat::SnapshotV4 {
+            epoch: 5,
+            scene: compat::SceneV4 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v4).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v4 scene.bin must open");
+        let scene = session.scene.read();
+        let stroke_of = |id: &NodeId| {
+            let node = scene
+                .pages
+                .get(&page_id)
+                .and_then(|p| p.nodes.get(id))
+                .expect("node survives upgrade");
+            let NodeKind::Text(text) = &node.kind else {
+                panic!("expected text node");
+            };
+            text.style
+                .as_ref()
+                .and_then(|s| s.stroke.clone())
+                .expect("stroke survives upgrade")
+        };
+        let white = stroke_of(&white_id);
+        assert!(white.enabled);
+        assert_eq!(white.color, None, "white sentinel becomes auto contrast");
+        assert_eq!(white.width_px, Some(3.0), "width survives");
+        assert_eq!(
+            stroke_of(&custom_id).color,
+            Some([255, 249, 249, 255]),
+            "eyedropped near-white stays manual"
+        );
+        // Text colour semantics were already v4-correct — manual white stays.
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&white_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(
+            text.style.as_ref().unwrap().color,
+            Some([255, 255, 255, 255])
         );
     }
 

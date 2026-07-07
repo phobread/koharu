@@ -155,7 +155,21 @@ export const useEditorUiStore = create<EditorUiState>()(
     {
       name: 'koharu-editor',
       storage: createJSONStorage(() => serverConfigStorage),
-      version: 1,
+      version: 2,
+      // v1 → v2: global stroke colour became optional (absent = contrast
+      // with the text colour). Pure white/black stored under v1 were the
+      // materialised defaults, not deliberate picks — drop them to auto so
+      // white text stops getting a same-white outline.
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { renderStroke?: RenderStroke } & Record<string, unknown>
+        if (version < 2 && state?.renderStroke?.color) {
+          const [r, g, b, a] = state.renderStroke.color
+          const pure =
+            a === 255 && ((r === 255 && g === 255 && b === 255) || (r === 0 && g === 0 && b === 0))
+          if (pure) state.renderStroke = { ...state.renderStroke, color: undefined }
+        }
+        return state
+      },
       // Persist only durable user choices — not ephemeral view state (canvas
       // scale, tool mode, layer toggles, transient errors).
       partialize: (state) => ({

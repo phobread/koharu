@@ -14,9 +14,12 @@ export type RenderEffect = {
   bold: boolean
 }
 
-/** Optional stroke applied to the rendered sprite. */
+/**
+ * Optional stroke applied to the rendered sprite. `color` absent = automatic:
+ * the renderer contrasts the outline against each block's text colour.
+ */
 export type RenderStroke = {
   enabled: boolean
-  color: RgbaColor
+  color?: RgbaColor
   widthPx?: number
 }

@@ -61,7 +61,6 @@ import {
 } from '@/lib/textStyle'
 import { cn } from '@/lib/utils'
 
-const DEFAULT_STROKE_COLOR: number[] = [255, 255, 255, 255]
 const DEFAULT_STROKE_WIDTH = 1.6
 const MIN_STROKE_WIDTH = 0.2
 const MAX_STROKE_WIDTH = 24
@@ -109,9 +108,17 @@ const fallbackFontFace = (value?: string): FontFaceInfo | undefined => {
 
 const normalizeStroke = (stroke?: TextStrokeStyle | null): TextStrokeStyle => ({
   enabled: stroke?.enabled ?? true,
-  color: stroke?.color ?? DEFAULT_STROKE_COLOR,
+  // null = automatic: the renderer contrasts the outline with the text colour.
+  color: stroke?.color ?? null,
   widthPx: stroke?.widthPx ?? null,
 })
+
+// Mirrors the renderer's auto outline: contrast against the text colour
+// (luminance 0.299r + 0.587g + 0.114b, threshold 128 → black, else white).
+const contrastingStrokeColor = (textColor: number[]): [number, number, number, number] => {
+  const [r = 0, g = 0, b = 0] = textColor
+  return 0.299 * r + 0.587 * g + 0.114 * b > 128 ? [0, 0, 0, 255] : [255, 255, 255, 255]
+}
 
 const normalizeEffect = (effect?: TextShaderEffect | null): TextShaderEffect => ({
   bold: effect?.bold ?? false,
@@ -297,7 +304,10 @@ export function RenderControlsPanel() {
   const currentColor = effectiveTextColor(colorSource?.data.style)
   const currentColorHex = colorToHex(currentColor)
   const currentStroke = normalizeStroke(selectedStyle?.stroke)
-  const currentStrokeColorHex = colorToHex(currentStroke.color ?? DEFAULT_STROKE_COLOR)
+  // Auto stroke shows the colour the renderer would actually pick.
+  const currentStrokeColorHex = colorToHex(
+    currentStroke.color ?? contrastingStrokeColor(currentColor),
+  )
   const currentStrokeWidth = currentStroke.widthPx ?? DEFAULT_STROKE_WIDTH
   // Gradient fill: `style.color` is the start colour, `gradient.to` the end.
   // No gradient stored = flat fill.
@@ -417,7 +427,8 @@ export function RenderControlsPanel() {
     if (applyStyleToSelected({ stroke: normalizeStroke(nextStroke) })) return
     setRenderStroke({
       enabled: nextStroke.enabled ?? true,
-      color: (nextStroke.color ?? DEFAULT_STROKE_COLOR) as [number, number, number, number],
+      // Absent = auto — don't materialise a colour the user never picked.
+      color: (nextStroke.color ?? undefined) as [number, number, number, number] | undefined,
       widthPx: nextStroke.widthPx ?? undefined,
     })
     if (page) queueAutoRender(page.id)
@@ -856,10 +867,7 @@ export function RenderControlsPanel() {
                   onChange={(hex) => {
                     applyStrokeSetting({
                       ...currentStroke,
-                      color: hexToColor(
-                        hex,
-                        (currentStroke.color ?? DEFAULT_STROKE_COLOR)[3] ?? 255,
-                      ),
+                      color: hexToColor(hex, currentStroke.color?.[3] ?? 255),
                     })
                   }}
                   className='size-7'

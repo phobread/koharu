@@ -4,8 +4,16 @@
  */
 
 export interface TextStrokeStyle {
-  /** @items.minimum 0 */
-  color?: number[]
+  /**
+   * Explicit outline colour. `None` = automatic: contrast against the
+   * resolved text colour (white text gets a black outline and vice
+   * versa). Became `Option` in scene format v5; earlier formats stored a
+   * required colour that defaulted to white, converted on upgrade in
+   * `session.rs::compat`.
+   * @nullable
+   * @items.minimum 0
+   */
+  color?: number[] | null
   enabled?: boolean
   /** @nullable */
   widthPx?: number | null

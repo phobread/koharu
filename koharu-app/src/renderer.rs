@@ -1146,12 +1146,18 @@ fn resolve_stroke_style(
     font_size: f32,
     text_color: [u8; 4],
 ) -> Option<RenderStrokeOptions> {
+    // Explicit stroke settings (per-block, then global): width/enabled are
+    // taken as stored, but the colour is only manual when actually picked —
+    // `None` contrasts against the resolved text colour, so a white text
+    // never ends up wrapped in a same-white outline.
     if let Some(stroke) = block_stroke {
         if !stroke.enabled {
             return None;
         }
         return Some(RenderStrokeOptions {
-            color: stroke.color,
+            color: stroke
+                .color
+                .unwrap_or_else(|| contrasting_stroke_color(text_color)),
             width_px: stroke
                 .width_px
                 .unwrap_or_else(|| default_stroke_width(font_size)),
@@ -1162,7 +1168,9 @@ fn resolve_stroke_style(
             return None;
         }
         return Some(RenderStrokeOptions {
-            color: stroke.color,
+            color: stroke
+                .color
+                .unwrap_or_else(|| contrasting_stroke_color(text_color)),
             width_px: stroke
                 .width_px
                 .unwrap_or_else(|| default_stroke_width(font_size)),
@@ -1577,7 +1585,7 @@ mod tests {
             None,
             Some(&TextStrokeStyle {
                 enabled: true,
-                color: [255, 255, 255, 255],
+                color: Some([255, 255, 255, 255]),
                 width_px: Some(2.0),
             }),
             None,
@@ -1587,6 +1595,33 @@ mod tests {
         .expect("explicit stroke should be present");
         assert_eq!(stroke.color, [255, 255, 255, 255]);
         assert_eq!(stroke.width_px, 2.0);
+    }
+
+    #[test]
+    fn auto_stroke_color_contrasts_with_text_even_when_stroke_is_enabled() {
+        // Regression: a border enabled without a picked colour (per-block or
+        // global) used to materialise white — wrapping white text in a white
+        // outline. Auto colour must contrast with the resolved text colour.
+        let enabled_auto = TextStrokeStyle {
+            enabled: true,
+            color: None,
+            width_px: Some(2.0),
+        };
+        let stroke =
+            resolve_stroke_style(None, Some(&enabled_auto), None, 18.0, [255, 255, 255, 255])
+                .expect("stroke should be present");
+        assert_eq!(
+            stroke.color,
+            [0, 0, 0, 255],
+            "white text gets black outline"
+        );
+        let stroke = resolve_stroke_style(None, None, Some(&enabled_auto), 18.0, [0, 0, 0, 255])
+            .expect("global stroke should be present");
+        assert_eq!(
+            stroke.color,
+            [255, 255, 255, 255],
+            "black text gets white outline"
+        );
     }
 
     #[test]

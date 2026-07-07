@@ -608,7 +608,9 @@ function TextDefaultsPane() {
   const strokeMode: 'auto' | 'custom' | 'off' =
     renderStroke === undefined ? 'auto' : renderStroke.enabled ? 'custom' : 'off'
   const strokeWidth = renderStroke?.widthPx ?? STROKE_DEFAULT_WIDTH
-  const strokeColor = renderStroke?.color ?? STROKE_DEFAULT_COLOR
+  // Undefined = automatic colour (the renderer contrasts against each
+  // block's text colour). Only a deliberate pick stores a colour here.
+  const strokeColor = renderStroke?.color
   const setStrokeMode = (mode: 'auto' | 'custom' | 'off') => {
     if (mode === 'auto') updateStroke(undefined)
     else updateStroke({ enabled: mode === 'custom', color: strokeColor, widthPx: strokeWidth })
@@ -753,12 +755,12 @@ function TextDefaultsPane() {
           {strokeMode === 'custom' && (
             <>
               <ColorPicker
-                value={colorToHex(strokeColor)}
+                value={colorToHex(strokeColor ?? STROKE_DEFAULT_COLOR)}
                 className='size-7'
                 onChange={(hex) =>
                   updateStroke({
                     enabled: true,
-                    color: hexToColor(hex, strokeColor[3] ?? 255),
+                    color: hexToColor(hex, strokeColor?.[3] ?? 255),
                     widthPx: strokeWidth,
                   })
                 }

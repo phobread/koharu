@@ -189,8 +189,13 @@ impl<'de> Deserialize<'de> for TextShaderEffect {
 pub struct TextStrokeStyle {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_stroke_color")]
-    pub color: [u8; 4],
+    /// Explicit outline colour. `None` = automatic: contrast against the
+    /// resolved text colour (white text gets a black outline and vice
+    /// versa). Became `Option` in scene format v5; earlier formats stored a
+    /// required colour that defaulted to white, converted on upgrade in
+    /// `session.rs::compat`.
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
     #[serde(default)]
     pub width_px: Option<f32>,
 }
@@ -199,7 +204,7 @@ impl Default for TextStrokeStyle {
     fn default() -> Self {
         Self {
             enabled: true,
-            color: [255, 255, 255, 255],
+            color: None,
             width_px: None,
         }
     }
@@ -207,10 +212,6 @@ impl Default for TextStrokeStyle {
 
 const fn default_true() -> bool {
     true
-}
-
-const fn default_stroke_color() -> [u8; 4] {
-    [255, 255, 255, 255]
 }
 
 // ---------------------------------------------------------------------------

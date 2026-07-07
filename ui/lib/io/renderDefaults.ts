@@ -25,7 +25,8 @@ export function renderDefaultsForPipeline(): Pick<
     shaderStroke: renderStroke
       ? {
           enabled: renderStroke.enabled,
-          color: renderStroke.color,
+          // Absent colour = auto: the renderer contrasts per block.
+          color: renderStroke.color ?? null,
           widthPx: renderStroke.widthPx ?? null,
         }
       : undefined,
