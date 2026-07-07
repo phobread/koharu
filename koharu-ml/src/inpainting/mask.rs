@@ -85,21 +85,13 @@ pub fn expand_mask_for_inpainting(
         );
     }
 
-    let residual = GrayImage::from_fn(width, height, |x, y| {
-        if base.get_pixel(x, y).0[0] > 0 && covered.get_pixel(x, y).0[0] == 0 {
-            Luma([255])
-        } else {
-            Luma([0])
-        }
-    });
-    if residual.pixels().any(|pixel| pixel.0[0] > 0) {
-        expand_residual_components(
-            &mut expanded,
-            &residual,
-            &bubbles,
-            ExpansionMode::LegacyGlyphOnly,
-        );
-    }
+    expand_residuals(
+        &mut expanded,
+        &base,
+        &covered,
+        &bubbles,
+        ExpansionMode::LegacyGlyphOnly,
+    );
 
     expanded
 }
@@ -137,6 +129,31 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
         fill_text_block_region(&mut expanded, &bubbles, support, bubble_id, &mut covered);
     }
 
+    expand_residuals(
+        &mut expanded,
+        &base,
+        &covered,
+        &bubbles,
+        ExpansionMode::ModernRegionFill,
+    );
+
+    expanded
+}
+
+/// Grow base-mask pixels the per-block pass didn't cover. Skips all work when
+/// the base mask is empty (the undetected-block fallback path), so blank
+/// segmenter output doesn't pay for a whole-image residual build-and-scan.
+fn expand_residuals(
+    expanded: &mut GrayImage,
+    base: &GrayImage,
+    covered: &GrayImage,
+    bubbles: &GrayImage,
+    mode: ExpansionMode,
+) {
+    if base.pixels().all(|pixel| pixel.0[0] == 0) {
+        return;
+    }
+    let (width, height) = base.dimensions();
     let residual = GrayImage::from_fn(width, height, |x, y| {
         if base.get_pixel(x, y).0[0] > 0 && covered.get_pixel(x, y).0[0] == 0 {
             Luma([255])
@@ -145,15 +162,8 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
         }
     });
     if residual.pixels().any(|pixel| pixel.0[0] > 0) {
-        expand_residual_components(
-            &mut expanded,
-            &residual,
-            &bubbles,
-            ExpansionMode::ModernRegionFill,
-        );
+        expand_residual_components(expanded, &residual, bubbles, mode);
     }
-
-    expanded
 }
 
 fn expand_residual_components(
@@ -322,15 +332,7 @@ fn fill_undetected_block_in_bubble(
     if bubble_id == 0 {
         return;
     }
-    let [x1, y1, x2, y2] = rect;
-    for y in y1..y2 {
-        for x in x1..x2 {
-            if bubbles.get_pixel(x, y).0[0] == bubble_id {
-                out.put_pixel(x, y, Luma([255]));
-                covered.put_pixel(x, y, Luma([255]));
-            }
-        }
-    }
+    fill_text_block_region(out, bubbles, rect, bubble_id, covered);
 }
 
 /// Bubble id covering the largest share of `rect`, or 0 unless that bubble
@@ -349,13 +351,24 @@ fn dominant_bubble_id_by_area(bubbles: &GrayImage, [x1, y1, x2, y2]: Xyxy) -> u8
         }
     }
 
+    let (id, count) = max_bubble_count(&counts);
+    if count > 0 && count * 4 >= total {
+        id
+    } else {
+        0
+    }
+}
+
+/// Bubble id with the highest count in a 256-bucket id histogram, plus that
+/// count. `(0, 0)` when no bubble pixels were counted.
+fn max_bubble_count(counts: &[u32; 256]) -> (u8, u32) {
     counts
         .iter()
         .enumerate()
         .skip(1)
-        .max_by_key(|(_, count)| *count)
-        .and_then(|(id, count)| (count * 4 >= total).then_some(id as u8))
-        .unwrap_or(0)
+        .max_by_key(|(_, count)| **count)
+        .map(|(id, count)| (id as u8, *count))
+        .unwrap_or((0, 0))
 }
 
 fn count_nonzero_in_rect(mask: &GrayImage, [x1, y1, x2, y2]: Xyxy) -> u32 {
@@ -384,13 +397,8 @@ fn dominant_bubble_id(mask: &GrayImage, bubbles: &GrayImage, [x1, y1, x2, y2]: X
         }
     }
 
-    counts
-        .iter()
-        .enumerate()
-        .skip(1)
-        .max_by_key(|(_, count)| *count)
-        .and_then(|(id, count)| (*count > 0).then_some(id as u8))
-        .unwrap_or(0)
+    let (id, count) = max_bubble_count(&counts);
+    if count > 0 { id } else { 0 }
 }
 
 fn legacy_block_dilate_radius(block: &TextRegion) -> u8 {
