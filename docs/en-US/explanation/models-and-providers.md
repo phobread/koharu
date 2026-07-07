@@ -16,7 +16,7 @@ The current default stack includes:
 
 - [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) for joint text-block and speech-bubble detection
 - [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector) for text segmentation masks
-- [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5) for OCR text recognition
+- [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) for OCR text recognition
 - [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting) for default inpainting
 - [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection) for font and color detection
 
@@ -28,7 +28,7 @@ Some models are used directly from upstream Hugging Face repos, while converted 
 | ---------------------------- | ---------------------- | ------------------------------------------------------- |
 | `comic-text-bubble-detector` | object detector        | finds text blocks and speech bubble regions in one pass |
 | `comic-text-detector`        | segmentation network   | produces a text mask for cleanup                        |
-| `PaddleOCR-VL-1.5`           | vision-language model  | reads cropped text into text tokens                     |
+| `PaddleOCR-VL-1.6`           | vision-language model  | reads cropped text into text tokens                     |
 | `aot-inpainting`             | inpainting network     | reconstructs masked image regions after text removal    |
 | `YuzuMarker.FontDetection`   | classifier / regressor | estimates font and style hints for rendering            |
 

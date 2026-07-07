@@ -44,7 +44,7 @@ Essa divisão permite que o Koharu use um modelo para raciocinar sobre a estrutu
 | Estágio | Principais modelos | Saída principal |
 | --- | --- | --- |
 | Detect | `comic-text-bubble-detector`, `comic-text-detector-seg`, `YuzuMarker.FontDetection` | blocos de texto, regiões de balão, mask de segmentation, dicas de fonte |
-| OCR | `PaddleOCR-VL-1.5` | texto de origem reconhecido para cada bloco |
+| OCR | `PaddleOCR-VL-1.6` | texto de origem reconhecido para cada bloco |
 | Inpaint | `aot-inpainting` | página com o texto original removido |
 | LLM Generate | LLM GGUF local ou provedor remoto | texto traduzido |
 | Render | renderer do Koharu | página localizada final ou exportação |

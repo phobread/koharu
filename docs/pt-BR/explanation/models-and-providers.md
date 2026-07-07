@@ -16,7 +16,7 @@ O stack padrão atual inclui:
 
 - [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) para detecção conjunta de blocos de texto e balões de fala
 - [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector) para máscaras de segmentação de texto
-- [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5) para reconhecimento de texto por OCR
+- [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) para reconhecimento de texto por OCR
 - [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting) para o inpainting padrão
 - [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection) para detecção de fonte e cor
 
@@ -28,7 +28,7 @@ Alguns modelos são usados diretamente dos repositórios upstream do Hugging Fac
 | ---------------------------- | ---------------------- | ------------------------------------------------------- |
 | `comic-text-bubble-detector` | detector de objetos    | encontra blocos de texto e regiões de balão de fala em uma única passagem |
 | `comic-text-detector`        | rede de segmentação    | produz uma máscara de texto para limpeza                    |
-| `PaddleOCR-VL-1.5`           | modelo de linguagem visual  | lê texto recortado em tokens de texto                     |
+| `PaddleOCR-VL-1.6`           | modelo de linguagem visual  | lê texto recortado em tokens de texto                     |
 | `aot-inpainting`             | rede de inpainting     | reconstrói regiões de imagem mascaradas após a remoção do texto    |
 | `YuzuMarker.FontDetection`   | classificador / regressor | estima dicas de fonte e estilo para a renderização            |
 

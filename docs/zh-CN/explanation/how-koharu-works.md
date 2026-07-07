@@ -44,7 +44,7 @@ flowchart LR
 | 阶段 | 主要模型 | 主要输出 |
 | --- | --- | --- |
 | Detect | `comic-text-bubble-detector`, `comic-text-detector-seg`, `YuzuMarker.FontDetection` | 文本块、气泡区域、分割掩码、字体提示 |
-| OCR | `PaddleOCR-VL-1.5` | 每个文本块识别出的原文 |
+| OCR | `PaddleOCR-VL-1.6` | 每个文本块识别出的原文 |
 | Inpaint | `aot-inpainting` | 去除原文后的页面 |
 | LLM Generate | 本地 GGUF LLM 或远程提供商 | 译文 |
 | Render | Koharu renderer | 最终本地化页面或导出内容 |

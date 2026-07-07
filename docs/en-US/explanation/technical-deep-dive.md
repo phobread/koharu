@@ -40,7 +40,7 @@ That design is deliberate. A manga translation tool needs both page structure an
 | --- | --- | --- | --- |
 | Text and bubble detection | [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) | object detector | find text blocks and speech bubble regions |
 | Segmentation | [comic-text-detector](https://github.com/dmMaze/comic-text-detector) | text segmentation network | produce a dense text mask for cleanup |
-| OCR | [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5) | vision-language model | read cropped text regions into Unicode text |
+| OCR | [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) | vision-language model | read cropped text regions into Unicode text |
 | Inpainting | [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting) / [manga-image-translator](https://github.com/zyddnys/manga-image-translator) | image inpainting network | fill masked regions after text removal |
 | Font hints | [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection) | image classifier / regressor | estimate font family, colors, and stroke hints |
 | Translation | local GGUF model via [llama.cpp](https://github.com/ggml-org/llama.cpp) or remote API | decoder-only LLM in most local setups | translate OCR text into the target language |
@@ -145,7 +145,7 @@ In Koharu, OCR is treated as a multimodal sequence-generation problem:
 
 Koharu's implementation follows that pattern closely:
 
-- it loads `PaddleOCR-VL-1.5.gguf` and a separate multimodal projector
+- it loads `PaddleOCR-VL-1.6.gguf` and a separate multimodal projector
 - it injects the image through the llama.cpp multimodal path
 - it prompts with `OCR:`
 - it greedily decodes text for each crop
@@ -209,7 +209,7 @@ Some details are easy to miss if you only read the high-level docs:
 ### Official model and project references
 
 - [comic-text-and-bubble-detector model card](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)
-- [PaddleOCR-VL-1.5 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+- [PaddleOCR-VL-1.6 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 - [PaddleOCR-VL architecture docs in Hugging Face Transformers](https://huggingface.co/docs/transformers/en/model_doc/paddleocr_vl)
 - [comic-text-detector repository](https://github.com/dmMaze/comic-text-detector)
 - [manga-image-translator repository](https://github.com/zyddnys/manga-image-translator)

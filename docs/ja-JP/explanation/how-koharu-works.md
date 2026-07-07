@@ -44,7 +44,7 @@ flowchart LR
 | 段階 | 主なモデル | 主な出力 |
 | --- | --- | --- |
 | Detect | `comic-text-bubble-detector`, `comic-text-detector-seg`, `YuzuMarker.FontDetection` | テキストブロック、吹き出し領域、segmentation mask、フォントヒント |
-| OCR | `PaddleOCR-VL-1.5` | 各ブロックの認識済み元テキスト |
+| OCR | `PaddleOCR-VL-1.6` | 各ブロックの認識済み元テキスト |
 | Inpaint | `aot-inpainting` | 元の文字を消したページ |
 | LLM Generate | ローカル GGUF LLM またはリモートプロバイダ | 翻訳済みテキスト |
 | Render | Koharu renderer | 最終的なローカライズ済みページまたは export |

@@ -16,7 +16,7 @@ Koharu は、必要な vision モデルを初回利用時に自動でダウン�
 
 - テキストブロックと吹き出しを同時に検出する [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)
 - テキスト segmentation mask を作る [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector)
-- OCR テキスト認識用の [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+- OCR テキスト認識用の [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 - 既定の inpainting 用の [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting)
 - フォントと色検出用の [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection)
 
@@ -28,7 +28,7 @@ Koharu は、必要な vision モデルを初回利用時に自動でダウン�
 | ---------------------------- | ---------------------- | ---------------------------------------------------- |
 | `comic-text-bubble-detector` | object detector        | テキストブロックと吹き出し領域を 1 回で見つける      |
 | `comic-text-detector`        | segmentation network   | クリーンアップ用の text mask を作る                  |
-| `PaddleOCR-VL-1.5`           | vision-language model  | 切り出したテキストを文字列へ読む                     |
+| `PaddleOCR-VL-1.6`           | vision-language model  | 切り出したテキストを文字列へ読む                     |
 | `aot-inpainting`             | inpainting network     | 文字除去後の masked 領域を補完する                   |
 | `YuzuMarker.FontDetection`   | classifier / regressor | レンダリング用のフォントやスタイルのヒントを推定する |
 

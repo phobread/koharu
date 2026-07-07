@@ -40,7 +40,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | テキスト / 吹き出し検出 | [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) | object detector | テキストブロックと吹き出し領域を見つける |
 | Segmentation | [comic-text-detector](https://github.com/dmMaze/comic-text-detector) | text segmentation network | クリーンアップ用の dense text mask を作る |
-| OCR | [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5) | vision-language model | 切り出したテキスト領域を Unicode 文字列として読む |
+| OCR | [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) | vision-language model | 切り出したテキスト領域を Unicode 文字列として読む |
 | Inpainting | [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting) / [manga-image-translator](https://github.com/zyddnys/manga-image-translator) | image inpainting network | 文字除去後の masked 領域を埋める |
 | フォントヒント | [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection) | image classifier / regressor | フォント系統、色、縁取りヒントを推定する |
 | 翻訳 | [llama.cpp](https://github.com/ggml-org/llama.cpp) 経由のローカル GGUF モデル、またはリモート API | ローカルでは主に decoder-only LLM | OCR テキストを対象言語へ翻訳する |
@@ -145,7 +145,7 @@ Koharu の `comic-text-detector` 経路は segmentation-first な設計です。
 
 Koharu の実装もかなりこの形に近いです。
 
-- `PaddleOCR-VL-1.5.gguf` と別の multimodal projector を読み込む
+- `PaddleOCR-VL-1.6.gguf` と別の multimodal projector を読み込む
 - llama.cpp の multimodal 経路で画像を注入する
 - `OCR:` をプロンプトに使う
 - 各 crop に対して greedily に文字列をデコードする
@@ -201,7 +201,7 @@ Koharu のローカル翻訳経路は、`llama.cpp` 経由で GGUF モデルを�
 ### 公式モデル / プロジェクト資料
 
 - [comic-text-and-bubble-detector model card](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)
-- [PaddleOCR-VL-1.5 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+- [PaddleOCR-VL-1.6 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 - [PaddleOCR-VL architecture docs in Hugging Face Transformers](https://huggingface.co/docs/transformers/en/model_doc/paddleocr_vl)
 - [comic-text-detector repository](https://github.com/dmMaze/comic-text-detector)
 - [manga-image-translator repository](https://github.com/zyddnys/manga-image-translator)

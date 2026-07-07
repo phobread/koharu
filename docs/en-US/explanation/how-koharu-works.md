@@ -44,7 +44,7 @@ That split lets Koharu use one model to reason about page structure and another 
 | Stage | Main models | Main output |
 | --- | --- | --- |
 | Detect | `comic-text-bubble-detector`, `comic-text-detector-seg`, `YuzuMarker.FontDetection` | text blocks, bubble regions, segmentation mask, font hints |
-| OCR | `PaddleOCR-VL-1.5` | recognized source text for each block |
+| OCR | `PaddleOCR-VL-1.6` | recognized source text for each block |
 | Inpaint | `aot-inpainting` | page with original text removed |
 | LLM Generate | local GGUF LLM or remote provider | translated text |
 | Render | Koharu renderer | final localized page or export |

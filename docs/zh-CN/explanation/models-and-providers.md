@@ -16,7 +16,7 @@ Koharu 会在首次使用时自动下载所需的视觉模型。
 
 - 用于同时检测文本块和气泡的 [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)
 - 用于生成文本分割掩码的 [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector)
-- 用于 OCR 文本识别的 [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+- 用于 OCR 文本识别的 [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 - 作为默认修复器的 [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting)
 - 用于字体与颜色检测的 [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection)
 
@@ -28,7 +28,7 @@ Koharu 会在首次使用时自动下载所需的视觉模型。
 | ---------------------------- | --------------- | -------------------------------- |
 | `comic-text-bubble-detector` | object detector | 一次推理同时找出文本块和气泡区域 |
 | `comic-text-detector`        | 分割网络        | 生成清理用的文本掩码             |
-| `PaddleOCR-VL-1.5`           | 视觉语言模型    | 把裁剪图像读成文本 token         |
+| `PaddleOCR-VL-1.6`           | 视觉语言模型    | 把裁剪图像读成文本 token         |
 | `aot-inpainting`             | 修复网络        | 在去字后补全被掩码覆盖的区域     |
 | `YuzuMarker.FontDetection`   | 分类 / 回归模型 | 为渲染估计字体与风格提示         |
 

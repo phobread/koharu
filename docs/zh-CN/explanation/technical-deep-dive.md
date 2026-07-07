@@ -40,7 +40,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | 文本 / 气泡检测 | [comic-text-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) | object detector | 找出文本块和气泡区域 |
 | 分割 | [comic-text-detector](https://github.com/dmMaze/comic-text-detector) | 文本分割网络 | 生成用于清理的高密度文本掩码 |
-| OCR | [PaddleOCR-VL-1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5) | 视觉语言模型 | 将裁剪文本区域识别为 Unicode 文本 |
+| OCR | [PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) | 视觉语言模型 | 将裁剪文本区域识别为 Unicode 文本 |
 | 修复 | [aot-inpainting](https://huggingface.co/mayocream/aot-inpainting) / [manga-image-translator](https://github.com/zyddnys/manga-image-translator) | 图像修复网络 | 在去字后填补遮挡区域 |
 | 字体提示 | [YuzuMarker.FontDetection](https://huggingface.co/fffonion/yuzumarker-font-detection) | 图像分类 / 回归模型 | 估计字体、颜色与描边提示 |
 | 翻译 | 通过 [llama.cpp](https://github.com/ggml-org/llama.cpp) 运行的本地 GGUF 模型，或远程 API | 大多数本地场景下是 decoder-only LLM | 将 OCR 文本翻译到目标语言 |
@@ -145,7 +145,7 @@ Koharu 的 `comic-text-detector` 路径本质上是以分割为核心的设计�
 
 Koharu 的实现非常接近这种模式：
 
-- 加载 `PaddleOCR-VL-1.5.gguf` 和单独的多模态 projector
+- 加载 `PaddleOCR-VL-1.6.gguf` 和单独的多模态 projector
 - 通过 `llama.cpp` 的多模态路径送入图像
 - 使用 `OCR:` 作为提示
 - 对每个裁剪块贪心解码文本
@@ -201,7 +201,7 @@ Koharu 的本地翻译路径通过 `llama.cpp` 使用 GGUF 模型。实际中，
 ### 官方模型与项目参考
 
 - [comic-text-and-bubble-detector model card](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)
-- [PaddleOCR-VL-1.5 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+- [PaddleOCR-VL-1.6 model card](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 - [Hugging Face Transformers 中的 PaddleOCR-VL 架构文档](https://huggingface.co/docs/transformers/en/model_doc/paddleocr_vl)
 - [comic-text-detector 仓库](https://github.com/dmMaze/comic-text-detector)
 - [manga-image-translator 仓库](https://github.com/zyddnys/manga-image-translator)
