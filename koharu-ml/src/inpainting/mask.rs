@@ -33,16 +33,18 @@ enum ExpansionMode {
 /// This grows detected glyph pixels only. It must not fill the text block or
 /// bubble background, because that turns a text cleanup mask into a broad
 /// speech-bubble erase mask.
+///
+/// Exception: when the segmenter found *no* glyph pixels at all inside a text
+/// block (white-on-black lettering routinely defeats it), the block's area is
+/// erased clipped to the bubble that contains it — leaving the text in place
+/// is strictly worse, and the bubble clip keeps artwork safe. Blocks outside
+/// any bubble are still left alone.
 pub fn expand_mask_for_inpainting(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     text_blocks: &[TextRegion],
 ) -> GrayImage {
     let base = binarize_mask(mask);
-    if base.pixels().all(|pixel| pixel.0[0] == 0) {
-        return base;
-    }
-
     let bubbles = bubble_mask.to_luma8();
     if base.dimensions() != bubbles.dimensions() {
         return base;
@@ -54,12 +56,13 @@ pub fn expand_mask_for_inpainting(
 
     for block in text_blocks {
         let block_support = expanded_text_block_crop_bounds(width, height, block);
+        let radius = legacy_block_dilate_radius(block);
+        let support = expand_rect(block_support, width, height, u32::from(radius));
         if count_nonzero_in_rect(&base, block_support) == 0 {
+            fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
             continue;
         }
 
-        let radius = legacy_block_dilate_radius(block);
-        let support = expand_rect(block_support, width, height, u32::from(radius));
         let work = expand_rect(support, width, height, u32::from(radius));
         let local_mask = crop_imm(
             &base,
@@ -111,10 +114,6 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
     text_blocks: &[TextRegion],
 ) -> GrayImage {
     let base = binarize_mask(mask);
-    if base.pixels().all(|pixel| pixel.0[0] == 0) {
-        return base;
-    }
-
     let bubbles = bubble_mask.to_luma8();
     if base.dimensions() != bubbles.dimensions() {
         return base;
@@ -130,6 +129,7 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
         let support = expand_rect(block_support, width, height, u32::from(radius));
 
         if count_nonzero_in_rect(&base, support) == 0 {
+            fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
             continue;
         }
 
@@ -304,6 +304,58 @@ fn merge_expanded_region(
             }
         }
     }
+}
+
+/// Fallback for a text block whose glyphs the segmenter completely missed:
+/// erase the block's rectangle clipped to the bubble that contains it. The
+/// bubble clip is what makes this safe — bubble interiors are flat fill the
+/// inpainter reconstructs trivially, and artwork outside the bubble is never
+/// touched. Without a containing bubble the block is left alone, because an
+/// unclipped rectangle over open artwork would erase art.
+fn fill_undetected_block_in_bubble(
+    out: &mut GrayImage,
+    bubbles: &GrayImage,
+    rect: Xyxy,
+    covered: &mut GrayImage,
+) {
+    let bubble_id = dominant_bubble_id_by_area(bubbles, rect);
+    if bubble_id == 0 {
+        return;
+    }
+    let [x1, y1, x2, y2] = rect;
+    for y in y1..y2 {
+        for x in x1..x2 {
+            if bubbles.get_pixel(x, y).0[0] == bubble_id {
+                out.put_pixel(x, y, Luma([255]));
+                covered.put_pixel(x, y, Luma([255]));
+            }
+        }
+    }
+}
+
+/// Bubble id covering the largest share of `rect`, or 0 unless that bubble
+/// covers at least a quarter of it — a corner graze from a neighbouring
+/// bubble must not trigger a block-wide erase.
+fn dominant_bubble_id_by_area(bubbles: &GrayImage, [x1, y1, x2, y2]: Xyxy) -> u8 {
+    let mut counts = [0u32; 256];
+    let mut total = 0u32;
+    for y in y1..y2 {
+        for x in x1..x2 {
+            total += 1;
+            let bubble_id = bubbles.get_pixel(x, y).0[0];
+            if bubble_id > 0 {
+                counts[bubble_id as usize] += 1;
+            }
+        }
+    }
+
+    counts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .max_by_key(|(_, count)| *count)
+        .and_then(|(id, count)| (count * 4 >= total).then_some(id as u8))
+        .unwrap_or(0)
 }
 
 fn count_nonzero_in_rect(mask: &GrayImage, [x1, y1, x2, y2]: Xyxy) -> u32 {
@@ -645,6 +697,96 @@ mod tests {
         assert_eq!(expanded.get_pixel(24, 26).0[0], 255);
         assert_eq!(expanded.get_pixel(22, 24).0[0], 255);
         assert_eq!(expanded.get_pixel(40, 31).0[0], 0);
+    }
+
+    #[test]
+    fn empty_seg_mask_falls_back_to_bubble_clipped_block_fill() {
+        // Page-17 scenario: the segmenter returned nothing (white-on-black
+        // text) but the bubble map and text block are present.
+        let mask = GrayImage::new(64, 64);
+        let mut bubbles = GrayImage::new(64, 64);
+        for y in 8..56 {
+            for x in 8..40 {
+                bubbles.put_pixel(x, y, Luma([5]));
+            }
+        }
+
+        let block = TextRegion {
+            x: 12.0,
+            y: 20.0,
+            width: 20.0,
+            height: 16.0,
+            detected_font_size_px: Some(18.0),
+            ..TextRegion::default()
+        };
+
+        for expanded in [
+            expand_mask_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+            ),
+            expand_mask_to_bubble_region_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+            ),
+        ] {
+            // Inside block ∩ bubble: erased.
+            assert_eq!(expanded.get_pixel(20, 28).0[0], 255);
+            // Inside bubble but well outside the block: untouched.
+            assert_eq!(expanded.get_pixel(36, 52).0[0], 0);
+            // Outside the bubble: untouched.
+            assert_eq!(expanded.get_pixel(50, 28).0[0], 0);
+        }
+    }
+
+    #[test]
+    fn empty_seg_mask_block_outside_bubble_is_left_alone() {
+        let mask = GrayImage::new(64, 64);
+        let bubbles = GrayImage::new(64, 64); // no bubbles at all
+
+        let expanded = expand_mask_for_inpainting(
+            &DynamicImage::ImageLuma8(mask),
+            &DynamicImage::ImageLuma8(bubbles),
+            &[TextRegion {
+                x: 12.0,
+                y: 20.0,
+                width: 20.0,
+                height: 16.0,
+                detected_font_size_px: Some(18.0),
+                ..TextRegion::default()
+            }],
+        );
+
+        assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
+    }
+
+    #[test]
+    fn empty_seg_mask_corner_graze_does_not_trigger_block_fill() {
+        let mask = GrayImage::new(64, 64);
+        let mut bubbles = GrayImage::new(64, 64);
+        // Bubble only clips the block's top-left corner (< 25% of its area).
+        for y in 16..24 {
+            for x in 8..16 {
+                bubbles.put_pixel(x, y, Luma([2]));
+            }
+        }
+
+        let expanded = expand_mask_for_inpainting(
+            &DynamicImage::ImageLuma8(mask),
+            &DynamicImage::ImageLuma8(bubbles),
+            &[TextRegion {
+                x: 12.0,
+                y: 20.0,
+                width: 32.0,
+                height: 24.0,
+                detected_font_size_px: Some(18.0),
+                ..TextRegion::default()
+            }],
+        );
+
+        assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
     }
 
     #[test]
