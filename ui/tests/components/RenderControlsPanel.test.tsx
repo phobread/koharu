@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -170,7 +170,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(input).toHaveAttribute('placeholder', 'auto')
   })
 
-  it('opening the font color picker commits effective black as an explicit color', async () => {
+  it('clicking in the color picker commits the shown color even without a change event', async () => {
     server.use(
       http.get('/api/v1/scene.json', () =>
         HttpResponse.json(
@@ -193,6 +193,16 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     const trigger = await screen.findByTestId('render-color-trigger')
     await userEvent.click(trigger)
+
+    // Merely opening must not write anything — the old behaviour committed a
+    // guessed colour to every implicit block.
+    expect(sceneActions.applyOp).not.toHaveBeenCalled()
+
+    // A click (pointer-up) in the picker area is a deliberate pick, and must
+    // register even when it lands on the colour already shown (react-colorful
+    // emits no change event for that — the pure black/white dead zone).
+    const picker = await screen.findByTestId('render-color-picker')
+    fireEvent.pointerUp(picker)
 
     await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
     const op = (sceneActions.applyOp as any).mock.calls[0][0]

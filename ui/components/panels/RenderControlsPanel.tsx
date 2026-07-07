@@ -651,9 +651,6 @@ export function RenderControlsPanel() {
             inputTestId='render-color-input'
             pickButtonTestId='render-color-pick'
             pickButtonLabel={t('render.eyedropper')}
-            onOpenChange={(open) => {
-              if (open) commitCurrentFontColorIfImplicit()
-            }}
             onChange={(hex) => {
               const nextColor = hexToColor(hex, currentColor[3] ?? 255)
               if (applyStyleToSelected({ color: nextColor })) return

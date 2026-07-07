@@ -59,10 +59,12 @@ export function ColorPicker({
   }, [value])
 
   const handlePointerUp = useCallback(() => {
-    if (dragging.current) {
-      dragging.current = false
-      onChange(localColor)
-    }
+    // Commit even when react-colorful stayed silent: it only emits when the
+    // colour CHANGES, so clicking the exact colour already shown (e.g. pure
+    // black when the swatch is black) never fires onChange — yet that click
+    // is still a deliberate pick and must register as an explicit colour.
+    dragging.current = false
+    onChange(localColor)
   }, [localColor, onChange])
 
   const canUseEyeDropper =
