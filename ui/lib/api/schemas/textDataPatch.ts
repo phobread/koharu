@@ -27,6 +27,11 @@ export interface TextDataPatch {
   renderedDirection?: null | TextDirection
   /** @nullable */
   renderedFontSizePx?: number | null
+  /**
+   * @nullable
+   * @items.minimum 0
+   */
+  renderedTextColor?: number[] | null
   /** @nullable */
   rotationDeg?: number | null
   sourceDirection?: null | TextDirection

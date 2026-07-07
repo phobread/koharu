@@ -311,6 +311,11 @@ pub struct TextData {
     /// result or explicit override). Lets the UI scale text with box resizes.
     #[serde(default)]
     pub rendered_font_size_px: Option<f32>,
+    /// Text colour the renderer actually used for the last sprite (manual
+    /// pick or the auto background-contrast result). Lets the UI show the
+    /// real colour for auto blocks instead of guessing black.
+    #[serde(default)]
+    pub rendered_text_color: Option<[u8; 4]>,
     #[serde(default)]
     pub lock_layout_box: bool,
 }

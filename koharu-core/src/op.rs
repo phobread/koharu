@@ -220,6 +220,8 @@ pub struct TextDataPatch {
     #[serde(default)]
     pub rendered_font_size_px: Option<Option<f32>>,
     #[serde(default)]
+    pub rendered_text_color: Option<Option<[u8; 4]>>,
+    #[serde(default)]
     pub lock_layout_box: Option<bool>,
 }
 
@@ -701,6 +703,10 @@ fn capture_prev_text(kind: &NodeKind, p: &TextDataPatch) -> TextDataPatch {
             .rendered_font_size_px
             .as_ref()
             .map(|_| data.rendered_font_size_px),
+        rendered_text_color: p
+            .rendered_text_color
+            .as_ref()
+            .map(|_| data.rendered_text_color),
         lock_layout_box: p.lock_layout_box.as_ref().map(|_| data.lock_layout_box),
     }
 }
@@ -791,6 +797,9 @@ fn apply_text_patch(t: &mut TextData, p: &TextDataPatch) {
     }
     if let Some(v) = p.rendered_font_size_px {
         t.rendered_font_size_px = v;
+    }
+    if let Some(v) = p.rendered_text_color {
+        t.rendered_text_color = v;
     }
     if let Some(v) = p.lock_layout_box {
         t.lock_layout_box = v;

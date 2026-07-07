@@ -25,6 +25,14 @@ export interface TextData {
    * @nullable
    */
   renderedFontSizePx?: number | null
+  /**
+   * Text colour the renderer actually used for the last sprite (manual
+   * pick or the auto background-contrast result). Lets the UI show the
+   * real colour for auto blocks instead of guessing black.
+   * @nullable
+   * @items.minimum 0
+   */
+  renderedTextColor?: number[] | null
   /** @nullable */
   rotationDeg?: number | null
   sourceDirection?: null | TextDirection

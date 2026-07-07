@@ -20,9 +20,20 @@ export const DEFAULT_TEXT_COLOR: number[] = [0, 0, 0, 255]
 export const isManualTextColor = (color?: number[] | null): boolean =>
   color != null && color.length >= 3
 
-/** Mirrors renderer intent: manual style colour wins; otherwise auto previews black. */
-export const effectiveTextColor = (style?: TextStyle | null): number[] =>
-  isManualTextColor(style?.color) ? style!.color! : DEFAULT_TEXT_COLOR
+/**
+ * Mirrors renderer intent: manual style colour wins; otherwise the colour
+ * the renderer actually painted last (`renderedTextColor` write-back), so
+ * auto blocks show the real contrast result; black only as a last resort
+ * for never-rendered blocks.
+ */
+export const effectiveTextColor = (
+  style?: TextStyle | null,
+  renderedTextColor?: number[] | null,
+): number[] => {
+  if (isManualTextColor(style?.color)) return style!.color!
+  if (isManualTextColor(renderedTextColor)) return renderedTextColor!
+  return DEFAULT_TEXT_COLOR
+}
 
 /**
  * Partial style update where each field distinguishes three states: key

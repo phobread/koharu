@@ -25,6 +25,19 @@ describe('effectiveTextColor', () => {
       255, 255, 255, 255,
     ])
   })
+
+  it('shows the renderer write-back colour for auto blocks', () => {
+    // Auto block on a dark background: the renderer painted white and wrote
+    // it back — the swatch must show white, not the black guess.
+    expect(effectiveTextColor({ ...style, color: null }, [255, 255, 255, 255])).toEqual([
+      255, 255, 255, 255,
+    ])
+    expect(effectiveTextColor(null, [255, 255, 255, 255])).toEqual([255, 255, 255, 255])
+    // A manual pick still beats a stale write-back.
+    expect(effectiveTextColor(style, [255, 255, 255, 255])).toEqual([1, 2, 3, 255])
+    // Never-rendered block falls back to the black preview.
+    expect(effectiveTextColor({ ...style, color: null }, null)).toEqual(DEFAULT_TEXT_COLOR)
+  })
 })
 
 describe('mergeTextStyle', () => {

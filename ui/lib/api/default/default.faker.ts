@@ -1008,6 +1008,13 @@ export const getGetSceneJsonResponseMock = (
                     faker.helpers.arrayElement([faker.number.float({ fractionDigits: 2 }), null]),
                     undefined,
                   ]),
+                  renderedTextColor: faker.helpers.arrayElement([
+                    Array.from(
+                      { length: faker.number.int({ min: 1, max: 10 }) },
+                      (_, i) => i + 1,
+                    ).map(() => faker.number.int({ min: 0 })),
+                    undefined,
+                  ]),
                   rotationDeg: faker.helpers.arrayElement([
                     faker.helpers.arrayElement([faker.number.float({ fractionDigits: 2 }), null]),
                     undefined,

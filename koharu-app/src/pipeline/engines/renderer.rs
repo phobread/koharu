@@ -119,6 +119,10 @@ impl Engine for Model {
                         // scale text with box resizes (Canva-style corner
                         // drag) without guessing the auto-fit result.
                         rendered_font_size_px: Some(Some(block_out.font_size)),
+                        // Record the colour actually painted so the swatch
+                        // can show the auto-contrast result instead of
+                        // guessing black.
+                        rendered_text_color: Some(Some(block_out.text_color)),
                         // Only persist explicit user style overrides. Writing
                         // a synthetic default style back into the scene makes
                         // later renders treat automatic colour placeholders as

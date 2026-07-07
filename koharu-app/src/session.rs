@@ -49,9 +49,11 @@ const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 ///     sentinel semantics (pure black / predicted colour = auto).
 /// v4: `TextStyle.color` became `Option` — `None` = auto, so pure
 ///     black/white are finally expressible as manual picks.
-/// v5: current layout (`TextStrokeStyle.color` became `Option` too — `None`
-///     = contrast against the text colour instead of a hard-coded white).
-const SCENE_FORMAT_VERSION: u16 = 5;
+/// v5: `TextStrokeStyle.color` became `Option` too — `None` = contrast
+///     against the text colour instead of a hard-coded white.
+/// v6: current layout (`TextData` gained `rendered_text_color` — the colour
+///     the renderer actually painted, so the UI swatch stops guessing).
+const SCENE_FORMAT_VERSION: u16 = 6;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -248,7 +250,10 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
         return match version {
-            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v5)"),
+            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v6)"),
+            5 => postcard::from_bytes::<compat::SnapshotV5>(payload)
+                .context("postcard decode (v5)")
+                .map(compat::SnapshotV5::upgrade),
             4 => postcard::from_bytes::<compat::SnapshotV4>(payload)
                 .context("postcard decode (v4)")
                 .map(compat::SnapshotV4::upgrade),
@@ -473,8 +478,9 @@ mod compat {
                 font_prediction: self.font_prediction,
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
-                // The renderer refills this on the next render.
+                // The renderer refills these on the next render.
                 rendered_font_size_px: None,
+                rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
             }
         }
@@ -643,6 +649,7 @@ mod compat {
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
                 rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
             }
         }
@@ -811,6 +818,7 @@ mod compat {
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
                 rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
             }
         }
@@ -979,6 +987,149 @@ mod compat {
                 sprite: self.sprite,
                 sprite_transform: self.sprite_transform,
                 rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: None,
+                lock_layout_box: self.lock_layout_box,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v5 → v6: `TextData` gained `rendered_text_color`.
+    // -----------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV5 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV5,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV5 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV5>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV5 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV5>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV5 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV5,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV5 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV5),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// `TextData` as of v5 — the current layout minus `rendered_text_color`.
+    /// The style layout is already the current one (unchanged since v5).
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV5 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyle>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    impl SnapshotV5 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV5 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV5::Image(d) => NodeKind::Image(d),
+                                    NodeKindV5::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV5::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV5 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                // The renderer refills this on the next render.
+                rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
             }
         }
@@ -1426,6 +1577,94 @@ mod tests {
             text.style.as_ref().unwrap().color,
             Some([255, 255, 255, 255])
         );
+    }
+
+    #[test]
+    fn v5_scene_bin_upgrades_on_open() {
+        // v5 predates `TextData.rendered_text_color`; the upgrade must leave
+        // it `None` (the renderer refills it) and keep every trailing field
+        // intact — postcard is positional, so the inserted field shifted
+        // `lock_layout_box`.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v5").unwrap();
+            drop(session);
+        }
+
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            node_id,
+            compat::NodeV5 {
+                id: node_id,
+                transform: Transform {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 100.0,
+                    height: 40.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: compat::NodeKindV5::Text(compat::TextDataV5 {
+                    text: Some("안녕".to_string()),
+                    translation: Some("Hi".to_string()),
+                    style: Some(TextStyle {
+                        font_size: Some(21.0),
+                        color: Some([10, 20, 30, 255]),
+                        ..Default::default()
+                    }),
+                    rendered_font_size_px: Some(19.0),
+                    lock_layout_box: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV5 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v5 = compat::SnapshotV5 {
+            epoch: 11,
+            scene: compat::SceneV5 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&5u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v5).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v5 scene.bin must open");
+        let scene = session.scene.read();
+        let node = scene
+            .pages
+            .get(&page_id)
+            .and_then(|p| p.nodes.get(&node_id))
+            .expect("node survives upgrade");
+        let NodeKind::Text(text) = &node.kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("Hi"));
+        assert_eq!(
+            text.style.as_ref().and_then(|s| s.color),
+            Some([10, 20, 30, 255]),
+            "manual colour survives verbatim"
+        );
+        assert_eq!(text.rendered_font_size_px, Some(19.0));
+        assert!(
+            text.rendered_text_color.is_none(),
+            "new field defaults to None for upgraded scenes"
+        );
+        assert!(text.lock_layout_box, "trailing bool must decode intact");
     }
 
     #[test]

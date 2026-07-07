@@ -3226,6 +3226,15 @@
             "format": "float",
             "description": "Font size the renderer actually used for the last sprite (auto-fit\nresult or explicit override). Lets the UI scale text with box resizes."
           },
+          "renderedTextColor": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Text colour the renderer actually used for the last sprite (manual\npick or the auto background-contrast result). Lets the UI show the\nreal colour for auto blocks instead of guessing black."
+          },
           "rotationDeg": {
             "type": ["number", "null"],
             "format": "float"
@@ -3337,6 +3346,14 @@
           "renderedFontSizePx": {
             "type": ["number", "null"],
             "format": "float"
+          },
+          "renderedTextColor": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
           },
           "rotationDeg": {
             "type": ["number", "null"],

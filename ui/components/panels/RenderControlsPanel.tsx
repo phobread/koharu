@@ -301,7 +301,12 @@ export function RenderControlsPanel() {
 
   const selectedStyle = selectedNode?.data.style ?? firstNode?.data.style
   const colorSource = selectedNode ?? firstNode
-  const currentColor = effectiveTextColor(colorSource?.data.style)
+  // Auto blocks show the colour the renderer actually painted (write-back),
+  // so the swatch no longer guesses black when contrast picked white.
+  const currentColor = effectiveTextColor(
+    colorSource?.data.style,
+    colorSource?.data.renderedTextColor,
+  )
   const currentColorHex = colorToHex(currentColor)
   const currentStroke = normalizeStroke(selectedStyle?.stroke)
   // Auto stroke shows the colour the renderer would actually pick.

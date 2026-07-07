@@ -81,6 +81,9 @@ pub struct RenderedBlock {
     /// Font size the fit actually settled on (auto-fit result or explicit
     /// override) — persisted so the UI can scale text with box resizes.
     pub font_size: f32,
+    /// Text colour actually painted (manual pick or auto contrast result) —
+    /// persisted so the UI swatch can show the real colour for auto blocks.
+    pub text_color: [u8; 4],
 }
 
 /// Result of rendering a whole page.
@@ -455,6 +458,7 @@ impl Renderer {
                 rendered_direction: rendered_direction_for_writing_mode(writing_mode),
                 expanded_transform: Some(candidate.transform),
                 font_size: candidate.font_size,
+                text_color: color,
             }));
         }
 
@@ -476,6 +480,7 @@ impl Renderer {
             rendered_direction: rendered_direction_for_writing_mode(writing_mode),
             expanded_transform: Some(candidate.transform),
             font_size: candidate.font_size,
+            text_color: color,
         }))
     }
 
