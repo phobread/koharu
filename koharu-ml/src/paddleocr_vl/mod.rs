@@ -21,32 +21,32 @@ mod vision;
 use self::{config::Config as PaddleOcrVlConfig, model::PaddleOCRVLModel};
 
 const DEFAULT_MAX_NEW_TOKENS: usize = 128;
-const HF_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5";
+const HF_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.6";
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-candle:config",
-    repo: "PaddlePaddle/PaddleOCR-VL-1.5",
+    repo: "PaddlePaddle/PaddleOCR-VL-1.6",
     file: "config.json",
     bootstrap: false,
     order: 150,
 );
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-candle:preprocessor-config",
-    repo: "PaddlePaddle/PaddleOCR-VL-1.5",
+    repo: "PaddlePaddle/PaddleOCR-VL-1.6",
     file: "preprocessor_config.json",
     bootstrap: false,
     order: 151,
 );
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-candle:tokenizer",
-    repo: "PaddlePaddle/PaddleOCR-VL-1.5",
+    repo: "PaddlePaddle/PaddleOCR-VL-1.6",
     file: "tokenizer.json",
     bootstrap: false,
     order: 152,
 );
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-candle:weights",
-    repo: "PaddlePaddle/PaddleOCR-VL-1.5",
+    repo: "PaddlePaddle/PaddleOCR-VL-1.6",
     file: "model.safetensors",
     bootstrap: false,
     order: 153,
