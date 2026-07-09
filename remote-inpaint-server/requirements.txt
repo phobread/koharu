@@ -1,0 +1,15 @@
+# torch is NOT listed: use a RunPod PyTorch template (it ships a CUDA torch).
+# If you run this elsewhere, install a CUDA-enabled torch first.
+fastapi
+uvicorn[standard]
+python-multipart
+pillow
+numpy
+opencv-python-headless
+diffusers>=0.33
+transformers
+accelerate
+bitsandbytes
+sentencepiece
+protobuf
+huggingface_hub

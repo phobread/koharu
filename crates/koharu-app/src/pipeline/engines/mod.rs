@@ -17,6 +17,7 @@ pub mod manga_ocr;
 pub mod mit48px_ocr;
 pub mod paddle_ocr;
 pub mod pp_doclayout;
+pub mod remote_inpaint;
 pub mod renderer;
 pub mod support;
 pub mod yuzumarker_font;
