@@ -12,10 +12,11 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   op application is not failure-atomic (scene mutated before log write can
   fail; Batch stops mid-way without rollback; AddNode inserts before invariant
   check). Correct fix is clone-apply-swap or full rollback — invasive.
-- crates/koharu-rpc/src/server.rs:26 — permissive CORS on the unauthenticated
-  local API; any webpage can call mutation endpoints while the app runs.
-  Harden by restricting to the tauri/dev origins (+ optional token). Must not
-  break the desktop webview or `next dev`; also worth proposing upstream.
+- ~~crates/koharu-rpc/src/server.rs — permissive CORS~~ FIXED e7b4b626
+  (2026-07-15): CORS layer removed entirely — every legitimate client is
+  same-origin (Tauri serves the UI; next dev proxies /api/v1) or non-browser.
+  Residual: "simple request"-shaped calls can still fire blind cross-origin;
+  closing that needs a session token (still deferred, upstream-worthy).
 - Config write serialization family (one design, three symptoms):
   crates/koharu-rpc/src/routes/config.rs:42 (unserialized read-modify-write),
   ui/components/SettingsDialog.tsx:250/258 (persistConfig races; failures
