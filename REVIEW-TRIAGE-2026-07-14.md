@@ -96,4 +96,4 @@ coherent design across UI+backend, not three point patches).
 - [x] R4 (b175aa0f, Sol — decode-before-mutate, single replace batch)
 - [x] R5 (78bad730, Sol — download forwarder survives Lagged)
 - [x] R6 (94a6ba3a, Sol — renderer clears write-backs on emptied translations)
-- [ ] Full tauri build + ship
+- [x] Full tauri build + ship (meta reports 0.61.2-94-g55b440d4)
