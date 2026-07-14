@@ -52,6 +52,25 @@ export function ColorPicker({
 }: ColorPickerProps) {
   const [localColor, setLocalColor] = useState(value)
   const dragging = useRef(false)
+  const localColorRef = useRef(localColor)
+  const onChangeRef = useRef(onChange)
+  localColorRef.current = localColor
+  onChangeRef.current = onChange
+
+  useEffect(() => {
+    const handleWindowPointerEnd = () => {
+      if (!dragging.current) return
+      dragging.current = false
+      onChangeRef.current(localColorRef.current)
+    }
+
+    window.addEventListener('pointerup', handleWindowPointerEnd)
+    window.addEventListener('pointercancel', handleWindowPointerEnd)
+    return () => {
+      window.removeEventListener('pointerup', handleWindowPointerEnd)
+      window.removeEventListener('pointercancel', handleWindowPointerEnd)
+    }
+  }, [])
 
   // Sync external value when not dragging
   useEffect(() => {
