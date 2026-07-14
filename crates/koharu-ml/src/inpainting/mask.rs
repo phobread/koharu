@@ -21,6 +21,12 @@ const MODERN_MAX_COMPONENT_DILATE_RADIUS: u8 = 8;
 
 type Xyxy = [u32; 4];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndetectedBlockFallback {
+    FillBubble,
+    Skip,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExpansionMode {
     LegacyGlyphOnly,
@@ -39,10 +45,13 @@ enum ExpansionMode {
 /// erased clipped to the bubble that contains it — leaving the text in place
 /// is strictly worse, and the bubble clip keeps artwork safe. Blocks outside
 /// any bubble are still left alone.
+/// The fallback is skipped for user-driven region re-inpaints because the edited
+/// mask is authoritative there.
 pub fn expand_mask_for_inpainting(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     text_blocks: &[TextRegion],
+    fallback: UndetectedBlockFallback,
 ) -> GrayImage {
     let base = binarize_mask(mask);
     let bubbles = bubble_mask.to_luma8();
@@ -59,7 +68,9 @@ pub fn expand_mask_for_inpainting(
         let radius = legacy_block_dilate_radius(block);
         let support = expand_rect(block_support, width, height, u32::from(radius));
         if count_nonzero_in_rect(&base, block_support) == 0 {
-            fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
+            if fallback == UndetectedBlockFallback::FillBubble {
+                fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
+            }
             continue;
         }
 
@@ -100,10 +111,13 @@ pub fn expand_mask_for_inpainting(
 /// speech bubble when one is available. This intentionally keeps the broader
 /// 0.48.0 region-fill behavior for Flux.2, while [`expand_mask_for_inpainting`]
 /// remains glyph-only for AOT/Lama.
+/// The fallback is skipped for user-driven region re-inpaints because the edited
+/// mask is authoritative there.
 pub fn expand_mask_to_bubble_region_for_inpainting(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     text_blocks: &[TextRegion],
+    fallback: UndetectedBlockFallback,
 ) -> GrayImage {
     let base = binarize_mask(mask);
     let bubbles = bubble_mask.to_luma8();
@@ -121,7 +135,9 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
         let support = expand_rect(block_support, width, height, u32::from(radius));
 
         if count_nonzero_in_rect(&base, support) == 0 {
-            fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
+            if fallback == UndetectedBlockFallback::FillBubble {
+                fill_undetected_block_in_bubble(&mut expanded, &bubbles, support, &mut covered);
+            }
             continue;
         }
 
@@ -470,6 +486,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(24, 24).0[0], 255);
@@ -503,6 +520,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(22, 24).0[0], 255);
@@ -537,6 +555,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(24, 26).0[0], 255);
@@ -570,6 +589,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(40, 31).0[0], 255);
@@ -606,6 +626,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(30, 28).0[0], 255);
@@ -634,6 +655,7 @@ mod tests {
             &DynamicImage::ImageLuma8(mask),
             &DynamicImage::ImageLuma8(bubbles),
             &[],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(32, 32).0[0], 255);
@@ -668,6 +690,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(30, 28).0[0], 255);
@@ -700,6 +723,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(24, 26).0[0], 255);
@@ -733,11 +757,13 @@ mod tests {
                 &DynamicImage::ImageLuma8(mask.clone()),
                 &DynamicImage::ImageLuma8(bubbles.clone()),
                 std::slice::from_ref(&block),
+                UndetectedBlockFallback::FillBubble,
             ),
             expand_mask_to_bubble_region_for_inpainting(
                 &DynamicImage::ImageLuma8(mask.clone()),
                 &DynamicImage::ImageLuma8(bubbles.clone()),
                 std::slice::from_ref(&block),
+                UndetectedBlockFallback::FillBubble,
             ),
         ] {
             // Inside block ∩ bubble: erased.
@@ -746,6 +772,46 @@ mod tests {
             assert_eq!(expanded.get_pixel(36, 52).0[0], 0);
             // Outside the bubble: untouched.
             assert_eq!(expanded.get_pixel(50, 28).0[0], 0);
+        }
+    }
+
+    #[test]
+    fn skip_fallback_leaves_cleared_block_alone() {
+        // Un-inpaint scenario: the user cleared the block's mask pixels and a
+        // region re-inpaint runs — the fallback must not refill the block, or
+        // the restored art gets erased again.
+        let mask = GrayImage::new(64, 64);
+        let mut bubbles = GrayImage::new(64, 64);
+        for y in 8..56 {
+            for x in 8..40 {
+                bubbles.put_pixel(x, y, Luma([5]));
+            }
+        }
+
+        let block = TextRegion {
+            x: 12.0,
+            y: 20.0,
+            width: 20.0,
+            height: 16.0,
+            detected_font_size_px: Some(18.0),
+            ..TextRegion::default()
+        };
+
+        for expanded in [
+            expand_mask_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+                UndetectedBlockFallback::Skip,
+            ),
+            expand_mask_to_bubble_region_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+                UndetectedBlockFallback::Skip,
+            ),
+        ] {
+            assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
         }
     }
 
@@ -765,6 +831,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
@@ -792,6 +859,7 @@ mod tests {
                 detected_font_size_px: Some(18.0),
                 ..TextRegion::default()
             }],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
@@ -811,6 +879,7 @@ mod tests {
             &DynamicImage::ImageLuma8(mask),
             &DynamicImage::ImageLuma8(bubbles),
             &[],
+            UndetectedBlockFallback::FillBubble,
         );
 
         assert_eq!(expanded.get_pixel(18, 22).0[0], 255);
@@ -843,6 +912,7 @@ mod tests {
             &DynamicImage::ImageLuma8(mask),
             &DynamicImage::ImageLuma8(bubbles),
             &[block],
+            UndetectedBlockFallback::FillBubble,
         );
 
         // Radius is (20 * 0.16) = 3.2 -> 3.

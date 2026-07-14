@@ -16,7 +16,7 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage, Luma};
 use koharu_core::{ImageRole, MaskRole, Op, Region};
-use koharu_ml::inpainting::expand_mask_for_inpainting;
+use koharu_ml::inpainting::{UndetectedBlockFallback, expand_mask_for_inpainting};
 use koharu_ml::lama::Lama;
 
 use crate::pipeline::artifacts::Artifact;
@@ -62,7 +62,12 @@ impl Engine for Model {
             .into_iter()
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect::<Vec<_>>();
-        let expanded = expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks);
+        let fallback = if ctx.options.region.is_some() {
+            UndetectedBlockFallback::Skip
+        } else {
+            UndetectedBlockFallback::FillBubble
+        };
+        let expanded = expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks, fallback);
         let mask = match ctx.options.region {
             Some(r) => clip_mask_to_region(&DynamicImage::ImageLuma8(expanded), &r),
             None => DynamicImage::ImageLuma8(expanded),
