@@ -41,9 +41,9 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   state (we use a remote provider day-to-day).
 - crates/koharu-app/src/pipeline/engine.rs:139 — Registry::get can double-load
   an engine under concurrent jobs (GPU OOM risk on 6GB).
-- crates/koharu-app/src/config.rs:145 — "[REDACTED]" placeholder is written to
-  config.toml and would be read back as a real API key if the keyring lookup
-  ever fails.
+- ~~crates/koharu-app/src/config.rs — "[REDACTED]" placeholder written to disk~~
+  FIXED b82fe9f8 (2026-07-15): save() serializes a clone with provider api_keys
+  cleared (config_for_disk); +regression test. Secrets live only in the keyring.
 - crates/koharu-app/src/blobs.rs:78 — image cache deep-clones pixel buffers and
   bounds entries, not bytes (memory pressure on big batches).
 - crates/koharu-app/src/renderer.rs:263 — per-block render failures only
