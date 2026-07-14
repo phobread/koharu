@@ -152,6 +152,8 @@ fn run_crop<F: InpaintForward>(
     let mut out = image.clone();
     let mut working_mask = mask.clone();
 
+    // Supplied windows are a fast path for known text regions, not a filter;
+    // any residual mask ink is processed by the contour pass below.
     if let Some(windows) = crop_windows.filter(|windows| !windows.is_empty()) {
         tracing::debug!(
             count = windows.len(),
@@ -175,17 +177,16 @@ fn run_crop<F: InpaintForward>(
             composite_masked(&mut out, &crop_result, &crop_mask, l, t);
             clear_masked_region(&mut working_mask, &crop_mask, l, t);
         }
-        return Ok(out);
     }
 
-    let boxes = boxes_from_mask(mask);
+    let boxes = boxes_from_mask(&working_mask);
     if boxes.is_empty() {
-        return Ok(image.clone());
+        return Ok(out);
     }
 
     tracing::debug!(
         count = boxes.len(),
-        "inpaint crop strategy: one forward per mask contour"
+        "inpaint crop strategy: residual forward per mask contour"
     );
 
     for b in boxes {
@@ -779,6 +780,42 @@ mod tests {
         assert_eq!(forward.calls.get(), 1);
         assert_eq!(out.get_pixel(110, 110).0, [5, 6, 7]);
         assert_eq!(out.get_pixel(170, 160).0, [5, 6, 7]);
+        assert_eq!(out.get_pixel(20, 20).0, [90, 90, 90]);
+    }
+
+    #[test]
+    fn mask_ink_outside_supplied_windows_is_still_processed() {
+        // Repair-brush scenario: windows cover the known text blocks, but the
+        // user painted mask ink elsewhere — the residual pass must inpaint it
+        // instead of silently dropping the stroke.
+        let img = solid_rgb(1200, 1200, [90, 90, 90]);
+        let mut mask = GrayImage::new(1200, 1200);
+        for y in 100..120 {
+            for x in 100..120 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        for y in 900..920 {
+            for x in 900..920 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+
+        let forward = PaintForward::new([5, 6, 7]);
+        let out = run_inpaint_with_windows(
+            &forward,
+            &img,
+            &mask,
+            None,
+            &HdStrategyConfig::lama_default(),
+            Some(&[[80, 80, 220, 220]]),
+        )
+        .unwrap();
+
+        // One forward for the window, one for the residual stroke.
+        assert_eq!(forward.calls.get(), 2);
+        assert_eq!(out.get_pixel(110, 110).0, [5, 6, 7]);
+        assert_eq!(out.get_pixel(910, 910).0, [5, 6, 7]);
         assert_eq!(out.get_pixel(20, 20).0, [90, 90, 90]);
     }
 }
