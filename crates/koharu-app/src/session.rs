@@ -174,12 +174,13 @@ impl ProjectSession {
 
     /// Write a new snapshot (scene.bin) and truncate the log. Safe to call
     /// at any time; crash mid-compaction leaves the old snapshot + full log.
+    /// The history guard spans write + truncate, serializing concurrent edits.
     pub fn compact(&self) -> Result<()> {
+        let mut history = self.history.lock();
         let snap = {
             let scene = self.scene.read();
-            let epoch = self.history.lock().epoch();
             Snapshot {
-                epoch,
+                epoch: history.epoch(),
                 scene: scene.clone(),
             }
         };
@@ -195,7 +196,7 @@ impl ProjectSession {
         .write(|f| f.write_all(&bytes))
         .context("write scene.bin atomically")?;
         // Log truncation only after snapshot is durably on disk.
-        self.history.lock().truncate_log()?;
+        history.truncate_log()?;
         Ok(())
     }
 }
