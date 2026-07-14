@@ -4236,7 +4236,6 @@ dependencies = [
  "parking_lot",
  "petgraph",
  "postcard",
- "reqwest 0.13.4",
  "reqwest-middleware",
  "secrecy",
  "serde",

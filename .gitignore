@@ -56,4 +56,3 @@ site/
 
 # integration-tests shared runtime cache
 .cache/
-__pycache__/

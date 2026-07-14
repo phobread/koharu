@@ -42,7 +42,6 @@ lru = { workspace = true }
 parking_lot = { workspace = true }
 petgraph = { workspace = true }
 postcard = { workspace = true }
-reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
