@@ -12,7 +12,6 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
 
 use crate::AppState;
 use crate::api;
@@ -21,9 +20,15 @@ use crate::api;
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Wrap `router(app)` with CORS + mount MCP at `/mcp`.
+/// Build the API router + mount MCP at `/mcp`.
+///
+/// Deliberately NO CORS layer: every legitimate client is same-origin (the
+/// Tauri build serves the UI from this server; `next dev` proxies /api/v1
+/// server-side) or a non-browser tool that ignores CORS. Advertising
+/// permissive CORS only pre-approved arbitrary websites to read and mutate
+/// the local, unauthenticated API from the user's browser.
 pub fn router_for(app: AppState) -> Router {
-    let base = api::router(app.clone()).layer(CorsLayer::very_permissive());
+    let base = api::router(app.clone());
     crate::mcp::mount(base, app)
 }
 
