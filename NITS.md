@@ -73,5 +73,5 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   is ever installed next to 13.2 (only 13.2 present today).
 - ui/components/panels/RenderControlsPanel.tsx:546 — slow font download can
   commit an obsolete selection; failures applied silently.
-- ui/hooks/useBlobData.ts:37 — sprite object URLs never revoked on cache
-  eviction (webview memory creep on long sessions).
+- ~~ui/hooks/useBlobData.ts — sprite object URLs never revoked~~ FIXED bfe05974
+  (2026-07-14): query-cache subscription revokes blobImage URLs on eviction.
