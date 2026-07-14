@@ -1,4 +1,5 @@
 import type { TextDirection, Transform } from '@/lib/api/schemas'
+import { rotateVec } from '@/lib/rotatedBox'
 
 type SplitInput = { text?: string | null; translation?: string | null }
 
@@ -108,6 +109,20 @@ export function splitTextValueNear(
 /** Keep both halves usable: neither side smaller than 20% of the box. */
 const MIN_SPLIT_RATIO = 0.2
 
+function placeInRotatedFrame(original: Transform, half: Transform): Transform {
+  const deg = original.rotationDeg ?? 0
+  if (deg === 0) return half
+
+  const cx = original.x + original.width / 2
+  const cy = original.y + original.height / 2
+  const halfCx = half.x + half.width / 2
+  const halfCy = half.y + half.height / 2
+  const [dx, dy] = rotateVec(halfCx - cx, halfCy - cy, deg)
+
+  // Halves rotate about their own centers, so the unrotated center offset must be rotated into the original's frame for the pieces to tile the original rotated rect.
+  return { ...half, x: cx + dx - half.width / 2, y: cy + dy - half.height / 2 }
+}
+
 /**
  * Split a text block at a caret position inside one of its text fields. The
  * cut follows the text flow: horizontal text stacks the halves top/bottom,
@@ -115,7 +130,7 @@ const MIN_SPLIT_RATIO = 0.2
  * half on the right. The other text field is divided near the same fractional
  * position, and the box is split proportionally to the caret (clamped so
  * neither half collapses). Returns `null` when the caret leaves either side
- * empty. The halves tile the original box exactly, preserving rotation.
+ * empty. The halves tile the original box exactly at any rotation.
  */
 export function splitTextBlockAt(
   transform: Transform,
@@ -146,6 +161,8 @@ export function splitTextBlockAt(
     aT = { ...transform, height: aH }
     bT = { ...transform, y: transform.y + aH, height: transform.height - aH }
   }
+  aT = placeInRotatedFrame(transform, aT)
+  bT = placeInRotatedFrame(transform, bT)
 
   const [aPrimary, bPrimary] = parts
   const [aOther, bOther] = otherParts
@@ -180,25 +197,72 @@ export type MergedBlock = {
 /**
  * Merge two or more text blocks (given in reading order) into one: the union
  * of their boxes plus their texts joined in order. Because split halves tile
- * the original box exactly, merging them reconstructs the pre-split box —
- * this is the inverse of both split flavours. Rotation follows the first
- * block. Returns `null` for fewer than two blocks.
+ * the original box exactly at any rotation, merging them reconstructs the
+ * pre-split box at any rotation — this is the inverse of both split flavours.
+ * Rotation follows the first block. Returns `null` for fewer than two blocks.
  */
 export function mergeTextBlocks(
   blocks: { transform: Transform; text?: string | null; translation?: string | null }[],
 ): MergedBlock | null {
   if (blocks.length < 2) return null
-  const x = Math.min(...blocks.map((b) => b.transform.x))
-  const y = Math.min(...blocks.map((b) => b.transform.y))
-  const right = Math.max(...blocks.map((b) => b.transform.x + b.transform.width))
-  const bottom = Math.max(...blocks.map((b) => b.transform.y + b.transform.height))
+  const deg = blocks[0].transform.rotationDeg ?? 0
+  if (deg === 0) {
+    const x = Math.min(...blocks.map((b) => b.transform.x))
+    const y = Math.min(...blocks.map((b) => b.transform.y))
+    const right = Math.max(...blocks.map((b) => b.transform.x + b.transform.width))
+    const bottom = Math.max(...blocks.map((b) => b.transform.y + b.transform.height))
+    return {
+      transform: {
+        ...blocks[0].transform,
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+      },
+      text: joinMergedText(blocks.map((b) => b.text)),
+      translation: joinMergedText(blocks.map((b) => b.translation)),
+    }
+  }
+
+  const origin = {
+    x: blocks[0].transform.x + blocks[0].transform.width / 2,
+    y: blocks[0].transform.y + blocks[0].transform.height / 2,
+  }
+  const bounds = blocks.map((block) => {
+    const transform = block.transform
+    const px = transform.x + transform.width / 2
+    const py = transform.y + transform.height / 2
+    const [dx, dy] = rotateVec(px - origin.x, py - origin.y, -deg)
+    const qx = origin.x + dx
+    const qy = origin.y + dy
+    return {
+      left: qx - transform.width / 2,
+      top: qy - transform.height / 2,
+      right: qx + transform.width / 2,
+      bottom: qy + transform.height / 2,
+    }
+  })
+  // Union is computed in the first block's de-rotated frame so merging split halves reconstructs the pre-split box at any slant.
+  const left = Math.min(...bounds.map((bound) => bound.left))
+  const top = Math.min(...bounds.map((bound) => bound.top))
+  const right = Math.max(...bounds.map((bound) => bound.right))
+  const bottom = Math.max(...bounds.map((bound) => bound.bottom))
+  const width = right - left
+  const height = bottom - top
+  const deRotatedCenter = { x: (left + right) / 2, y: (top + bottom) / 2 }
+  const [centerDx, centerDy] = rotateVec(
+    deRotatedCenter.x - origin.x,
+    deRotatedCenter.y - origin.y,
+    deg,
+  )
+  const center = { x: origin.x + centerDx, y: origin.y + centerDy }
   return {
     transform: {
       ...blocks[0].transform,
-      x,
-      y,
-      width: right - x,
-      height: bottom - y,
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      width,
+      height,
     },
     text: joinMergedText(blocks.map((b) => b.text)),
     translation: joinMergedText(blocks.map((b) => b.translation)),
@@ -208,8 +272,7 @@ export function mergeTextBlocks(
 /**
  * Split a text block into two halves along its longer side (wide → left/right,
  * tall → top/bottom), dividing the source + translation text between them. The
- * two halves tile the original box exactly (no gap/overlap), preserving
- * rotation.
+ * two halves tile the original box exactly (no gap/overlap) at any rotation.
  */
 export function splitTextBlock(transform: Transform, data: SplitInput): BlockSplit {
   const leftRight = transform.width >= transform.height
@@ -227,6 +290,8 @@ export function splitTextBlock(transform: Transform, data: SplitInput): BlockSpl
     aT = { ...transform, height: halfH }
     bT = { ...transform, y: transform.y + halfH, height: transform.height - halfH }
   }
+  aT = placeInRotatedFrame(transform, aT)
+  bT = placeInRotatedFrame(transform, bT)
 
   return {
     axis: leftRight ? 'leftRight' : 'topBottom',

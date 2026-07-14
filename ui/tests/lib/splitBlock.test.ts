@@ -282,3 +282,69 @@ describe('joinMergedText', () => {
     expect(joinMergedText([null, undefined])).toBeNull()
   })
 })
+
+describe('rotated split/merge geometry', () => {
+  const rotateVec = (x: number, y: number, deg: number): [number, number] => {
+    const rad = (deg * Math.PI) / 180
+    return [x * Math.cos(rad) - y * Math.sin(rad), x * Math.sin(rad) + y * Math.cos(rad)]
+  }
+  const center = (t: Transform) => ({ x: t.x + t.width / 2, y: t.y + t.height / 2 })
+  // A point given in a box's local (unrotated) frame, rendered to screen space.
+  const rendered = (t: Transform, lx: number, ly: number) => {
+    const c = center(t)
+    const [dx, dy] = rotateVec(lx, ly, t.rotationDeg ?? 0)
+    return { x: c.x + dx, y: c.y + dy }
+  }
+
+  const slanted: Transform = { x: 100, y: 200, width: 120, height: 300, rotationDeg: 30 }
+
+  it('halves of a slanted split share their seam in screen space', () => {
+    const split = splitTextBlock(slanted, { translation: 'A\nB' })
+    expect(split.axis).toBe('topBottom')
+    const { a, b } = split
+    // Seam midpoint: bottom edge of A == top edge of B, rendered.
+    const seamA = rendered(a.transform, 0, a.transform.height / 2)
+    const seamB = rendered(b.transform, 0, -b.transform.height / 2)
+    expect(seamA.x).toBeCloseTo(seamB.x, 6)
+    expect(seamA.y).toBeCloseTo(seamB.y, 6)
+    // Outer edges: top edge of A == top edge of the original, rendered.
+    const topA = rendered(a.transform, 0, -a.transform.height / 2)
+    const topO = rendered(slanted, 0, -slanted.height / 2)
+    expect(topA.x).toBeCloseTo(topO.x, 6)
+    expect(topA.y).toBeCloseTo(topO.y, 6)
+  })
+
+  it('caret splits of slanted vertical text tile in screen space', () => {
+    const split = splitTextBlockAt(
+      { ...slanted, width: 300, height: 120 },
+      { text: '一二三四五六七八九十' },
+      { field: 'text', offset: 5 },
+      'vertical',
+    )
+    expect(split).not.toBeNull()
+    const { a, b } = split!
+    // Vertical: A takes the right side; A's left edge meets B's right edge.
+    const seamA = rendered(a.transform, -a.transform.width / 2, 0)
+    const seamB = rendered(b.transform, b.transform.width / 2, 0)
+    expect(seamA.x).toBeCloseTo(seamB.x, 6)
+    expect(seamA.y).toBeCloseTo(seamB.y, 6)
+  })
+
+  it('merging slanted split halves reconstructs the original box', () => {
+    const split = splitTextBlock(slanted, { translation: 'A\nB' })
+    const merged = mergeTextBlocks([split.a, split.b])
+    expect(merged).not.toBeNull()
+    expect(merged!.transform.x).toBeCloseTo(slanted.x, 6)
+    expect(merged!.transform.y).toBeCloseTo(slanted.y, 6)
+    expect(merged!.transform.width).toBeCloseTo(slanted.width, 6)
+    expect(merged!.transform.height).toBeCloseTo(slanted.height, 6)
+    expect(merged!.transform.rotationDeg).toBe(30)
+  })
+
+  it('zero rotation keeps the naive screen-space tiling', () => {
+    const flat: Transform = { x: 10, y: 20, width: 200, height: 80, rotationDeg: 0 }
+    const split = splitTextBlock(flat, { translation: 'A\nB' })
+    expect(split.a.transform).toEqual({ ...flat, width: 100 })
+    expect(split.b.transform).toEqual({ ...flat, x: 110, width: 100 })
+  })
+})
