@@ -1,7 +1,7 @@
 //! Non-scene protocol types: metadata, LLM lifecycle, engine catalog, config.
 //!
 //! Scene ops live in `op.rs`; push events in `events.rs`. Per-route request
-//! DTOs (multipart import, pipeline start) live in `koharu-rpc/src/routes/`.
+//! DTOs (multipart import, pipeline start) live in `crates/koharu-rpc/src/routes/`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
