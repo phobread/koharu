@@ -208,9 +208,19 @@ pub fn save(config: &AppConfig) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config dir `{parent}`"))?;
     }
-    // `api_key` is `#[serde(skip)]`, so it is never written to the TOML file.
-    let content = toml::to_string_pretty(config).context("failed to serialize config")?;
+    // Clear api_key on the save clone so the redaction placeholder is never written to disk;
+    // credentials persist only in the OS keyring.
+    let content =
+        toml::to_string_pretty(&config_for_disk(config)).context("failed to serialize config")?;
     fs::write(&path, content).with_context(|| format!("failed to write config to `{path}`"))
+}
+
+fn config_for_disk(config: &AppConfig) -> AppConfig {
+    let mut config = config.clone();
+    for provider in &mut config.providers {
+        provider.api_key = None;
+    }
+    config
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +472,22 @@ mod tests {
             provider_api_key_secret_key("openai"),
             "llm_provider_api_key_openai"
         );
+    }
+
+    #[test]
+    fn provider_api_key_is_omitted_from_disk_config() {
+        let mut config = AppConfig::default();
+        config.providers.push(ProviderConfig {
+            id: "openai".to_string(),
+            base_url: None,
+            api_key: Some(RedactedSecret::new("sk-secret")),
+        });
+
+        let serialized = toml::to_string_pretty(&config_for_disk(&config)).unwrap();
+
+        assert!(!serialized.contains(REDACTED));
+        assert!(!serialized.contains("sk-secret"));
+        assert!(!serialized.contains("api_key"));
     }
 
     #[test]
