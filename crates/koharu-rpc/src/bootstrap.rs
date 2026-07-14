@@ -6,6 +6,7 @@ use koharu_app::bus::EventBus;
 use koharu_app::{App, AppSharedState};
 use koharu_core::{AppEvent, DownloadProgress, JobSummary};
 use koharu_runtime::RuntimeManager;
+use tokio::sync::broadcast;
 
 pub struct BootstrapManager {
     app: OnceLock<Arc<App>>,
@@ -59,9 +60,18 @@ impl BootstrapManager {
         let downloads = self.downloads();
         let bus = self.bus();
         tokio::spawn(async move {
-            while let Ok(progress) = rx.recv().await {
-                downloads.insert(progress.id.clone(), progress.clone());
-                bus.publish(AppEvent::DownloadProgress(progress));
+            loop {
+                match rx.recv().await {
+                    Ok(progress) => {
+                        downloads.insert(progress.id.clone(), progress.clone());
+                        bus.publish(AppEvent::DownloadProgress(progress));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("download forwarder skipped {n} download events");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
     }
