@@ -102,32 +102,6 @@ async fn create_pages(
 
     files.sort_by(|a, b| natord::compare(&a.0, &b.0));
 
-    // Optionally clear the project first. Emitted as a batch so it's one undo step.
-    let starting_index = if replace {
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        if !remove_ops.is_empty() {
-            app.apply(Op::Batch {
-                ops: remove_ops,
-                label: "Replace pages (clear)".into(),
-            })
-            .map_err(ApiError::internal)?;
-        }
-        0
-    } else {
-        session.scene.read().pages.len()
-    };
-
     // Decode + hash + write each file in parallel. Image decode is the
     // dominant cost per page (~10–50ms for a typical JPEG/PNG), so a
     // 200-page folder benefits almost linearly from multi-core. The output
@@ -157,8 +131,26 @@ async fn create_pages(
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
-    // Build one AddPage batch for the whole import.
-    let mut ops = Vec::with_capacity(decoded.len());
+    let scene = session.scene.read();
+    let (mut ops, starting_index) = if replace {
+        let remove_ops: Vec<Op> = scene
+            .pages
+            .keys()
+            .copied()
+            .map(|id| Op::RemovePage {
+                id,
+                prev_page: scene.pages[&id].clone(),
+                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
+            })
+            .collect();
+        (remove_ops, 0)
+    } else {
+        (Vec::with_capacity(decoded.len()), scene.pages.len())
+    };
+    drop(scene);
+    let has_removals = !ops.is_empty();
+
+    // Build one batch for the whole import.
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -189,7 +181,11 @@ async fn create_pages(
 
     app.apply(Op::Batch {
         ops,
-        label: "Import pages".into(),
+        label: if has_removals {
+            "Replace pages".into()
+        } else {
+            "Import pages".into()
+        },
     })
     .map_err(ApiError::internal)?;
 
@@ -243,31 +239,6 @@ async fn create_pages_from_paths(
         natord::compare(af, bf)
     });
 
-    let starting_index = if req.replace {
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        if !remove_ops.is_empty() {
-            app.apply(Op::Batch {
-                ops: remove_ops,
-                label: "Replace pages (clear)".into(),
-            })
-            .map_err(ApiError::internal)?;
-        }
-        0
-    } else {
-        session.scene.read().pages.len()
-    };
-
     let blobs = session.blobs.clone();
     let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
         paths
@@ -291,7 +262,25 @@ async fn create_pages_from_paths(
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
-    let mut ops = Vec::with_capacity(decoded.len());
+    let scene = session.scene.read();
+    let (mut ops, starting_index) = if req.replace {
+        let remove_ops: Vec<Op> = scene
+            .pages
+            .keys()
+            .copied()
+            .map(|id| Op::RemovePage {
+                id,
+                prev_page: scene.pages[&id].clone(),
+                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
+            })
+            .collect();
+        (remove_ops, 0)
+    } else {
+        (Vec::with_capacity(decoded.len()), scene.pages.len())
+    };
+    drop(scene);
+    let has_removals = !ops.is_empty();
+
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -322,7 +311,11 @@ async fn create_pages_from_paths(
 
     app.apply(Op::Batch {
         ops,
-        label: "Import pages".into(),
+        label: if has_removals {
+            "Replace pages".into()
+        } else {
+            "Import pages".into()
+        },
     })
     .map_err(ApiError::internal)?;
 
