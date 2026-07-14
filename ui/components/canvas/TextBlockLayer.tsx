@@ -181,6 +181,11 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       ))}
       {page && editingNode && (
         <BlockQuickEditor
+          // Remount per block: the draft textareas keep the user's in-progress
+          // text while focused, and selecting another block never blurs them
+          // (block drags preventDefault the focus change) — without the key,
+          // block B's editor would inherit block A's draft.
+          key={editingNode.id}
           page={page}
           node={editingNode}
           index={nodes.findIndex((n) => n.id === editingNode.id)}

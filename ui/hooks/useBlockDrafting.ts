@@ -97,6 +97,10 @@ export function useBlockDrafting({
       preventDefault: true,
       filterTaps: true,
       eventOptions: { passive: false },
+      // Pointer-only gesture: use-gesture's default arrow-key "keyboard drag"
+      // would otherwise preventDefault arrow keydowns bubbling up from the
+      // quick editor's textareas, freezing the caret there.
+      keys: false,
     },
   )
 
