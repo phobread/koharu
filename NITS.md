@@ -21,10 +21,10 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   ui/components/SettingsDialog.tsx:250/258 (persistConfig races; failures
   resolved as success), ui/lib/stores/serverConfigStorage.ts:139 (lifecycle
   flush can be overwritten by an older in-flight PATCH).
-- ui/lib/splitBlock.ts:139 — rotated-block splits move centers in screen space
-  instead of the block's local frame; halves overlap/separate on slanted
-  blocks. Real workflow bug; needs proper geometry + tests. Top candidate for
-  the next fix wave.
+- ~~ui/lib/splitBlock.ts — rotated-block splits~~ FIXED e41c6297 (2026-07-14):
+  half centers rotated into the original's frame; merge unions in the first
+  block's de-rotated frame; split→merge round-trips at any slant. 4 regression
+  tests added.
 
 ## Real but low practical risk for a single-user local fork
 
