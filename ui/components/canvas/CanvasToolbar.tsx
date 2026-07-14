@@ -32,13 +32,13 @@ import {
   useGetCatalog,
   useGetCurrentLlm,
 } from '@/lib/api/default/default'
+import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import {
   flattenCatalogModels,
   llmTargetKey,
   sameLlmTarget,
   withSelectedTarget,
 } from '@/lib/llmTargets'
-import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
