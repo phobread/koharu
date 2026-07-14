@@ -85,13 +85,15 @@ coherent design across UI+backend, not three point patches).
 
 ## STATUS (update each line as work lands; hashes only after they exist)
 
-- [x] Triage written
-- [ ] UI wave U1-U9
-- [ ] D1
-- [ ] R1
-- [ ] R2
-- [ ] R3
-- [ ] R4
-- [ ] R5
-- [ ] R6
+- [x] Triage written (88e1ab8c)
+- [x] UI wave U1-U9 (bf8df631 U1-U8 orchestrator-applied pre-pivot; 98d64d12 U9
+      via Sol; 216 ui tests pass)
+- [x] D1 (58e5ea4e, Sol)
+- [x] R1 (1e48923a, Sol — compact lock order + truncation race; 76 app tests)
+- [x] R2 (0b17f9fa, Sol — residual pass after crop windows; +orchestrator
+      regression test; 59 ml tests)
+- [x] R3 (37c14f24, Sol — flux empty-mask no-op)
+- [x] R4 (b175aa0f, Sol — decode-before-mutate, single replace batch)
+- [x] R5 (78bad730, Sol — download forwarder survives Lagged)
+- [x] R6 (94a6ba3a, Sol — renderer clears write-backs on emptied translations)
 - [ ] Full tauri build + ship
