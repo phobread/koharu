@@ -137,6 +137,37 @@ impl Engine for Model {
             });
         }
 
+        // A cleared translation must also clear the previous render's write-backs,
+        // or the stale sprite ghosts into sprite consumers.
+        for (id, _, text) in &nodes {
+            if inputs.iter().any(|input| input.node_id == *id)
+                || (text.sprite.is_none()
+                    && text.sprite_transform.is_none()
+                    && text.rendered_direction.is_none()
+                    && text.rendered_font_size_px.is_none()
+                    && text.rendered_text_color.is_none())
+            {
+                continue;
+            }
+            ops.push(Op::UpdateNode {
+                page: ctx.page,
+                id: *id,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(TextDataPatch {
+                        sprite: Some(None),
+                        sprite_transform: Some(None),
+                        rendered_direction: Some(None),
+                        rendered_font_size_px: Some(None),
+                        rendered_text_color: Some(None),
+                        ..Default::default()
+                    })),
+                    transform: None,
+                    visible: None,
+                },
+                prev: NodePatch::default(),
+            });
+        }
+
         // Final composite → Image { Rendered } upsert.
         let final_blob = ctx.blobs.put_webp(&output.final_render)?;
         ops.push(upsert_image_blob(
