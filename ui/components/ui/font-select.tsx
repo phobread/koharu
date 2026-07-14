@@ -41,6 +41,15 @@ export function useGoogleFontPreview(family: string, source: string, isVisible: 
   // Only Google Fonts are fetched on demand; system and custom faces are
   // already installed locally, so they start ready.
   const [state, setState] = useState<FontLoadState>(source === 'google' ? 'idle' : 'ready')
+  // Reset when this hook instance is reused for another font (recycled list
+  // rows / prop changes): carrying state over shows "ready" for a face that
+  // never loaded, or wedges a new face in a stale "loading".
+  const [prevKey, setPrevKey] = useState(`${source}:${family}`)
+  const key = `${source}:${family}`
+  if (prevKey !== key) {
+    setPrevKey(key)
+    setState(source === 'google' ? 'idle' : 'ready')
+  }
   const stateRef = useRef(state)
   stateRef.current = state
 

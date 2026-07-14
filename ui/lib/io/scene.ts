@@ -99,19 +99,20 @@ export async function reorderPageTextNodes(pageId: string, order: ReadingOrder):
 
 const AUTO_RENDER_DEBOUNCE_MS = 500
 
-let autoRenderTimer: ReturnType<typeof setTimeout> | null = null
-let autoRenderPendingPageId: string | null = null
+// Debounce per page: editing page A then jumping to page B within the window
+// must not cancel A's pending render — each page settles independently.
+const autoRenderTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function queueAutoRender(pageId: string): void {
-  autoRenderPendingPageId = pageId
-  if (autoRenderTimer) clearTimeout(autoRenderTimer)
-  autoRenderTimer = setTimeout(() => {
-    autoRenderTimer = null
-    const id = autoRenderPendingPageId
-    autoRenderPendingPageId = null
-    if (!id) return
-    void runAutoRender(id)
-  }, AUTO_RENDER_DEBOUNCE_MS)
+  const existing = autoRenderTimers.get(pageId)
+  if (existing) clearTimeout(existing)
+  autoRenderTimers.set(
+    pageId,
+    setTimeout(() => {
+      autoRenderTimers.delete(pageId)
+      void runAutoRender(pageId)
+    }, AUTO_RENDER_DEBOUNCE_MS),
+  )
 }
 
 async function runAutoRender(pageId: string): Promise<void> {
@@ -143,19 +144,26 @@ export function selectAllTextNodesOnCurrentPage(): void {
 
 // Project lifecycle ----------------------------------------------------------
 
+/** Page/node ids are project-scoped: any project transition must drop the
+ * selection, or the UI keeps acting on ids from the previous scene. */
+const resetSelection = () => useSelectionStore.getState().setPage(null)
+
 export async function createAndOpenProject(req: CreateProjectRequest): Promise<ProjectSummary> {
   const summary = await createProject(req)
+  resetSelection()
   await invalidateScene()
   return summary
 }
 
 export async function switchProject(req: OpenProjectRequest): Promise<void> {
   await putCurrentProject(req)
+  resetSelection()
   await invalidateScene()
 }
 
 export async function closeProject(): Promise<void> {
   await deleteCurrentProject()
+  resetSelection()
   await invalidateScene()
 }
 
@@ -166,6 +174,7 @@ export async function uploadPages(files: File[], replace: boolean): Promise<stri
   for (const file of files) form.append('file', file, file.name)
   form.append('replace', replace ? 'true' : 'false')
   const res = await createPages({ body: form })
+  if (replace) resetSelection()
   await invalidateScene()
   return res.pages
 }
@@ -177,6 +186,7 @@ export async function uploadPages(files: File[], replace: boolean): Promise<stri
  */
 export async function uploadPagesByPaths(paths: string[], replace: boolean): Promise<string[]> {
   const res = await createPagesFromPaths({ paths, replace })
+  if (replace) resetSelection()
   await invalidateScene()
   return res.pages
 }
@@ -185,6 +195,7 @@ export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
   // The generated `importProject` takes the archive as a `Blob` and sets the
   // `application/zip` content type itself; a `File` is already a `Blob`.
   const summary = await importProject(file)
+  resetSelection()
   await invalidateScene()
   return summary
 }

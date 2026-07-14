@@ -38,6 +38,7 @@ import {
   sameLlmTarget,
   withSelectedTarget,
 } from '@/lib/llmTargets'
+import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -109,7 +110,9 @@ function WorkflowButtons() {
       targetLanguage: editor.selectedLanguage,
       sourceLanguage: prefs.ocrLanguage,
       systemPrompt: prefs.customSystemPrompt,
-      defaultFont: prefs.defaultFont,
+      // Shared render defaults (font, size, padding, shader): manual Render
+      // must match what auto-render produces, or the page changes on click.
+      ...renderDefaultsForPipeline(),
       readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
     })
   }

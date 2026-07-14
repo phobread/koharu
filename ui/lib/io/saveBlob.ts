@@ -39,6 +39,16 @@ export async function saveBlobToDirectory(
     const entries = unzipSync(new Uint8Array(await blob.arrayBuffer()))
     for (const [name, bytes] of Object.entries(entries)) {
       const normalized = name.replace(/\\/g, '/')
+      // Zip-slip guard: an entry must stay strictly inside the chosen folder.
+      // Reject absolute paths, drive letters, and any `..` segment rather than
+      // letting a crafted archive write outside the destination.
+      if (
+        normalized.startsWith('/') ||
+        /^[a-zA-Z]:/.test(normalized) ||
+        normalized.split('/').some((seg) => seg === '..')
+      ) {
+        throw new Error(`unsafe zip entry path: ${name}`)
+      }
       const full = `${folder}/${normalized}`
       const slash = full.lastIndexOf('/')
       if (slash > folder.length) {

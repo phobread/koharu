@@ -42,6 +42,10 @@ export function useMaskDrawing({
   enabled,
 }: MaskDrawingOptions) {
   const inpaintQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // Monotonic paint generation: bitmap decodes are async, so a slow decode
+  // for the previous page/data must not land after a newer paint (stroking
+  // over a stale mask would then upload it to the wrong page).
+  const paintGenRef = useRef(0)
   const isEraseMode = mode === 'eraser'
   const isActive = enabled && (mode === 'repairBrush' || isEraseMode)
 
@@ -60,9 +64,14 @@ export function useMaskDrawing({
     enabled: showMask,
     onCanvasInit: (ctx, d) => {
       if (segmentData) {
+        const gen = ++paintGenRef.current
         void (async () => {
           try {
             const bitmap = await convertBytesToBitmap(segmentData)
+            if (gen !== paintGenRef.current) {
+              bitmap.close()
+              return
+            }
             ctx.save()
             ctx.clearRect(0, 0, d.width, d.height)
             ctx.drawImage(bitmap, 0, 0, d.width, d.height)
@@ -120,10 +129,11 @@ export function useMaskDrawing({
     if (!ctx) return
 
     let cancelled = false
+    const gen = ++paintGenRef.current
     void (async () => {
       try {
         const bitmap = await convertBytesToBitmap(segmentData)
-        if (cancelled) {
+        if (cancelled || gen !== paintGenRef.current) {
           bitmap.close()
           return
         }

@@ -89,9 +89,12 @@ export function connectEvents(baseUrl = '/api/v1'): () => void {
       return backoffMs(attempt)
     },
     onclose() {
-      // Server closed the stream cleanly. Treat as transient — the library
-      // will reconnect and resume from the last id.
+      // Server closed the stream cleanly (e.g. backend restart). Returning
+      // normally would RESOLVE fetchEventSource — no retry ever happens — so
+      // throw a retryable error to route through onerror's backoff and
+      // actually reconnect, resuming from the last id.
       store.getState().setStatus('reconnecting')
+      throw new RetryableSseError('server closed the stream')
     },
   }).catch((err) => {
     if ((err as { name?: string })?.name === 'AbortError') return
