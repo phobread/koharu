@@ -4,6 +4,28 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { getBlob } from '@/lib/api/default/default'
 import { convertToBlob } from '@/lib/io/blobConvert'
+import { queryClient } from '@/lib/queryClient'
+
+let blobImageCleanupInstalled = false
+
+function installBlobImageCleanup() {
+  if (blobImageCleanupInstalled) return
+  blobImageCleanupInstalled = true
+
+  queryClient.getQueryCache().subscribe((event) => {
+    if (
+      event.type === 'removed' &&
+      event.query.queryKey[0] === 'blobImage' &&
+      typeof event.query.state.data === 'string'
+    ) {
+      // Object URLs pin blob memory until explicitly revoked; cache eviction is
+      // the single owner-release point, and removed only fires for observer-less entries.
+      URL.revokeObjectURL(event.query.state.data)
+    }
+  })
+}
+
+if (typeof window !== 'undefined') installBlobImageCleanup()
 
 const blobQueryOptions = (hash: string) => ({
   queryKey: ['blob', hash] as const,
