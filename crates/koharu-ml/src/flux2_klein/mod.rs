@@ -315,15 +315,17 @@ impl Flux2Klein {
             return Ok(image.clone());
         }
 
-        if let Some(bounds) = inpaint_crop_bounds(image, mask, options.mask_padding) {
-            let image_crop = image.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let generated =
-                self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
-            return composite_inpaint_crop(image, &generated, &mask_crop, bounds);
+        match inpaint_crop_bounds(image, mask, options.mask_padding) {
+            Some(bounds) => {
+                let image_crop = image.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+                let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+                let generated =
+                    self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
+                composite_inpaint_crop(image, &generated, &mask_crop, bounds)
+            }
+            // None means the mask is empty, so full-frame generation must never run implicitly.
+            None => Ok(image.clone()),
         }
-
-        self.inpaint_full_frame(image, mask, reference_image, options)
     }
 
     fn inpaint_full_frame(
