@@ -111,6 +111,18 @@ import { cn } from '@/lib/utils'
 // at the boundary so the dialog internals stay unified.
 type UpdateConfigBody = AppConfig
 
+function withProviderBaseUrl(
+  providers: ProviderConfig[] | undefined,
+  id: string,
+  baseUrl: string | null,
+): ProviderConfig[] {
+  const next = [...(providers ?? [])]
+  const idx = next.findIndex((p) => p.id === id)
+  if (idx >= 0) next[idx] = { ...next[idx], base_url: baseUrl }
+  else next.push({ id, base_url: baseUrl })
+  return next
+}
+
 function appConfigToPatch(cfg: AppConfig): ConfigPatch {
   const patch: ConfigPatch = {}
   if (cfg.data?.path) {
@@ -187,6 +199,10 @@ export function SettingsDialog({
   }, [defaultTab, open])
 
   const [appConfig, setAppConfig] = useState<UpdateConfigBody | null>(null)
+  const committedConfigRef = useRef<AppConfig | null>(null)
+  const configQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const hydratedForOpenRef = useRef(false)
+  const [baseUrlDrafts, setBaseUrlDrafts] = useState<Record<string, string>>({})
   const [providerCatalogs, setProviderCatalogs] = useState<LlmProviderCatalog[]>([])
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({})
   // Per-provider save/clear failure, shown inline. Cleared when the user edits
@@ -202,6 +218,11 @@ export function SettingsDialog({
   const [appVersion, setAppVersion] = useState<string>()
   const updater = useUpdater()
 
+  const applyServerConfig = (cfg: AppConfig) => {
+    committedConfigRef.current = cfg
+    setAppConfig(cfg)
+  }
+
   useEffect(() => {
     if (!open) return
     void (async () => {
@@ -211,7 +232,7 @@ export function SettingsDialog({
           getLlmCatalog(),
           getEngineCatalog(),
         ])
-        setAppConfig(config)
+        applyServerConfig(config)
         setProviderCatalogs(catalog.providers)
         setEngineCatalog(engines)
       } catch {}
@@ -242,7 +263,12 @@ export function SettingsDialog({
   }, [open, checkForUpdates])
 
   useEffect(() => {
-    if (!appConfig?.data) return
+    if (!open) hydratedForOpenRef.current = false
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !appConfig?.data || hydratedForOpenRef.current) return
+    hydratedForOpenRef.current = true
     setDataPathDraft(appConfig.data.path)
     setHttpConnectTimeoutDraft(
       String(appConfig.http?.connect_timeout ?? DEFAULT_HTTP_CONNECT_TIMEOUT),
@@ -250,19 +276,32 @@ export function SettingsDialog({
     setHttpReadTimeoutDraft(String(appConfig.http?.read_timeout ?? DEFAULT_HTTP_READ_TIMEOUT))
     setHttpMaxRetriesDraft(String(appConfig.http?.max_retries ?? DEFAULT_HTTP_MAX_RETRIES))
     setStorageSettingsError(null)
-  }, [appConfig])
+    const drafts: Record<string, string> = {}
+    for (const p of appConfig.providers ?? []) drafts[p.id] = p.base_url ?? ''
+    setBaseUrlDrafts(drafts)
+  }, [open, appConfig])
 
-  const persistConfig = async (next: UpdateConfigBody) => {
-    try {
-      const saved = await updateConfig(next)
-      const catalog = await getLlmCatalog()
-      setAppConfig(saved)
-      setProviderCatalogs(catalog.providers)
-      queryClient.invalidateQueries({ queryKey: getGetLlmCatalogQueryKey() })
-      return saved
-    } catch {
-      return null
-    }
+  const enqueueConfigMutation = (mutate: (base: AppConfig) => AppConfig): Promise<boolean> => {
+    const run = configQueueRef.current.then(async () => {
+      const base = committedConfigRef.current
+      if (!base) return false
+      try {
+        const next = mutate(base)
+        const saved = await updateConfig(next)
+        const catalog = await getLlmCatalog()
+        applyServerConfig(saved)
+        setProviderCatalogs(catalog.providers)
+        queryClient.invalidateQueries({ queryKey: getGetLlmCatalogQueryKey() })
+        return true
+      } catch {
+        return false
+      }
+    })
+    configQueueRef.current = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
   }
 
   // Reload config + provider catalog after a dedicated secret write. Best-effort
@@ -272,22 +311,12 @@ export function SettingsDialog({
   const refreshConfigAndCatalog = async () => {
     try {
       const [cfg, catalog] = await Promise.all([getConfig(), getLlmCatalog()])
-      setAppConfig(cfg)
+      applyServerConfig(cfg)
       setProviderCatalogs(catalog.providers)
       queryClient.invalidateQueries({ queryKey: getGetLlmCatalogQueryKey() })
     } catch {
       // leave existing state in place
     }
-  }
-
-  const upsertProvider = (id: string, updater: (p: ProviderConfig) => ProviderConfig) => {
-    if (!appConfig) return
-    const providers = [...(appConfig.providers ?? [])]
-    const idx = providers.findIndex((p) => p.id === id)
-    const current = idx >= 0 ? providers[idx] : { id }
-    if (idx >= 0) providers[idx] = updater(current)
-    else providers.push(updater(current))
-    setAppConfig({ ...appConfig, providers })
   }
 
   const handleApplyStorageSettings = async () => {
@@ -315,17 +344,17 @@ export function SettingsDialog({
 
     setIsSavingStorageSettings(true)
     setStorageSettingsError(null)
-    const saved = await persistConfig({
-      ...appConfig,
+    const ok = await enqueueConfigMutation((base) => ({
+      ...base,
       data: { path },
       http: {
         connect_timeout: connectTimeout,
         read_timeout: readTimeout,
         max_retries: maxRetries,
       },
-    })
+    }))
     setIsSavingStorageSettings(false)
-    if (!saved) {
+    if (!ok) {
       setStorageSettingsError('Failed')
       return
     }
@@ -384,9 +413,8 @@ export function SettingsDialog({
                   catalog={engineCatalog}
                   pipeline={appConfig.pipeline ?? {}}
                   onChange={(pipeline) => {
-                    const next = { ...appConfig, pipeline }
-                    setAppConfig(next)
-                    void persistConfig(next)
+                    setAppConfig((cur) => (cur ? { ...cur, pipeline } : cur))
+                    void enqueueConfigMutation((base) => ({ ...base, pipeline }))
                   }}
                 />
               )}
@@ -395,13 +423,15 @@ export function SettingsDialog({
                   catalogs={providerCatalogs}
                   config={appConfig}
                   drafts={apiKeyDrafts}
-                  onBaseUrlChange={(id, v) =>
-                    upsertProvider(id, (p) => ({
-                      ...p,
-                      base_url: v || null,
+                  baseUrlDrafts={baseUrlDrafts}
+                  onBaseUrlChange={(id, v) => setBaseUrlDrafts((c) => ({ ...c, [id]: v }))}
+                  onBaseUrlBlur={(id) => {
+                    const value = (baseUrlDrafts[id] ?? '').trim()
+                    void enqueueConfigMutation((base) => ({
+                      ...base,
+                      providers: withProviderBaseUrl(base.providers, id, value || null),
                     }))
-                  }
-                  onBaseUrlBlur={() => appConfig && void persistConfig(appConfig)}
+                  }}
                   saveErrors={apiKeySaveErrors}
                   onApiKeyChange={(id, v) => {
                     setApiKeyDrafts((c) => ({ ...c, [id]: v }))
@@ -1012,6 +1042,7 @@ function ProvidersPane({
   catalogs,
   config,
   drafts,
+  baseUrlDrafts,
   saveErrors,
   onBaseUrlChange,
   onBaseUrlBlur,
@@ -1022,9 +1053,10 @@ function ProvidersPane({
   catalogs: LlmProviderCatalog[]
   config: UpdateConfigBody | null
   drafts: Record<string, string>
+  baseUrlDrafts: Record<string, string>
   saveErrors: Record<string, string>
   onBaseUrlChange: (id: string, v: string) => void
-  onBaseUrlBlur: () => void
+  onBaseUrlBlur: (id: string) => void
   onApiKeyChange: (id: string, v: string) => void
   onSaveKey: (id: string) => void
   onClearKey: (id: string) => void
@@ -1073,9 +1105,9 @@ function ProvidersPane({
                       <Label className='text-xs'>{t('settings.localLlmBaseUrl')}</Label>
                       <Input
                         type='url'
-                        value={cfg?.base_url ?? ''}
+                        value={baseUrlDrafts[provider.id] ?? ''}
                         onChange={(e) => onBaseUrlChange(provider.id, e.target.value)}
-                        onBlur={onBaseUrlBlur}
+                        onBlur={() => onBaseUrlBlur(provider.id)}
                         placeholder='https://api.example.com/v1'
                       />
                     </div>
