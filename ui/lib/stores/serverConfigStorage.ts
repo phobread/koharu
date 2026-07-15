@@ -140,7 +140,10 @@ export async function flushServerConfigStorage(options?: { keepalive?: boolean }
   const snapshot = JSON.stringify(cache ?? {})
   const version = dirtyVersion
   if (keepalive) {
-    if (dirtyVersion === version) dirty = false
+    // Real page exit only: fire the freshest snapshot with keepalive so it can
+    // outlive the page. We can't await, so leave `dirty` set — if the page
+    // somehow survives or the request fails, the next flush retries. (Clearing
+    // it optimistically here used to drop retry state.)
     void writeSnapshot(snapshot, true).catch((err) => {
       console.error('Failed to persist settings to config before unload:', err)
     })
@@ -161,18 +164,28 @@ export async function flushServerConfigStorage(options?: { keepalive?: boolean }
   await inflight
 }
 
-function flushForLifecycleExit(): void {
+function flushForExit(): void {
+  // Actual navigation/close: page is dying, so keepalive is the only way the
+  // write survives.
   void flushServerConfigStorage({ keepalive: true })
+}
+
+function flushForVisibilityHidden(): void {
+  // Tab hidden / minimized — the page is still alive, so use the normal chained
+  // flush: it serializes behind any in-flight PATCH and keeps `dirty` set on
+  // failure so it retries, instead of a keepalive write that can overlap and
+  // drop retry state while the page lives on.
+  void flushServerConfigStorage()
 }
 
 function installLifecycleFlush(): void {
   if (lifecycleFlushInstalled || typeof window === 'undefined') return
   lifecycleFlushInstalled = true
-  window.addEventListener('pagehide', flushForLifecycleExit)
-  window.addEventListener('beforeunload', flushForLifecycleExit)
+  window.addEventListener('pagehide', flushForExit)
+  window.addEventListener('beforeunload', flushForExit)
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flushForLifecycleExit()
+      if (document.visibilityState === 'hidden') flushForVisibilityHidden()
     })
   }
 }
