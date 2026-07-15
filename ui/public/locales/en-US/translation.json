@@ -432,6 +432,8 @@
     "apiKeyClear": "Clear",
     "apiKeySave": "Save",
     "apiKeySaved": "Saved!",
+    "apiKeySaveFailed": "Save failed — your key was not stored. Try again.",
+    "apiKeyClearFailed": "Clear failed — try again.",
     "dataPath": "Data Path",
     "dataPathDescription": "Koharu stores models, runtime packages, page manifests, and image blobs under this directory. Changing the path requires an app restart.",
     "dataPathApply": "Apply & Restart",

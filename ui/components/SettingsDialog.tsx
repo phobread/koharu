@@ -187,6 +187,9 @@ export function SettingsDialog({
   const [appConfig, setAppConfig] = useState<UpdateConfigBody | null>(null)
   const [providerCatalogs, setProviderCatalogs] = useState<LlmProviderCatalog[]>([])
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({})
+  // Per-provider save/clear failure, shown inline. Cleared when the user edits
+  // the field or a later attempt succeeds.
+  const [apiKeySaveErrors, setApiKeySaveErrors] = useState<Record<string, string>>({})
   const [dataPathDraft, setDataPathDraft] = useState('')
   const [httpConnectTimeoutDraft, setHttpConnectTimeoutDraft] = useState('')
   const [httpReadTimeoutDraft, setHttpReadTimeoutDraft] = useState('')
@@ -382,7 +385,16 @@ export function SettingsDialog({
                     }))
                   }
                   onBaseUrlBlur={() => appConfig && void persistConfig(appConfig)}
-                  onApiKeyChange={(id, v) => setApiKeyDrafts((c) => ({ ...c, [id]: v }))}
+                  saveErrors={apiKeySaveErrors}
+                  onApiKeyChange={(id, v) => {
+                    setApiKeyDrafts((c) => ({ ...c, [id]: v }))
+                    setApiKeySaveErrors((c) => {
+                      if (!c[id]) return c
+                      const n = { ...c }
+                      delete n[id]
+                      return n
+                    })
+                  }}
                   onSaveKey={(id) => {
                     const key = apiKeyDrafts[id]?.trim()
                     if (!key || !appConfig) return
@@ -392,26 +404,56 @@ export function SettingsDialog({
                     const updated = { ...current, api_key: key }
                     if (idx >= 0) providers[idx] = updated
                     else providers.push(updated)
-                    void persistConfig({ ...appConfig, providers }).then(() =>
+                    void persistConfig({ ...appConfig, providers }).then((saved) => {
+                      if (!saved) {
+                        // Keep the typed key in the field — a failed save must
+                        // not silently erase what the user just entered.
+                        setApiKeySaveErrors((c) => ({
+                          ...c,
+                          [id]: t('settings.apiKeySaveFailed', {
+                            defaultValue: 'Save failed — your key was not stored. Try again.',
+                          }),
+                        }))
+                        return
+                      }
+                      setApiKeySaveErrors((c) => {
+                        const n = { ...c }
+                        delete n[id]
+                        return n
+                      })
                       setApiKeyDrafts((c) => {
                         const n = { ...c }
                         delete n[id]
                         return n
-                      }),
-                    )
+                      })
+                    })
                   }}
                   onClearKey={(id) => {
                     if (!appConfig) return
                     const providers = [...(appConfig.providers ?? [])]
                     const idx = providers.findIndex((p) => p.id === id)
                     if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
-                    void persistConfig({ ...appConfig, providers }).then(() =>
+                    void persistConfig({ ...appConfig, providers }).then((saved) => {
+                      if (!saved) {
+                        setApiKeySaveErrors((c) => ({
+                          ...c,
+                          [id]: t('settings.apiKeyClearFailed', {
+                            defaultValue: 'Clear failed — try again.',
+                          }),
+                        }))
+                        return
+                      }
+                      setApiKeySaveErrors((c) => {
+                        const n = { ...c }
+                        delete n[id]
+                        return n
+                      })
                       setApiKeyDrafts((c) => {
                         const n = { ...c }
                         delete n[id]
                         return n
-                      }),
-                    )
+                      })
+                    })
                   }}
                 />
               )}
@@ -953,6 +995,7 @@ function ProvidersPane({
   catalogs,
   config,
   drafts,
+  saveErrors,
   onBaseUrlChange,
   onBaseUrlBlur,
   onApiKeyChange,
@@ -962,6 +1005,7 @@ function ProvidersPane({
   catalogs: LlmProviderCatalog[]
   config: UpdateConfigBody | null
   drafts: Record<string, string>
+  saveErrors: Record<string, string>
   onBaseUrlChange: (id: string, v: string) => void
   onBaseUrlBlur: () => void
   onApiKeyChange: (id: string, v: string) => void
@@ -1051,6 +1095,9 @@ function ProvidersPane({
                         </Button>
                       ) : null}
                     </div>
+                    {saveErrors[provider.id] && (
+                      <p className='text-xs text-destructive'>{saveErrors[provider.id]}</p>
+                    )}
                   </div>
                 </AccordionContent>
               </AccordionItem>
