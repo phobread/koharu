@@ -19,16 +19,27 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   same-origin (Tauri serves the UI; next dev proxies /api/v1) or non-browser.
   Residual: "simple request"-shaped calls can still fire blind cross-origin;
   closing that needs a session token (still deferred, upstream-worthy).
-- Config write serialization family (one design, three symptoms) — STILL OPEN,
-  but the sharpest edge is now closed:
-  crates/koharu-rpc/src/routes/config.rs:42 (unserialized read-modify-write),
-  ui/components/SettingsDialog.tsx (persistConfig has no request ordering, so
-  rapid changes can land out of order), ui/lib/stores/serverConfigStorage.ts:139
-  (lifecycle flush can be overwritten by an older in-flight PATCH).
-  ~~persistConfig failures resolved as success → erased a just-typed API key~~
-  FIXED c172de28 (2026-07-16): onSaveKey/onClearKey keep the draft + show an
-  inline per-provider error on failure, clear only on success. The remaining
-  redesign (backend mutex/generation + UI request ordering) is still deferred.
+- Config write serialization family — mostly CLOSED; only slice 4 remains.
+  Fixed:
+  - ~~config.rs:42 unserialized read-modify-write~~ FIXED 3e0d1689 (slice 1):
+    BootstrapManager async mutex serializes all three config write handlers
+    (the ROOT — both write paths raced through here).
+  - ~~API keys round-tripped the whole provider list~~ FIXED b2871585 (slice 2):
+    onSaveKey/onClearKey use the dedicated setProviderSecret/clearProviderSecret
+    endpoints + best-effort refresh; can't revert a concurrent base_url/other
+    provider change anymore.
+  - ~~serverConfigStorage keepalive edge~~ FIXED 978524be (slice 3):
+    visibilitychange(hidden) uses the chained flush (keeps dirty on failure);
+    keepalive reserved for real exit; no optimistic dirty clear.
+  - ~~persistConfig failures resolved as success → erased a typed key~~ FIXED
+    c172de28 (inline per-provider error, clear only on success).
+  STILL OPEN — slice 4 (the actual frontend "redo", deferred by choice):
+  persistConfig (engine-select, base_url blur, storage apply) still builds full
+  payloads from the appConfig snapshot with no request ordering, and
+  setAppConfig(saved) re-runs the SettingsDialog effect that resets Storage-pane
+  drafts (an unrelated save can wipe unsaved Storage input). Design: committed-
+  config ref separate from drafts + explicit-intent serial queue; reconcile only
+  saved fields. See the slice-4 notes; Sol design-reviewed the approach.
 - ~~ui/lib/splitBlock.ts — rotated-block splits~~ FIXED e41c6297 (2026-07-14):
   half centers rotated into the original's frame; merge unions in the first
   block's de-rotated frame; split→merge round-trips at any slant. 4 regression
