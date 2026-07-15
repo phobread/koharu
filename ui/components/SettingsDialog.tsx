@@ -69,6 +69,8 @@ import {
   getGetCatalogQueryKey as getGetLlmCatalogQueryKey,
   getMeta,
   patchConfig,
+  setProviderSecret,
+  clearProviderSecret,
   deleteCodexSession,
   getGetCodexAuthStatusQueryKey,
   startCodexDeviceLogin,
@@ -263,6 +265,21 @@ export function SettingsDialog({
     }
   }
 
+  // Reload config + provider catalog after a dedicated secret write. Best-effort
+  // and cosmetic: the secret is already stored server-side by the time this
+  // runs, so a failed refresh only leaves the placeholder/status stale until the
+  // dialog reopens — never a lost key.
+  const refreshConfigAndCatalog = async () => {
+    try {
+      const [cfg, catalog] = await Promise.all([getConfig(), getLlmCatalog()])
+      setAppConfig(cfg)
+      setProviderCatalogs(catalog.providers)
+      queryClient.invalidateQueries({ queryKey: getGetLlmCatalogQueryKey() })
+    } catch {
+      // leave existing state in place
+    }
+  }
+
   const upsertProvider = (id: string, updater: (p: ProviderConfig) => ProviderConfig) => {
     if (!appConfig) return
     const providers = [...(appConfig.providers ?? [])]
@@ -396,18 +413,18 @@ export function SettingsDialog({
                     })
                   }}
                   onSaveKey={(id) => {
+                    // Write only this provider's secret via its dedicated
+                    // endpoint — never round-trip the whole provider list (which
+                    // could revert a concurrently-changed base_url or another
+                    // provider). Capture the value now so a later edit can't
+                    // change what gets saved.
                     const key = apiKeyDrafts[id]?.trim()
-                    if (!key || !appConfig) return
-                    const providers = [...(appConfig.providers ?? [])]
-                    const idx = providers.findIndex((p) => p.id === id)
-                    const current = idx >= 0 ? providers[idx] : { id }
-                    const updated = { ...current, api_key: key }
-                    if (idx >= 0) providers[idx] = updated
-                    else providers.push(updated)
-                    void persistConfig({ ...appConfig, providers }).then((saved) => {
-                      if (!saved) {
-                        // Keep the typed key in the field — a failed save must
-                        // not silently erase what the user just entered.
+                    if (!key) return
+                    void (async () => {
+                      try {
+                        await setProviderSecret(id, { secret: key })
+                      } catch {
+                        // Keep the typed key in the field on failure.
                         setApiKeySaveErrors((c) => ({
                           ...c,
                           [id]: t('settings.apiKeySaveFailed', {
@@ -426,15 +443,14 @@ export function SettingsDialog({
                         delete n[id]
                         return n
                       })
-                    })
+                      await refreshConfigAndCatalog()
+                    })()
                   }}
                   onClearKey={(id) => {
-                    if (!appConfig) return
-                    const providers = [...(appConfig.providers ?? [])]
-                    const idx = providers.findIndex((p) => p.id === id)
-                    if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
-                    void persistConfig({ ...appConfig, providers }).then((saved) => {
-                      if (!saved) {
+                    void (async () => {
+                      try {
+                        await clearProviderSecret(id)
+                      } catch {
                         setApiKeySaveErrors((c) => ({
                           ...c,
                           [id]: t('settings.apiKeyClearFailed', {
@@ -453,7 +469,8 @@ export function SettingsDialog({
                         delete n[id]
                         return n
                       })
-                    })
+                      await refreshConfigAndCatalog()
+                    })()
                   }}
                 />
               )}
