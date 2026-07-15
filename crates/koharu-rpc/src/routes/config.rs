@@ -39,6 +39,8 @@ async fn patch_config(
     State(app): State<AppState>,
     Json(patch): Json<ConfigPatch>,
 ) -> ApiResult<Json<AppConfig>> {
+    // Serialize the whole config read-modify-write transaction.
+    let _guard = app.config_write_lock.lock().await;
     let current = (**app.config.load()).clone();
     let mut next = current;
     config::apply_patch(&mut next, patch);
@@ -69,6 +71,8 @@ async fn set_provider_secret(
     Path(id): Path<String>,
     Json(req): Json<ProviderSecretRequest>,
 ) -> ApiResult<StatusCode> {
+    // Serialize the whole config read-modify-write transaction.
+    let _guard = app.config_write_lock.lock().await;
     let mut next = (**app.config.load()).clone();
     upsert_provider_secret(&mut next, &id, Some(&req.secret));
     config::sync_secrets(&next).map_err(ApiError::internal)?;
@@ -88,6 +92,8 @@ async fn clear_provider_secret(
     State(app): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    // Serialize the whole config read-modify-write transaction.
+    let _guard = app.config_write_lock.lock().await;
     let mut next = (**app.config.load()).clone();
     upsert_provider_secret(&mut next, &id, None);
     config::sync_secrets(&next).map_err(ApiError::internal)?;

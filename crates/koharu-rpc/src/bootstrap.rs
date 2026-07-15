@@ -12,6 +12,8 @@ pub struct BootstrapManager {
     app: OnceLock<Arc<App>>,
     runtime: Arc<RuntimeManager>,
     shared: AppSharedState,
+    /// Serializes config read-modify-write-persist-store so concurrent PATCH/secret writes cannot clobber fields (ArcSwap store is otherwise last-writer-wins).
+    pub(crate) config_write_lock: tokio::sync::Mutex<()>,
 }
 
 impl BootstrapManager {
@@ -20,6 +22,7 @@ impl BootstrapManager {
             app: OnceLock::new(),
             runtime,
             shared: AppSharedState::default(),
+            config_write_lock: tokio::sync::Mutex::new(()),
         })
     }
 
