@@ -33,13 +33,12 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
     keepalive reserved for real exit; no optimistic dirty clear.
   - ~~persistConfig failures resolved as success → erased a typed key~~ FIXED
     c172de28 (inline per-provider error, clear only on success).
-  STILL OPEN — slice 4 (the actual frontend "redo", deferred by choice):
-  persistConfig (engine-select, base_url blur, storage apply) still builds full
-  payloads from the appConfig snapshot with no request ordering, and
-  setAppConfig(saved) re-runs the SettingsDialog effect that resets Storage-pane
-  drafts (an unrelated save can wipe unsaved Storage input). Design: committed-
-  config ref separate from drafts + explicit-intent serial queue; reconcile only
-  saved fields. See the slice-4 notes; Sol design-reviewed the approach.
+  - ~~slice 4: persistConfig full-snapshot writes with no ordering + effect that
+    reset Storage/base_url drafts on unrelated saves~~ FIXED 97d4799d
+    (2026-07-16): committedConfigRef (server truth) separate from drafts +
+    enqueueConfigMutation serial intent queue; base_url moved to its own draft
+    model; drafts seed once per open; persistConfig/upsertProvider removed.
+  ENTIRE config-write family now closed (slices 1-4 + the two earlier edges).
 - ~~ui/lib/splitBlock.ts — rotated-block splits~~ FIXED e41c6297 (2026-07-14):
   half centers rotated into the original's frame; merge unions in the first
   block's de-rotated frame; split→merge round-trips at any slant. 4 regression
