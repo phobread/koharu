@@ -19,11 +19,16 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   same-origin (Tauri serves the UI; next dev proxies /api/v1) or non-browser.
   Residual: "simple request"-shaped calls can still fire blind cross-origin;
   closing that needs a session token (still deferred, upstream-worthy).
-- Config write serialization family (one design, three symptoms):
+- Config write serialization family (one design, three symptoms) — STILL OPEN,
+  but the sharpest edge is now closed:
   crates/koharu-rpc/src/routes/config.rs:42 (unserialized read-modify-write),
-  ui/components/SettingsDialog.tsx:250/258 (persistConfig races; failures
-  resolved as success), ui/lib/stores/serverConfigStorage.ts:139 (lifecycle
-  flush can be overwritten by an older in-flight PATCH).
+  ui/components/SettingsDialog.tsx (persistConfig has no request ordering, so
+  rapid changes can land out of order), ui/lib/stores/serverConfigStorage.ts:139
+  (lifecycle flush can be overwritten by an older in-flight PATCH).
+  ~~persistConfig failures resolved as success → erased a just-typed API key~~
+  FIXED c172de28 (2026-07-16): onSaveKey/onClearKey keep the draft + show an
+  inline per-provider error on failure, clear only on success. The remaining
+  redesign (backend mutex/generation + UI request ordering) is still deferred.
 - ~~ui/lib/splitBlock.ts — rotated-block splits~~ FIXED e41c6297 (2026-07-14):
   half centers rotated into the original's frame; merge unions in the first
   block's de-rotated frame; split→merge round-trips at any slant. 4 regression
