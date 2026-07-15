@@ -5,9 +5,11 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
 
 ## Needs design, not a patch
 
-- crates/koharu-app/src/history.rs:29 — history.log frames unversioned; a scene
-  schema bump makes older frames undecodable (replay warns + skips). Needs a
-  frame version header + frozen Op layout chain, symmetric to scene compat.
+- ~~crates/koharu-app/src/history.rs:29 — history.log frames unversioned~~ FIXED
+  6c52152d (2026-07-16): "KHLG" + u16 version header mirroring scene.bin;
+  headerless logs = legacy v0; replay dispatches by version and rejects
+  newer-than-known; future Op changes add a frozen compat decode at the seam.
+  5 tests. (The op non-failure-atomicity item just below is separate + still open.)
 - crates/koharu-app/src/history.rs:81 + crates/koharu-core/src/op.rs:413 —
   op application is not failure-atomic (scene mutated before log write can
   fail; Batch stops mid-way without rollback; AddNode inserts before invariant
