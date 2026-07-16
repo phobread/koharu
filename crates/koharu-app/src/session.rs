@@ -142,7 +142,8 @@ impl ProjectSession {
 
     // --- scene mutation ----------------------------------------------------
 
-    /// Apply an Op. Returns the epoch after apply.
+    /// Apply an Op. Returns the epoch after apply. On error the scene is
+    /// unchanged because history applies to a clone and swaps on commit.
     pub fn apply(&self, op: Op) -> Result<u64> {
         let mut history = self.history.lock();
         let mut scene = self.scene.write();

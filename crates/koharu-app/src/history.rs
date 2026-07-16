@@ -1,11 +1,13 @@
 //! Linear undo/redo history + append-only durable op log.
 //!
 //! Two concerns, deliberately separated:
-//!   1. **Durability log** — `history.log`: each applied op fsynced before ack
-//!      so a crash loses at most the op currently being written. The file starts
-//!      with `"KHLG"` + a u16 LE format version; headerless logs are legacy v0.
-//!      Future versions freeze old `LogFrame` layouts at the decode seam and
-//!      upgrade them before replay.
+//!   1. **Durability log** — `history.log`: each applied op is first applied to
+//!      a scene clone, then its frame is fsynced before the in-memory scene is
+//!      committed. A failed apply changes nothing, and replay truncates torn
+//!      trailing frames before future appends. The file starts with `"KHLG"` +
+//!      a u16 LE format version; headerless logs are legacy v0. Future versions
+//!      freeze old `LogFrame` layouts at the decode seam and upgrade them before
+//!      replay.
 //!   2. **Undo/redo stacks** — in-memory only; Cmd+Z within a session.
 //!
 //! Undo/redo are themselves logged ops: when the user undoes, we apply the
@@ -25,9 +27,13 @@ use serde::{Deserialize, Serialize};
 /// it's compacted on snapshot.
 const DEFAULT_UNDO_LIMIT: usize = 500;
 
-/// Headerless files are legacy v0. `KHLG` as a u32 LE is about 1.1 GB, far
-/// past the u32 frame-length guard, so a length prefix can never be mistaken
-/// for the magic and the formats are unambiguous.
+/// Caps replay allocations and frame writes, and stays below `KHLG` interpreted
+/// as a u32 LE so a length prefix is unambiguous with the versioned-log magic.
+const MAX_FRAME_LEN: u32 = 512 * 1024 * 1024;
+
+/// Headerless files are legacy v0. `KHLG` as a u32 LE is about 1.1 GB, above
+/// `MAX_FRAME_LEN`, so a guarded length prefix can never be mistaken for the
+/// magic and the formats are unambiguous.
 const HISTORY_LOG_MAGIC: [u8; 4] = *b"KHLG";
 const HISTORY_LOG_VERSION: u16 = 1;
 
@@ -48,6 +54,8 @@ struct LogFrame {
 pub struct History {
     log_path: PathBuf,
     log: BufWriter<File>,
+    committed_len: u64,
+    poisoned: bool,
     epoch: u64,
     undo_stack: VecDeque<Op>,
     redo_stack: Vec<Op>,
@@ -55,8 +63,9 @@ pub struct History {
 }
 
 impl History {
-    /// Open the log at `path`, creating it if missing. Caller is expected to
-    /// have already replayed any existing frames (see `Self::replay`).
+    /// Open the log at `path`, creating it if missing. Callers are expected to
+    /// run `replay` first so torn tails are truncated; this method appends
+    /// blindly to any existing bytes.
     pub fn open(path: impl Into<PathBuf>, epoch: u64) -> Result<Self> {
         let log_path = path.into();
         let mut file = OpenOptions::new()
@@ -71,9 +80,12 @@ impl History {
             file.flush()?;
             file.sync_all()?;
         }
+        let committed_len = file.metadata()?.len();
         Ok(Self {
             log_path,
             log: BufWriter::new(file),
+            committed_len,
+            poisoned: false,
             epoch,
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
@@ -93,12 +105,20 @@ impl History {
 
     /// Apply an op to the scene, fsync a frame to disk, push to the undo stack.
     pub fn apply(&mut self, scene: &mut Scene, mut op: Op) -> Result<u64> {
-        op.apply(scene).context("apply op to scene")?;
-        self.epoch += 1;
-        self.write_frame(&op)?;
+        if self.poisoned {
+            anyhow::bail!(
+                "history log write previously failed and could not be rolled back; reopen the project to recover"
+            );
+        }
+        let mut work = scene.clone();
+        op.apply(&mut work).context("apply op to scene")?;
+        let next = self.epoch + 1;
+        self.write_frame(next, &op)?;
+        self.epoch = next;
+        *scene = work;
         self.push_undo(op);
         self.redo_stack.clear();
-        Ok(self.epoch)
+        Ok(next)
     }
 
     /// Undo the most recent op. Applies its inverse, records the inverse in
@@ -106,37 +126,52 @@ impl History {
     /// epoch + the inverse op that was just applied (so the RPC layer can
     /// broadcast it for clients to patch their mirrors without refetching).
     pub fn undo(&mut self, scene: &mut Scene) -> Result<Option<(u64, Op)>> {
-        let Some(original) = self.undo_stack.pop_back() else {
+        let Some(original) = self.undo_stack.back() else {
             return Ok(None);
         };
         let mut inverse = original.inverse();
-        inverse.apply(scene).context("apply inverse op")?;
-        self.epoch += 1;
-        self.write_frame(&inverse)?;
-        let inverse_out = inverse.clone();
+        let mut work = scene.clone();
+        inverse.apply(&mut work).context("apply inverse op")?;
+        let next = self.epoch + 1;
+        self.write_frame(next, &inverse)?;
+        self.epoch = next;
+        *scene = work;
+        let original = self
+            .undo_stack
+            .pop_back()
+            .expect("undo stack was peeked immediately before commit");
         self.redo_stack.push(original);
-        Ok(Some((self.epoch, inverse_out)))
+        Ok(Some((next, inverse)))
     }
 
     /// Re-apply the most recent undo. Symmetric with `undo`. Returns the new
     /// epoch + the op that was just re-applied.
     pub fn redo(&mut self, scene: &mut Scene) -> Result<Option<(u64, Op)>> {
-        let Some(mut op) = self.redo_stack.pop() else {
+        let Some(original) = self.redo_stack.last() else {
             return Ok(None);
         };
-        op.apply(scene).context("re-apply op")?;
-        self.epoch += 1;
-        self.write_frame(&op)?;
-        let applied = op.clone();
-        self.push_undo(op);
-        Ok(Some((self.epoch, applied)))
+        let mut op = original.clone();
+        let mut work = scene.clone();
+        op.apply(&mut work).context("re-apply op")?;
+        let next = self.epoch + 1;
+        self.write_frame(next, &op)?;
+        self.epoch = next;
+        *scene = work;
+        self.redo_stack.pop();
+        self.push_undo(op.clone());
+        Ok(Some((next, op)))
     }
 
     /// Truncate the log after a snapshot has been committed.
     /// Caller must have already fsynced the snapshot file.
     pub fn truncate_log(&mut self) -> Result<()> {
-        self.log.flush()?;
-        self.log.get_ref().sync_all()?;
+        let replacement = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.log_path)?;
+        let old = std::mem::replace(&mut self.log, BufWriter::new(replacement));
+        let (old_file, _residue) = old.into_parts();
+        drop(old_file);
         // Reopen to truncate; BufWriter's underlying file handle is append-only.
         let mut file = OpenOptions::new()
             .read(true)
@@ -153,22 +188,72 @@ impl History {
             .append(true)
             .open(&self.log_path)?;
         self.log = BufWriter::new(file);
+        self.committed_len = (HISTORY_LOG_MAGIC.len() + 2) as u64;
+        self.poisoned = false;
         Ok(())
     }
 
     // --- internals ---------------------------------------------------------
 
-    fn write_frame(&mut self, op: &Op) -> Result<()> {
+    fn write_frame(&mut self, epoch: u64, op: &Op) -> Result<()> {
+        if self.poisoned {
+            anyhow::bail!(
+                "history log write previously failed and could not be rolled back; reopen the project to recover"
+            );
+        }
         let frame = LogFrame {
-            epoch: self.epoch,
+            epoch,
             op: op.clone(),
         };
         let bytes = postcard::to_allocvec(&frame).context("encode log frame")?;
         let len = u32::try_from(bytes.len()).context("log frame too large")?;
-        self.log.write_all(&len.to_le_bytes())?;
-        self.log.write_all(&bytes)?;
-        self.log.flush()?;
-        self.log.get_ref().sync_data()?;
+        anyhow::ensure!(
+            len <= MAX_FRAME_LEN,
+            "history log frame length {len} exceeds maximum {MAX_FRAME_LEN}"
+        );
+        let write_result = (|| -> std::io::Result<()> {
+            self.log.write_all(&len.to_le_bytes())?;
+            self.log.write_all(&bytes)?;
+            self.log.flush()?;
+            self.log.get_ref().sync_data()?;
+            Ok(())
+        })();
+        match write_result {
+            Ok(()) => {
+                self.committed_len += 4 + bytes.len() as u64;
+                Ok(())
+            }
+            Err(write_error) => match self.recover_log_tail() {
+                Ok(()) => Err(anyhow::Error::new(write_error).context("write history log frame")),
+                Err(recovery_error) => {
+                    self.poisoned = true;
+                    anyhow::bail!(
+                        "history log frame write failed: {write_error}; rollback also failed: {recovery_error:#}; project must be reopened to recover"
+                    )
+                }
+            },
+        }
+    }
+
+    fn recover_log_tail(&mut self) -> Result<()> {
+        let replacement = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.log_path)
+            .with_context(|| format!("reopen history log {}", self.log_path.display()))?;
+        let old = std::mem::replace(&mut self.log, BufWriter::new(replacement));
+        let (old_file, _residue) = old.into_parts();
+        drop(old_file);
+
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&self.log_path)
+            .with_context(|| {
+                format!("open history log {} for recovery", self.log_path.display())
+            })?;
+        file.set_len(self.committed_len)
+            .context("truncate failed history log frame")?;
+        file.sync_all().context("sync recovered history log")?;
         Ok(())
     }
 
@@ -224,6 +309,12 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
         }
         Err(err) => return Err(anyhow::Error::new(err).context("read history log header")),
     };
+    let mut valid_len = if log_version.is_some() {
+        (HISTORY_LOG_MAGIC.len() + 2) as u64
+    } else {
+        0
+    };
+    let mut discarded_tail = false;
     let mut epoch = start_epoch;
     loop {
         let mut len_buf = [0u8; 4];
@@ -241,13 +332,25 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
                     path = %log_path.display(),
                     "truncated trailing frame length in history log; discarding"
                 );
+                discarded_tail = true;
                 break;
             }
             Err(err) => {
                 return Err(anyhow::Error::new(err).context("read log frame length"));
             }
         }
-        let len = u32::from_le_bytes(len_buf) as usize;
+        let len = u32::from_le_bytes(len_buf);
+        if len > MAX_FRAME_LEN {
+            tracing::warn!(
+                path = %log_path.display(),
+                bogus_len = len,
+                max_len = MAX_FRAME_LEN,
+                "oversized trailing frame in history log; discarding"
+            );
+            discarded_tail = true;
+            break;
+        }
+        let len = len as usize;
         let mut buf = vec![0u8; len];
         match reader.read_exact(&mut buf) {
             Ok(()) => {}
@@ -258,6 +361,7 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
                     expected_len = len,
                     "truncated trailing frame in history log; discarding"
                 );
+                discarded_tail = true;
                 break;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame body")),
@@ -275,30 +379,61 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
                     error = %err,
                     "undecodable frame in history log; stopping replay"
                 );
+                discarded_tail = true;
                 break;
             }
         };
+        valid_len += 4 + len as u64;
         if frame.epoch > epoch {
             let mut op = frame.op;
             op.apply(scene).context("replay op")?;
             epoch = frame.epoch;
         }
     }
-    // Seek to end so subsequent appends go after the last valid frame.
-    let _ = reader.seek(SeekFrom::End(0));
+    if discarded_tail && std::fs::metadata(log_path)?.len() > valid_len {
+        tracing::warn!(
+            path = %log_path.display(),
+            valid_len,
+            "truncating invalid trailing bytes from history log"
+        );
+        drop(reader);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(log_path)
+            .with_context(|| format!("open history log {} for tail repair", log_path.display()))?;
+        file.set_len(valid_len)
+            .context("truncate invalid history log tail")?;
+        file.sync_all().context("sync repaired history log")?;
+    }
     Ok(epoch)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::Page;
+    use koharu_core::{BlobRef, ImageData, ImageRole, Node, NodeId, NodeKind, Page, Transform};
     use tempfile::tempdir;
 
     fn add_page(name: &str) -> Op {
         Op::AddPage {
             page: Page::new(name, 800, 600),
             at: 0,
+        }
+    }
+
+    fn source_node(blob: &str) -> Node {
+        Node {
+            id: NodeId::new(),
+            transform: Transform::default(),
+            visible: true,
+            kind: NodeKind::Image(ImageData {
+                role: ImageRole::Source,
+                blob: BlobRef::new(blob),
+                opacity: 1.0,
+                natural_width: 10,
+                natural_height: 10,
+                name: None,
+            }),
         }
     }
 
@@ -424,5 +559,161 @@ mod tests {
         let mut scene = Scene::default();
         assert_eq!(replay(&path, 7, &mut scene).unwrap(), 7);
         assert!(scene.pages.is_empty());
+    }
+
+    #[test]
+    fn failed_batch_leaves_scene_epoch_log_and_stacks_untouched() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let base = Scene::default();
+        let mut scene = base.clone();
+        let mut history = History::open(&path, 0).unwrap();
+
+        let page = Page::new("p1", 800, 600);
+        let page_id = page.id;
+        history
+            .apply(&mut scene, Op::AddPage { page, at: 0 })
+            .unwrap();
+        let scene_before = postcard::to_allocvec(&scene).unwrap();
+        let epoch_before = history.epoch();
+        let log_len_before = std::fs::metadata(&path).unwrap().len();
+        let undo_len_before = history.undo_stack.len();
+
+        let result = history.apply(
+            &mut scene,
+            Op::Batch {
+                ops: vec![
+                    Op::AddNode {
+                        page: page_id,
+                        node: source_node("first"),
+                        at: 0,
+                    },
+                    Op::AddNode {
+                        page: page_id,
+                        node: source_node("second"),
+                        at: 1,
+                    },
+                ],
+                label: "partially valid".into(),
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(postcard::to_allocvec(&scene).unwrap(), scene_before);
+        assert_eq!(history.epoch(), epoch_before);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), log_len_before);
+        assert_eq!(history.undo_stack.len(), undo_len_before);
+        assert!(history.redo_stack.is_empty());
+
+        let next = history.apply(&mut scene, add_page("p2")).unwrap();
+        assert_eq!(next, epoch_before + 1);
+        drop(history);
+        let mut replayed = base;
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), next);
+        assert_same_scene(&replayed, &scene);
+    }
+
+    #[test]
+    fn undo_failure_restores_undo_stack() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut scene, add_page("p1")).unwrap();
+        let epoch_before = history.epoch();
+        scene.pages.clear();
+
+        assert!(history.undo(&mut scene).is_err());
+        assert_eq!(history.undo_stack.len(), 1);
+        assert!(history.redo_stack.is_empty());
+        assert_eq!(history.epoch(), epoch_before);
+    }
+
+    #[test]
+    fn redo_failure_restores_redo_stack() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        let page = Page::new("p1", 800, 600);
+        let page_id = page.id;
+        history
+            .apply(
+                &mut scene,
+                Op::AddPage {
+                    page: page.clone(),
+                    at: 0,
+                },
+            )
+            .unwrap();
+        history.undo(&mut scene).unwrap();
+        scene.pages.insert(page_id, page);
+        let epoch_before = history.epoch();
+
+        assert!(history.redo(&mut scene).is_err());
+        assert_eq!(history.redo_stack.len(), 1);
+        assert_eq!(history.epoch(), epoch_before);
+    }
+
+    #[test]
+    fn oversized_torn_tail_is_truncated_and_appends_survive() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let base = Scene::default();
+        let mut expected = base.clone();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut expected, add_page("p1")).unwrap();
+        history.apply(&mut expected, add_page("p2")).unwrap();
+        drop(history);
+
+        let valid_len = std::fs::metadata(&path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        file.write_all(&[1, 2, 3]).unwrap();
+        file.flush().unwrap();
+
+        let mut replayed = base.clone();
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 2);
+        assert_same_scene(&replayed, &expected);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), valid_len);
+
+        let mut history = History::open(&path, 2).unwrap();
+        history.apply(&mut replayed, add_page("p3")).unwrap();
+        drop(history);
+        let mut replayed_again = base;
+        assert_eq!(replay(&path, 0, &mut replayed_again).unwrap(), 3);
+        assert_same_scene(&replayed_again, &replayed);
+    }
+
+    #[test]
+    fn torn_tail_on_headerless_legacy_log_truncates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let frames = [
+            LogFrame {
+                epoch: 1,
+                op: add_page("legacy-1"),
+            },
+            LogFrame {
+                epoch: 2,
+                op: add_page("legacy-2"),
+            },
+        ];
+        write_headerless_frames(&path, &frames);
+        let valid_len = std::fs::metadata(&path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&200u32.to_le_bytes()).unwrap();
+        file.write_all(&[1, 2, 3]).unwrap();
+        file.flush().unwrap();
+
+        let base = Scene::default();
+        let mut expected = base.clone();
+        for frame in &frames {
+            let mut op = frame.op.clone();
+            op.apply(&mut expected).unwrap();
+        }
+        let mut replayed = base;
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 2);
+        assert_same_scene(&replayed, &expected);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), valid_len);
     }
 }

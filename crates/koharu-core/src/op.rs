@@ -257,6 +257,12 @@ impl Op {
     /// the state that will be overwritten, then mutate. Safe to call on a
     /// freshly-constructed Op; subsequent calls would overwrite `prev` again,
     /// so apply each Op only once.
+    ///
+    /// Every non-`Batch` variant validates before mutating and is atomic on
+    /// failure. `Batch` applies its sub-ops in order without rollback, so an
+    /// error may leave the scene partially mutated. Callers needing batch
+    /// atomicity must apply through koharu-app's `History`/`ProjectSession`,
+    /// which apply to a clone and swap only after the durable log write.
     pub fn apply(&mut self, scene: &mut Scene) -> OpResult {
         match self {
             Op::UpdateProjectMeta { patch, prev } => {
@@ -284,6 +290,7 @@ impl Op {
                 if *at > len {
                     return Err(OpError::IndexOutOfRange { index: *at, len });
                 }
+                validate_page_invariants(page)?;
                 // IndexMap has no insert-at; insert, then shift into place.
                 scene.pages.insert(page.id, page.clone());
                 let last = scene.pages.len() - 1;
@@ -342,12 +349,12 @@ impl Op {
                 if *at > len {
                     return Err(OpError::IndexOutOfRange { index: *at, len });
                 }
+                page_invariants_allow(page_ref, node)?;
                 page_ref.nodes.insert(node.id, node.clone());
                 let last = page_ref.nodes.len() - 1;
                 if *at < last {
                     page_ref.nodes.move_index(last, *at);
                 }
-                validate_page_invariants(page_ref)?;
             }
 
             Op::RemoveNode {
@@ -508,6 +515,7 @@ impl Op {
                         len: scene.pages.len(),
                     });
                 }
+                validate_page_invariants(page)?;
                 Ok(())
             }
             Op::RemovePage { id, .. } | Op::UpdatePage { id, .. } => scene
@@ -526,6 +534,7 @@ impl Op {
                         len: page_ref.nodes.len(),
                     });
                 }
+                page_invariants_allow(page_ref, node)?;
                 Ok(())
             }
             Op::RemoveNode { page, id, .. } => {
@@ -578,8 +587,9 @@ fn ensure_same_page_set(pages: &indexmap::IndexMap<PageId, Page>, order: &[PageI
     if order.len() != pages.len() {
         return Err(OpError::ReorderSetMismatch);
     }
+    let mut seen = std::collections::HashSet::with_capacity(order.len());
     for id in order {
-        if !pages.contains_key(id) {
+        if !seen.insert(*id) || !pages.contains_key(id) {
             return Err(OpError::ReorderSetMismatch);
         }
     }
@@ -590,8 +600,9 @@ fn ensure_same_node_set(page: &Page, order: &[NodeId]) -> OpResult {
     if order.len() != page.nodes.len() {
         return Err(OpError::ReorderSetMismatch);
     }
+    let mut seen = std::collections::HashSet::with_capacity(order.len());
     for id in order {
-        if !page.nodes.contains_key(id) {
+        if !seen.insert(*id) || !page.nodes.contains_key(id) {
             return Err(OpError::ReorderSetMismatch);
         }
     }
@@ -613,13 +624,61 @@ fn reorder_indexmap<K: Copy + std::hash::Hash + Eq, V>(
 }
 
 fn validate_page_invariants(page: &Page) -> OpResult {
+    validate_node_invariants(page.nodes.values())
+}
+
+/// Check only the invariant delta introduced by `candidate`.
+///
+/// Deliberately, unrelated additions to a legacy page that already violates
+/// an invariant are allowed; only a candidate occupying an already-occupied
+/// unique role is rejected. This also ensures rejection leaves the page
+/// untouched.
+fn page_invariants_allow(page: &Page, candidate: &Node) -> OpResult {
+    match &candidate.kind {
+        NodeKind::Image(candidate_image) if candidate_image.role != ImageRole::Custom => {
+            let occupied = page.nodes.values().any(|node| {
+                matches!(&node.kind, NodeKind::Image(image) if image.role == candidate_image.role)
+            });
+            if occupied {
+                return Err(match candidate_image.role {
+                    ImageRole::Source => OpError::Invariant("more than one Source image on page"),
+                    ImageRole::Inpainted => {
+                        OpError::Invariant("more than one Inpainted image on page")
+                    }
+                    ImageRole::Rendered => {
+                        OpError::Invariant("more than one Rendered image on page")
+                    }
+                    ImageRole::Custom => unreachable!(),
+                });
+            }
+        }
+        NodeKind::Mask(candidate_mask) => {
+            let occupied = page.nodes.values().any(|node| {
+                matches!(&node.kind, NodeKind::Mask(mask) if mask.role == candidate_mask.role)
+            });
+            if occupied {
+                return Err(match candidate_mask.role {
+                    MaskRole::Segment => OpError::Invariant("more than one Segment mask on page"),
+                    MaskRole::BrushInpaint => {
+                        OpError::Invariant("more than one BrushInpaint mask on page")
+                    }
+                    MaskRole::Bubble => OpError::Invariant("more than one Bubble mask on page"),
+                });
+            }
+        }
+        NodeKind::Image(_) | NodeKind::Text(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_node_invariants<'a>(nodes: impl Iterator<Item = &'a Node>) -> OpResult {
     let mut source = 0usize;
     let mut inpainted = 0usize;
     let mut rendered = 0usize;
     let mut seg = 0usize;
     let mut brush = 0usize;
     let mut bubble = 0usize;
-    for node in page.nodes.values() {
+    for node in nodes {
         match &node.kind {
             NodeKind::Image(img) => match img.role {
                 ImageRole::Source => source += 1,
@@ -955,6 +1014,7 @@ mod tests {
                 name: None,
             }),
         };
+        let src2_id = src2.id;
         Op::AddNode {
             page: page_id,
             node: src1,
@@ -969,6 +1029,101 @@ mod tests {
         }
         .apply(&mut scene);
         assert!(matches!(result, Err(OpError::Invariant(_))));
+        assert_eq!(scene.pages[&page_id].nodes.len(), 1);
+        assert!(!scene.pages[&page_id].nodes.contains_key(&src2_id));
+    }
+
+    #[test]
+    fn add_page_with_invalid_nodes_is_rejected_and_scene_unchanged() {
+        let mut scene = seed_scene();
+        let mut page = blank_page();
+        for blob in ["a", "b"] {
+            let node = Node {
+                id: NodeId::new(),
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob: BlobRef::new(blob),
+                    opacity: 1.0,
+                    natural_width: 10,
+                    natural_height: 10,
+                    name: None,
+                }),
+            };
+            page.nodes.insert(node.id, node);
+        }
+
+        let result = Op::AddPage { page, at: 0 }.apply(&mut scene);
+        assert!(matches!(result, Err(OpError::Invariant(_))));
+        assert!(scene.pages.is_empty());
+    }
+
+    #[test]
+    fn reorder_with_duplicate_ids_is_rejected() {
+        let mut scene = seed_scene();
+        let first = blank_page();
+        let first_id = first.id;
+        let second = Page::new("p2", 800, 1200);
+        let second_id = second.id;
+        Op::AddPage { page: first, at: 0 }
+            .apply(&mut scene)
+            .unwrap();
+        Op::AddPage {
+            page: second,
+            at: 1,
+        }
+        .apply(&mut scene)
+        .unwrap();
+        let original_pages = scene.pages.keys().copied().collect::<Vec<_>>();
+        let result = Op::ReorderPages {
+            order: vec![first_id, first_id],
+            prev_order: Vec::new(),
+        }
+        .apply(&mut scene);
+        assert!(matches!(result, Err(OpError::ReorderSetMismatch)));
+        assert_eq!(
+            scene.pages.keys().copied().collect::<Vec<_>>(),
+            original_pages
+        );
+
+        let first_node = custom_image_node();
+        let first_node_id = first_node.id;
+        let second_node = custom_image_node();
+        Op::AddNode {
+            page: second_id,
+            node: first_node,
+            at: 0,
+        }
+        .apply(&mut scene)
+        .unwrap();
+        Op::AddNode {
+            page: second_id,
+            node: second_node,
+            at: 1,
+        }
+        .apply(&mut scene)
+        .unwrap();
+        let original_nodes = scene.pages[&second_id]
+            .nodes
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let result = Op::ReorderNodes {
+            page: second_id,
+            order: vec![first_node_id, first_node_id],
+            prev_order: Vec::new(),
+        }
+        .apply(&mut scene);
+        assert!(matches!(result, Err(OpError::ReorderSetMismatch)));
+        assert_eq!(
+            scene.pages[&second_id]
+                .nodes
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            original_nodes
+        );
     }
 
     #[test]
