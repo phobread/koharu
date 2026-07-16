@@ -67,6 +67,7 @@ describe('MenuBar', () => {
     renderWithQuery(<MenuBar />)
     await userEvent.click(screen.getByTestId('menu-file-trigger'))
     const close = await screen.findByTestId('menu-file-close-project')
+    expect(close).toHaveTextContent('Ctrl+W')
     await userEvent.click(close)
 
     await waitFor(() => expect(deleted).toBe(1))

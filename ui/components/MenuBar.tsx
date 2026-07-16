@@ -328,6 +328,9 @@ export function MenuBar() {
               onSelect={() => void closeProject()}
             >
               {t('menu.closeProject')}
+              <MenubarShortcut>
+                {formatShortcutForDisplay(shortcuts.closeProject, isMac)}
+              </MenubarShortcut>
             </MenubarItem>
             <MenubarSeparator />
             <MenubarItem

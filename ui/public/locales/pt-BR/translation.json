@@ -414,6 +414,7 @@
     "keybindsDescription": "Personalize os atalhos de teclado para ferramentas e ações.",
     "shortcutIncreaseBrushSize": "Aumentar o tamanho do pincel",
     "shortcutDecreaseBrushSize": "Diminuir o tamanho do pincel",
+    "shortcutCloseProject": "Fechar projeto",
     "shortcutPressKey": "Pressione uma tecla...",
     "shortcutReset": "Redefinir Atalhos",
     "shortcutResetDescription": "Isso restaurará todos os atalhos para seus valores padrão. Suas alterações salvas serão perdidas.",

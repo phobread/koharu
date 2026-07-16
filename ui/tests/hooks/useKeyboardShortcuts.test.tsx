@@ -1,12 +1,14 @@
-import { renderHook } from '@testing-library/react'
-import { fireEvent } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { fireEvent, renderHook, waitFor } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import type { Node, Page, SceneSnapshot } from '@/lib/api/schemas'
 import { queryClient } from '@/lib/queryClient'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+
+import { server } from '../msw/server'
 
 function textNode(id: string): Node {
   return {
@@ -61,5 +63,48 @@ describe('useKeyboardShortcuts — Ctrl+A', () => {
     expect(useSelectionStore.getState().nodeIds.size).toBe(0)
 
     document.body.removeChild(textarea)
+  })
+})
+
+describe('useKeyboardShortcuts — Ctrl+W', () => {
+  beforeEach(() => {
+    queryClient.clear()
+  })
+
+  it('closes the current project when a scene is open', async () => {
+    let deleted = 0
+    server.use(
+      http.delete('/api/v1/projects/current', () => {
+        deleted += 1
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    queryClient.setQueryData(getGetSceneJsonQueryKey(), seedScene())
+    renderHook(() => useKeyboardShortcuts())
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'w',
+      ctrlKey: true,
+      cancelable: true,
+    })
+    fireEvent(window, event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await waitFor(() => expect(deleted).toBe(1))
+  })
+
+  it('prevents the browser accelerator without a project open', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    renderHook(() => useKeyboardShortcuts())
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'w',
+      ctrlKey: true,
+      cancelable: true,
+    })
+    fireEvent(window, event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

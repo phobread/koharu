@@ -413,6 +413,7 @@
     "keybindsDescription": "Personaliza los atajos de teclado para herramientas y acciones.",
     "shortcutIncreaseBrushSize": "Aumentar tamaño del pincel",
     "shortcutDecreaseBrushSize": "Disminuir tamaño del pincel",
+    "shortcutCloseProject": "Cerrar proyecto",
     "shortcutPressKey": "Presiona una tecla...",
     "shortcutReset": "Restablecer atajos",
     "shortcutResetDescription": "Esto restaurará todos los atajos a sus valores predeterminados. Los cambios guardados se perderán.",

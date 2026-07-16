@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo } from 'react'
 
-import { redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
+import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import type { SceneSnapshot } from '@/lib/api/schemas'
+import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
+import { queryClient } from '@/lib/queryClient'
 import { getPlatform, formatShortcut, isModifierKey } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -32,11 +35,21 @@ export function useKeyboardShortcuts() {
         target instanceof HTMLElement &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 
-      // Undo / Redo — these work globally, including from within text fields,
-      // as scene-level history should usually take precedence over native
-      // browser text-undo.
+      // Project close / Undo / Redo — these work globally, including from
+      // within text fields. Scene-level history should usually take precedence
+      // over native browser text-undo.
       const shortcut = formatShortcut(event, isMac)
       const mod = isMac ? event.metaKey : event.ctrlKey
+
+      if (shortcut === shortcuts.closeProject) {
+        // Load-bearing: stop WebView2's Ctrl+W accelerator before any async work.
+        event.preventDefault()
+        const sceneQuery = queryClient.getQueryState<SceneSnapshot>(getGetSceneJsonQueryKey())
+        if (sceneQuery?.status !== 'error' && sceneQuery?.data?.scene) {
+          void closeProject()
+        }
+        return
+      }
 
       if (shortcut === shortcuts.undo) {
         event.preventDefault()

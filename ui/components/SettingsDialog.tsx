@@ -1355,6 +1355,7 @@ const SHORTCUT_ITEMS = [
     key: 'decreaseBrushSize',
     labelKey: 'settings.shortcutDecreaseBrushSize',
   },
+  { key: 'closeProject', labelKey: 'settings.shortcutCloseProject' },
   { key: 'undo', labelKey: 'menu.undo' },
   { key: 'redo', labelKey: 'menu.redo' },
 ] as const

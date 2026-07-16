@@ -413,6 +413,7 @@
     "keybindsDescription": "自定義工具和操作的快捷鍵。",
     "shortcutIncreaseBrushSize": "增大筆刷大小",
     "shortcutDecreaseBrushSize": "減小筆刷大小",
+    "shortcutCloseProject": "關閉專案",
     "shortcutPressKey": "請按下一個按鍵...",
     "shortcutReset": "重置快捷鍵",
     "shortcutResetDescription": "這將恢復所有快捷鍵到默認值。您保存的更改將丟失。",

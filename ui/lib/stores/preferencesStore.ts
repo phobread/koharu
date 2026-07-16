@@ -39,6 +39,7 @@ type PreferencesState = {
     repairBrush: string
     increaseBrushSize: string
     decreaseBrushSize: string
+    closeProject: string
     undo: string
     redo: string
   }
@@ -72,6 +73,7 @@ const initialPreferences = {
     repairBrush: 'R',
     increaseBrushSize: ']',
     decreaseBrushSize: '[',
+    closeProject: getPlatform() === 'mac' ? 'Cmd+W' : 'Ctrl+W',
     undo: getPlatform() === 'mac' ? 'Cmd+Z' : 'Ctrl+Z',
     redo: getPlatform() === 'mac' ? 'Cmd+Shift+Z' : 'Ctrl+Shift+Z',
   },
@@ -144,7 +146,7 @@ export const usePreferencesStore = create<PreferencesState>()(
     {
       name: 'koharu-config',
       storage: createJSONStorage(() => serverConfigStorage),
-      version: 8,
+      version: 9,
       migrate: (persisted: any, version: number) => {
         if (version < 2 && persisted) {
           delete persisted.localLlm
@@ -181,6 +183,9 @@ export const usePreferencesStore = create<PreferencesState>()(
         }
         if (version < 8 && persisted) {
           persisted.boxPadding ??= initialPreferences.boxPadding
+        }
+        if (version < 9 && persisted?.shortcuts) {
+          persisted.shortcuts.closeProject ??= initialPreferences.shortcuts.closeProject
         }
         return persisted
       },

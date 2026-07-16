@@ -463,6 +463,7 @@
     "keybindsDescription": "Customize keyboard shortcuts for tools and actions.",
     "shortcutIncreaseBrushSize": "Increase Brush Size",
     "shortcutDecreaseBrushSize": "Decrease Brush Size",
+    "shortcutCloseProject": "Close project",
     "shortcutPressKey": "Press a key...",
     "shortcutReset": "Reset Keybinds",
     "shortcutResetDescription": "This will restore all shortcuts to their default values. Your saved changes will be lost.",

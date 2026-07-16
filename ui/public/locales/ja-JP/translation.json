@@ -413,6 +413,7 @@
     "keybindsDescription": "ツールやアクションのショートカットキーをカスタマイズします。",
     "shortcutIncreaseBrushSize": "ブラシサイズを大きくする",
     "shortcutDecreaseBrushSize": "ブラシサイズを小さくする",
+    "shortcutCloseProject": "プロジェクトを閉じる",
     "shortcutPressKey": "キーを押してください...",
     "shortcutReset": "ショートカットのリセット",
     "shortcutResetDescription": "すべてのショートカットをデフォルト値に戻します。保存された変更は失われます。",
