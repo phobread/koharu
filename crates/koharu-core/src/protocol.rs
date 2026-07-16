@@ -241,6 +241,8 @@ pub struct PipelineConfigPatch {
     pub translator: Option<String>,
     pub inpainter: Option<String>,
     pub renderer: Option<String>,
+    pub flux2_strength: Option<f64>,
+    pub flux2_steps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]

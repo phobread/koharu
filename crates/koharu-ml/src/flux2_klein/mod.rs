@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Tensor};
-use image::{DynamicImage, GenericImageView, RgbImage};
+use image::{DynamicImage, GenericImageView, GrayImage, Luma, RgbImage};
+use imageproc::region_labelling::{Connectivity, connected_components};
 use koharu_runtime::RuntimeManager;
 use tracing::instrument;
 
@@ -33,7 +34,15 @@ const VAE_REPO: &str = "black-forest-labs/FLUX.2-small-decoder";
 const VAE_FILE: &str = "diffusion_pytorch_model.safetensors";
 const INPAINT_CROP_CONTEXT: u32 = 64;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawBounds {
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CropBounds {
     x: u32,
     y: u32,
@@ -315,17 +324,28 @@ impl Flux2Klein {
             return Ok(image.clone());
         }
 
-        match inpaint_crop_bounds(image, mask, options.mask_padding) {
-            Some(bounds) => {
-                let image_crop = image.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-                let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-                let generated =
-                    self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
-                composite_inpaint_crop(image, &generated, &mask_crop, bounds)
-            }
-            // None means the mask is empty, so full-frame generation must never run implicitly.
-            None => Ok(image.clone()),
+        let gray_mask = mask.to_luma8();
+        let plan = plan_inpaint_crops(
+            &gray_mask,
+            image.width(),
+            image.height(),
+            options.mask_padding,
+        );
+        if plan.is_empty() {
+            return Ok(image.clone());
         }
+
+        let mut running_output = image.clone();
+        for bounds in plan {
+            let image_crop =
+                running_output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let generated =
+                self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
+            running_output =
+                composite_inpaint_crop(&running_output, &generated, &mask_crop, bounds)?;
+        }
+        Ok(running_output)
     }
 
     fn inpaint_full_frame(
@@ -537,60 +557,132 @@ fn release_cuda_temporary_memory(device: &Device) -> Result<()> {
     Ok(())
 }
 
-fn inpaint_crop_bounds(
-    image: &DynamicImage,
-    mask: &DynamicImage,
-    mask_padding: u8,
-) -> Option<CropBounds> {
-    let gray = mask.to_luma8();
-    let mut min_x = gray.width();
-    let mut min_y = gray.height();
-    let mut max_x = 0;
-    let mut max_y = 0;
-    let mut found = false;
-    for (x, y, pixel) in gray.enumerate_pixels() {
-        if pixel.0[0] == 0 {
+fn mask_component_bounds(mask: &GrayImage) -> Vec<RawBounds> {
+    // `connected_components` connects equal-valued pixels, so normalize every
+    // nonzero mask value first to preserve the inpainter's nonzero-is-masked semantics.
+    let binary = GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        Luma([u8::from(mask.get_pixel(x, y).0[0] != 0) * 255])
+    });
+    let labels = connected_components(&binary, Connectivity::Eight, Luma([0]));
+    let component_count = labels.pixels().map(|pixel| pixel.0[0]).max().unwrap_or(0);
+    let mut bounds: Vec<Option<RawBounds>> = vec![None; component_count as usize];
+
+    for (x, y, pixel) in labels.enumerate_pixels() {
+        let label = pixel.0[0];
+        if label == 0 {
             continue;
         }
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-        found = true;
-    }
-    if !found {
-        return None;
+        let entry = &mut bounds[(label - 1) as usize];
+        match entry {
+            Some(bounds) => {
+                bounds.min_x = bounds.min_x.min(x);
+                bounds.min_y = bounds.min_y.min(y);
+                bounds.max_x = bounds.max_x.max(x);
+                bounds.max_y = bounds.max_y.max(y);
+            }
+            None => {
+                *entry = Some(RawBounds {
+                    min_x: x,
+                    min_y: y,
+                    max_x: x,
+                    max_y: y,
+                });
+            }
+        }
     }
 
+    bounds.into_iter().flatten().collect()
+}
+
+fn padded_snapped_bounds(
+    raw: RawBounds,
+    image_w: u32,
+    image_h: u32,
+    mask_padding: u8,
+) -> CropBounds {
     let padding = INPAINT_CROP_CONTEXT.max(mask_padding as u32);
     let multiple = IMAGE_MULTIPLE;
-    let width = image.width();
-    let height = image.height();
-    let mut x0 = min_x.saturating_sub(padding);
-    let mut y0 = min_y.saturating_sub(padding);
-    let mut x1 = (max_x + 1 + padding).min(width);
-    let mut y1 = (max_y + 1 + padding).min(height);
+    let mut x0 = raw.min_x.saturating_sub(padding);
+    let mut y0 = raw.min_y.saturating_sub(padding);
+    let mut x1 = raw
+        .max_x
+        .saturating_add(1)
+        .saturating_add(padding)
+        .min(image_w);
+    let mut y1 = raw
+        .max_y
+        .saturating_add(1)
+        .saturating_add(padding)
+        .min(image_h);
 
     x0 = (x0 / multiple) * multiple;
     y0 = (y0 / multiple) * multiple;
     x1 = x1.div_ceil(multiple) * multiple;
     y1 = y1.div_ceil(multiple) * multiple;
-    x1 = x1.min(width);
-    y1 = y1.min(height);
+    x1 = x1.min(image_w);
+    y1 = y1.min(image_h);
 
-    if x1 <= x0 || y1 <= y0 {
-        return None;
-    }
-    if x0 == 0 && y0 == 0 && x1 == width && y1 == height {
-        return None;
-    }
-
-    Some(CropBounds {
+    CropBounds {
         x: x0,
         y: y0,
         width: x1 - x0,
         height: y1 - y0,
-    })
+    }
+}
+
+fn merge_overlapping_crops(mut crops: Vec<CropBounds>) -> Vec<CropBounds> {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        'search: for i in 0..crops.len() {
+            for j in (i + 1)..crops.len() {
+                if !crops_overlap(crops[i], crops[j]) {
+                    continue;
+                }
+
+                crops[i] = crop_union(crops[i], crops[j]);
+                crops.remove(j);
+                changed = true;
+                break 'search;
+            }
+        }
+    }
+
+    crops.sort_by_key(|bounds| (bounds.y, bounds.x));
+    crops
+}
+
+fn crops_overlap(a: CropBounds, b: CropBounds) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+fn crop_union(a: CropBounds, b: CropBounds) -> CropBounds {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let x1 = (a.x + a.width).max(b.x + b.width);
+    let y1 = (a.y + a.height).max(b.y + b.height);
+
+    // Each coordinate is either IMAGE_MULTIPLE-aligned or clamped to an image edge;
+    // choosing minima/maxima from those coordinates preserves the same invariant.
+    CropBounds {
+        x,
+        y,
+        width: x1 - x,
+        height: y1 - y,
+    }
+}
+
+fn plan_inpaint_crops(
+    mask: &GrayImage,
+    image_w: u32,
+    image_h: u32,
+    mask_padding: u8,
+) -> Vec<CropBounds> {
+    let crops = mask_component_bounds(mask)
+        .into_iter()
+        .map(|raw| padded_snapped_bounds(raw, image_w, image_h, mask_padding))
+        .collect();
+    merge_overlapping_crops(crops)
 }
 
 fn composite_inpaint_crop(
@@ -657,4 +749,249 @@ fn restore_original_alpha(output: DynamicImage, original: &DynamicImage) -> Dyna
         pixel.0[3] = alpha.get_pixel(x, y).0[0];
     }
     DynamicImage::ImageRgba8(rgba)
+}
+
+#[cfg(test)]
+mod tests {
+    use image::Rgb;
+
+    use super::*;
+
+    fn crop(x: u32, y: u32, width: u32, height: u32) -> CropBounds {
+        CropBounds {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn component_bounds_find_separated_blobs() {
+        let mut mask = GrayImage::new(12, 10);
+        for y in 2..=4 {
+            for x in 1..=3 {
+                mask.put_pixel(x, y, Luma([127]));
+            }
+        }
+        for y in 6..=8 {
+            for x in 8..=9 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+
+        assert_eq!(
+            mask_component_bounds(&mask),
+            vec![
+                RawBounds {
+                    min_x: 1,
+                    min_y: 2,
+                    max_x: 3,
+                    max_y: 4,
+                },
+                RawBounds {
+                    min_x: 8,
+                    min_y: 6,
+                    max_x: 9,
+                    max_y: 8,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn component_bounds_use_eight_connectivity() {
+        let mut mask = GrayImage::new(6, 6);
+        mask.put_pixel(2, 2, Luma([64]));
+        mask.put_pixel(3, 3, Luma([255]));
+
+        assert_eq!(
+            mask_component_bounds(&mask),
+            vec![RawBounds {
+                min_x: 2,
+                min_y: 2,
+                max_x: 3,
+                max_y: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn component_bounds_are_empty_for_empty_mask() {
+        assert!(mask_component_bounds(&GrayImage::new(8, 8)).is_empty());
+    }
+
+    #[test]
+    fn padded_bounds_respect_padding_and_flux_alignment() {
+        let raw = RawBounds {
+            min_x: 100,
+            min_y: 70,
+            max_x: 130,
+            max_y: 90,
+        };
+        let bounds = padded_snapped_bounds(raw, 512, 400, 16);
+
+        assert_eq!(bounds, crop(32, 0, 176, 160));
+        assert_eq!(bounds.x % IMAGE_MULTIPLE, 0);
+        assert_eq!(bounds.y % IMAGE_MULTIPLE, 0);
+        assert_eq!((bounds.x + bounds.width) % IMAGE_MULTIPLE, 0);
+        assert_eq!((bounds.y + bounds.height) % IMAGE_MULTIPLE, 0);
+        assert!(bounds.x <= raw.min_x - INPAINT_CROP_CONTEXT);
+        assert!(bounds.y <= raw.min_y - INPAINT_CROP_CONTEXT);
+        assert!(bounds.x + bounds.width >= raw.max_x + 1 + INPAINT_CROP_CONTEXT);
+        assert!(bounds.y + bounds.height >= raw.max_y + 1 + INPAINT_CROP_CONTEXT);
+    }
+
+    #[test]
+    fn padded_bounds_allow_full_frame_crop() {
+        let raw = RawBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: 255,
+            max_y: 255,
+        };
+
+        assert_eq!(
+            padded_snapped_bounds(raw, 256, 256, 16),
+            crop(0, 0, 256, 256)
+        );
+    }
+
+    #[test]
+    fn padded_bounds_clamp_non_aligned_image_edges() {
+        let raw = RawBounds {
+            min_x: 230,
+            min_y: 220,
+            max_x: 249,
+            max_y: 237,
+        };
+        let bounds = padded_snapped_bounds(raw, 250, 238, 16);
+
+        assert_eq!(bounds, crop(160, 144, 90, 94));
+        assert_eq!(bounds.x % IMAGE_MULTIPLE, 0);
+        assert_eq!(bounds.y % IMAGE_MULTIPLE, 0);
+        assert_eq!(bounds.x + bounds.width, 250);
+        assert_eq!(bounds.y + bounds.height, 238);
+    }
+
+    #[test]
+    fn merge_overlapping_pair_returns_union() {
+        assert_eq!(
+            merge_overlapping_crops(vec![crop(0, 0, 96, 96), crop(64, 64, 96, 96)]),
+            vec![crop(0, 0, 160, 160)]
+        );
+    }
+
+    #[test]
+    fn merge_disjoint_pair_keeps_both() {
+        assert_eq!(
+            merge_overlapping_crops(vec![crop(0, 0, 32, 32), crop(64, 64, 32, 32)]),
+            vec![crop(0, 0, 32, 32), crop(64, 64, 32, 32)]
+        );
+    }
+
+    #[test]
+    fn merge_overlapping_crops_reaches_transitive_fixpoint() {
+        let horizontal = crop(0, 0, 64, 16);
+        let vertical = crop(48, 0, 16, 64);
+        let newly_intersecting = crop(0, 48, 16, 16);
+
+        assert_eq!(
+            merge_overlapping_crops(vec![newly_intersecting, vertical, horizontal]),
+            vec![crop(0, 0, 64, 64)]
+        );
+    }
+
+    #[test]
+    fn merge_disjoint_output_is_sorted_by_y_then_x() {
+        assert_eq!(
+            merge_overlapping_crops(vec![
+                crop(96, 64, 16, 16),
+                crop(64, 0, 16, 16),
+                crop(16, 0, 16, 16),
+            ]),
+            vec![
+                crop(16, 0, 16, 16),
+                crop(64, 0, 16, 16),
+                crop(96, 64, 16, 16),
+            ]
+        );
+    }
+
+    #[test]
+    fn crop_plan_is_empty_for_empty_mask() {
+        assert!(plan_inpaint_crops(&GrayImage::new(512, 512), 512, 512, 16).is_empty());
+    }
+
+    #[test]
+    fn crop_plan_keeps_far_apart_bubbles_small_and_separate() {
+        let mut mask = GrayImage::new(1024, 1024);
+        for y in 100..=120 {
+            for x in 100..=120 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        for y in 800..=820 {
+            for x in 800..=820 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+
+        let plan = plan_inpaint_crops(&mask, 1024, 1024, 16);
+
+        assert_eq!(plan.len(), 2);
+        for bounds in plan {
+            assert!(bounds.width < 1024 / 2);
+            assert!(bounds.height < 1024 / 2);
+            assert!(bounds.width * bounds.height < 1024 * 1024 / 4);
+        }
+    }
+
+    #[test]
+    fn crop_plan_merges_close_bubbles_after_padding() {
+        let mut mask = GrayImage::new(512, 512);
+        mask.put_pixel(100, 100, Luma([255]));
+        mask.put_pixel(180, 100, Luma([255]));
+
+        assert_eq!(
+            plan_inpaint_crops(&mask, 512, 512, 16),
+            vec![crop(32, 32, 224, 144)]
+        );
+    }
+
+    #[test]
+    fn composite_chaining_preserves_unmasked_pixels() {
+        let base = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([10, 20, 30])));
+        let generated_a = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 16, Rgb([200, 0, 0])));
+        let generated_b = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 16, Rgb([0, 0, 200])));
+        let mut mask_a = GrayImage::new(16, 16);
+        mask_a.put_pixel(2, 3, Luma([255]));
+        let mut mask_b = GrayImage::new(16, 16);
+        mask_b.put_pixel(5, 7, Luma([255]));
+
+        let first = composite_inpaint_crop(
+            &base,
+            &generated_a,
+            &DynamicImage::ImageLuma8(mask_a),
+            crop(0, 0, 16, 16),
+        )
+        .unwrap();
+        let output = composite_inpaint_crop(
+            &first,
+            &generated_b,
+            &DynamicImage::ImageLuma8(mask_b),
+            crop(16, 0, 16, 16),
+        )
+        .unwrap()
+        .to_rgb8();
+
+        for (x, y, pixel) in output.enumerate_pixels() {
+            let expected = match (x, y) {
+                (2, 3) => Rgb([200, 0, 0]),
+                (21, 7) => Rgb([0, 0, 200]),
+                _ => Rgb([10, 20, 30]),
+            };
+            assert_eq!(*pixel, expected);
+        }
+    }
 }

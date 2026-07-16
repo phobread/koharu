@@ -95,6 +95,10 @@ async fn start_pipeline(
     for id in &req.steps {
         pipeline::Registry::find(id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     }
+    let (flux2_strength, flux2_steps) = {
+        let config = app.config.load();
+        (config.pipeline.flux2_strength, config.pipeline.flux2_steps)
+    };
     let spec = PipelineSpec {
         scope: match req.pages {
             Some(pages) => Scope::Pages(pages),
@@ -108,6 +112,8 @@ async fn start_pipeline(
             default_font: req.default_font,
             text_node_ids: req.text_node_ids,
             region: req.region,
+            flux2_strength: Some(flux2_strength),
+            flux2_steps: Some(flux2_steps),
             reading_order: req.reading_order,
             default_font_size: req.default_font_size,
             box_padding: req.box_padding,

@@ -539,8 +539,14 @@ async fn put_mask(
             height: params.height.unwrap_or(0.0) as u32,
         };
         let cancel = Arc::new(AtomicBool::new(false));
+        let (flux2_strength, flux2_steps) = {
+            let config = app.config.load();
+            (config.pipeline.flux2_strength, config.pipeline.flux2_steps)
+        };
         let options = PipelineRunOptions {
             region: Some(region),
+            flux2_strength: Some(flux2_strength),
+            flux2_steps: Some(flux2_steps),
             ..Default::default()
         };
         let ctx = EngineCtx {

@@ -104,6 +104,8 @@ pub struct PipelineConfig {
     pub translator: String,
     pub inpainter: String,
     pub renderer: String,
+    pub flux2_strength: f64,
+    pub flux2_steps: u32,
 }
 
 impl Default for PipelineConfig {
@@ -117,6 +119,8 @@ impl Default for PipelineConfig {
             translator: "llm".to_string(),
             inpainter: "lama-manga".to_string(),
             renderer: "koharu-renderer".to_string(),
+            flux2_strength: 1.0,
+            flux2_steps: 4,
         }
     }
 }
@@ -270,6 +274,17 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
         }
         if let Some(v) = p.renderer {
             config.pipeline.renderer = v;
+        }
+        if let Some(v) = p.flux2_strength
+            && v > 0.0
+            && v <= 1.0
+        {
+            config.pipeline.flux2_strength = v;
+        }
+        if let Some(v) = p.flux2_steps
+            && (1..=20).contains(&v)
+        {
+            config.pipeline.flux2_steps = v;
         }
     }
     if let Some(editor) = patch.editor
@@ -426,6 +441,68 @@ fn provider_api_key_secret_key(provider_id: &str) -> String {
 mod tests {
     use super::*;
     use koharu_core::{ConfigPatch, PipelineConfigPatch};
+
+    #[test]
+    fn flux2_pipeline_defaults_are_stable() {
+        let pipeline = PipelineConfig::default();
+
+        assert_eq!(pipeline.flux2_strength, 1.0);
+        assert_eq!(pipeline.flux2_steps, 4);
+    }
+
+    #[test]
+    fn apply_patch_updates_flux2_options() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                pipeline: Some(PipelineConfigPatch {
+                    flux2_strength: Some(0.5),
+                    flux2_steps: Some(8),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(config.pipeline.flux2_strength, 0.5);
+        assert_eq!(config.pipeline.flux2_steps, 8);
+    }
+
+    #[test]
+    fn apply_patch_ignores_out_of_range_flux2_options() {
+        let mut config = AppConfig::default();
+        config.pipeline.flux2_strength = 0.65;
+        config.pipeline.flux2_steps = 9;
+
+        for invalid_strength in [0.0, -0.1, 1.01, f64::NAN, f64::INFINITY] {
+            apply_patch(
+                &mut config,
+                ConfigPatch {
+                    pipeline: Some(PipelineConfigPatch {
+                        flux2_strength: Some(invalid_strength),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(config.pipeline.flux2_strength, 0.65);
+        }
+
+        for invalid_steps in [0, 21, u32::MAX] {
+            apply_patch(
+                &mut config,
+                ConfigPatch {
+                    pipeline: Some(PipelineConfigPatch {
+                        flux2_steps: Some(invalid_steps),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(config.pipeline.flux2_steps, 9);
+        }
+    }
 
     #[test]
     fn old_config_without_providers_still_loads() {

@@ -68,6 +68,9 @@ pub struct PipelineRunOptions {
     /// composite onto the existing `Image { Inpainted }` (fallback Source)
     /// and process just that one block. Other engines ignore it.
     pub region: Option<Region>,
+    /// Flux.2 Klein tuning. `None` leaves the engine's built-in default in effect.
+    pub flux2_strength: Option<f64>,
+    pub flux2_steps: Option<u32>,
     pub reading_order: Option<ReadingOrder>,
     /// Global render defaults (renderer engine only). Applied when a text node
     /// has no explicit per-node override; otherwise the renderer auto-fits the

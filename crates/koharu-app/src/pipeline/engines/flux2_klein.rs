@@ -68,9 +68,14 @@ impl Engine for Model {
             Some(r) => DynamicImage::ImageLuma8(clip_gray_mask_to_region(&expanded, &r)),
             None => DynamicImage::ImageLuma8(expanded),
         };
-        let result =
-            self.0
-                .inpaint_with_reference(&image, &mask, None, &Flux2InpaintOptions::default())?;
+        let options = Flux2InpaintOptions {
+            num_inference_steps: ctx.options.flux2_steps.unwrap_or(4).clamp(1, 20) as usize,
+            strength: ctx.options.flux2_strength.unwrap_or(1.0).clamp(0.05, 1.0),
+            ..Default::default()
+        };
+        let result = self
+            .0
+            .inpaint_with_reference(&image, &mask, None, &options)?;
         let (w, h) = image_dimensions(&result);
         let blob = ctx.blobs.put_webp(&result)?;
         Ok(vec![upsert_image_blob(
