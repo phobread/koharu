@@ -10,10 +10,16 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   headerless logs = legacy v0; replay dispatches by version and rejects
   newer-than-known; future Op changes add a frozen compat decode at the seam.
   5 tests. (The op non-failure-atomicity item just below is separate + still open.)
-- crates/koharu-app/src/history.rs:81 + crates/koharu-core/src/op.rs:413 —
-  op application is not failure-atomic (scene mutated before log write can
-  fail; Batch stops mid-way without rollback; AddNode inserts before invariant
-  check). Correct fix is clone-apply-swap or full rollback — invasive.
+- ~~crates/koharu-app/src/history.rs:81 + crates/koharu-core/src/op.rs:413 —
+  op application is not failure-atomic~~ FIXED 0a771a55 (2026-07-17):
+  History::apply/undo/redo clone-apply-swap with write-ahead frame ordering
+  (fsync before commit; failure changes nothing, epochs stay contiguous);
+  failed frame writes roll the log back to the last committed offset
+  (poisoned-until-recovery if rollback fails); replay truncates torn tails
+  so appends never land after garbage; MAX_FRAME_LEN 512MB guards replay
+  allocation + writes; AddNode/AddPage validate before mutating. Batch stays
+  non-atomic at core level by design — History provides the guarantee.
+  8 new tests.
 - ~~crates/koharu-rpc/src/server.rs — permissive CORS~~ FIXED e7b4b626
   (2026-07-15): CORS layer removed entirely — every legitimate client is
   same-origin (Tauri serves the UI; next dev proxies /api/v1) or non-browser.
@@ -70,9 +76,11 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
 - crates/koharu-app/src/pipeline/engines/flux2_klein.rs:113 — force-CPU flag
   ignored (flux on CPU is impractical anyway).
 - crates/koharu-app/src/ai.rs:141 — completed Codex login attempts never pruned.
-- crates/koharu-core/src/op.rs:279 — AddPage skips validate_page_invariants
-  (reachable via /history/apply only).
-- crates/koharu-core/src/op.rs:577 — reorder validation accepts duplicate IDs.
+- ~~crates/koharu-core/src/op.rs:279 — AddPage skips validate_page_invariants~~
+  FIXED 0a771a55 (2026-07-17, folded into the failure-atomicity slice).
+- ~~crates/koharu-core/src/op.rs:577 — reorder validation accepts duplicate
+  IDs~~ FIXED 0a771a55 (2026-07-17, same slice; dup ids now
+  ReorderSetMismatch in both page and node reorders).
 - crates/koharu-rpc/src/binary.rs:44 — scene clone and epoch read not under one
   lock (stale scene labeled with newer epoch).
 - crates/koharu-rpc/src/binary.rs:151 — thumbnail generation runs synchronous
