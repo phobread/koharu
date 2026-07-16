@@ -26,6 +26,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { useAutoFitOnResize } from '@/hooks/useAutoFitOnResize'
 import { useBlobData } from '@/hooks/useBlobData'
 import { useBlockContextMenu } from '@/hooks/useBlockContextMenu'
 import { useBlockDrafting, type BlockDraft } from '@/hooks/useBlockDrafting'
@@ -97,11 +98,16 @@ export function Workspace() {
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const { setScale: applyScale } = useCanvasZoom()
   const scaleRatio = scale / 100
+  const autoFitResizeRef = useAutoFitOnResize()
 
-  const handleViewportRef = useCallback((el: HTMLDivElement | null) => {
-    viewportRef.current = el
-    setCanvasViewport(el)
-  }, [])
+  const handleViewportRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      viewportRef.current = el
+      setCanvasViewport(el)
+      autoFitResizeRef(el)
+    },
+    [autoFitResizeRef],
+  )
 
   const pointerToDocument = usePointerToDocument(scaleRatio, canvasRef)
 
