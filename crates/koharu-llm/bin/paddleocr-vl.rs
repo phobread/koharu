@@ -5,8 +5,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use koharu_llm::paddleocr_vl::{
-    DEFAULT_REPETITION_PENALTY, PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOcrVlOutput,
-    PaddleOcrVlTask,
+    PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOcrVlOutput, PaddleOcrVlTask,
 };
 use koharu_llm::safe::llama_backend::LlamaBackend;
 use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
@@ -48,9 +47,6 @@ struct Cli {
     #[arg(long, default_value_t = 128)]
     max_new_tokens: usize,
 
-    #[arg(long, default_value_t = DEFAULT_REPETITION_PENALTY)]
-    repetition_penalty: f32,
-
     #[arg(long, value_name = "FILE")]
     json_output: Option<PathBuf>,
 
@@ -77,7 +73,6 @@ impl Cli {
     fn generate_options(&self) -> PaddleOcrVlGenerateOptions {
         PaddleOcrVlGenerateOptions {
             max_new_tokens: self.max_new_tokens,
-            repetition_penalty: self.repetition_penalty,
             language: None,
         }
     }

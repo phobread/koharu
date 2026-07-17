@@ -28,8 +28,6 @@ const MMPROJ_FILENAME: &str = "PaddleOCR-VL-1.6-GGUF-mmproj.gguf";
 const PADDLEOCR_IMAGE_MARKER: &str = "<|IMAGE_START|><|IMAGE_PLACEHOLDER|><|IMAGE_END|>";
 const DEFAULT_GPU_LAYERS: u32 = 1000;
 const DEFAULT_MAX_NEW_TOKENS: usize = 256;
-pub const DEFAULT_REPETITION_PENALTY: f32 = 1.2;
-const DEFAULT_REPETITION_PENALTY_LAST_N: i32 = -1;
 const MAX_UBATCH: u32 = 512;
 const OCR_REPEAT_MAX_UNIT_CHARS: usize = 12;
 const OCR_REPEAT_MIN_REPETITIONS: usize = 4;
@@ -92,7 +90,6 @@ pub struct PaddleOcrVlOutput {
 #[serde(rename_all = "camelCase")]
 pub struct PaddleOcrVlGenerateOptions {
     pub max_new_tokens: usize,
-    pub repetition_penalty: f32,
     /// Optional language hint (e.g. "Korean"). The model auto-detects the
     /// script by default, but stylized fonts can fool it into the wrong CJK
     /// language; a hint in the prompt steers the transcription. `None`
@@ -104,7 +101,6 @@ impl Default for PaddleOcrVlGenerateOptions {
     fn default() -> Self {
         Self {
             max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
-            repetition_penalty: DEFAULT_REPETITION_PENALTY,
             language: None,
         }
     }
@@ -254,7 +250,6 @@ impl PaddleOcrVl {
         task: PaddleOcrVlTask,
         options: &PaddleOcrVlGenerateOptions,
     ) -> Result<PaddleOcrVlOutput> {
-        validate_generate_options(options)?;
         let max_new_tokens = options.max_new_tokens;
         let started = Instant::now();
         let original_width = image.width();
@@ -301,7 +296,10 @@ impl PaddleOcrVl {
         let prompt_elapsed = prompt_started.elapsed();
 
         let generation_started = Instant::now();
-        let mut sampler = build_sampler(options);
+        // Greedy argmax: OCR wants the most literal transcription, and
+        // degenerate repeat loops are trimmed by the string-level guard
+        // (`repeated_ocr_suffix_start`) below.
+        let mut sampler = LlamaSampler::greedy();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut token_ids = Vec::new();
         let mut token_text_ends = Vec::new();
@@ -367,7 +365,6 @@ impl PaddleOcrVl {
             prompt_ms = prompt_elapsed.as_millis(),
             generation_ms = generation_started.elapsed().as_millis(),
             total_ms = started.elapsed().as_millis(),
-            repetition_penalty = options.repetition_penalty,
             stopped_on_repeat,
             "paddleocr-vl inference timings"
         );
@@ -407,7 +404,6 @@ impl PaddleOcrVl {
         task: PaddleOcrVlTask,
         options: &PaddleOcrVlGenerateOptions,
     ) -> Result<Vec<PaddleOcrVlOutput>> {
-        validate_generate_options(options)?;
         let started = Instant::now();
         let mut outputs = Vec::with_capacity(images.len());
         for image in images {
@@ -417,7 +413,6 @@ impl PaddleOcrVl {
             images = images.len(),
             total_ms = started.elapsed().as_millis(),
             max_new_tokens = options.max_new_tokens,
-            repetition_penalty = options.repetition_penalty,
             "paddleocr-vl batch timings"
         );
         Ok(outputs)
@@ -537,30 +532,6 @@ fn model_params(cpu: bool, backend: &LlamaBackend) -> LlamaModelParams {
         // Issue #309: default n_gpu_layers is -1 (auto), which may still offload to GPU.
         LlamaModelParams::default().with_n_gpu_layers(0)
     }
-}
-
-fn validate_generate_options(options: &PaddleOcrVlGenerateOptions) -> Result<()> {
-    if !options.repetition_penalty.is_finite() || options.repetition_penalty <= 0.0 {
-        bail!("repetition_penalty must be a positive finite number");
-    }
-
-    Ok(())
-}
-
-fn build_sampler(options: &PaddleOcrVlGenerateOptions) -> LlamaSampler {
-    if (options.repetition_penalty - 1.0).abs() < f32::EPSILON {
-        return LlamaSampler::greedy();
-    }
-
-    LlamaSampler::chain_simple([
-        LlamaSampler::penalties(
-            DEFAULT_REPETITION_PENALTY_LAST_N,
-            options.repetition_penalty,
-            0.0,
-            0.0,
-        ),
-        LlamaSampler::greedy(),
-    ])
 }
 
 fn context_params(
@@ -723,9 +694,9 @@ fn repeated_ocr_suffix_start(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, PADDLEOCR_IMAGE_MARKER,
-        PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent, build_user_message_content,
-        render_chat_prompt, repeated_ocr_suffix_start, validate_generate_options,
+        DEFAULT_MAX_NEW_TOKENS, PADDLEOCR_IMAGE_MARKER, PaddleOcrVlGenerateOptions,
+        PaddleOcrVlTask, PromptContent, build_user_message_content, render_chat_prompt,
+        repeated_ocr_suffix_start,
     };
 
     #[test]
@@ -832,28 +803,11 @@ mod tests {
     }
 
     #[test]
-    fn default_generate_options_set_repetition_penalty() -> anyhow::Result<()> {
+    fn default_generate_options_use_plain_prompt_and_token_budget() {
         let options = PaddleOcrVlGenerateOptions::default();
 
         assert_eq!(options.max_new_tokens, DEFAULT_MAX_NEW_TOKENS);
-        assert_eq!(options.repetition_penalty, DEFAULT_REPETITION_PENALTY);
-        validate_generate_options(&options)?;
-        Ok(())
-    }
-
-    #[test]
-    fn generate_options_reject_invalid_repetition_penalty() {
-        let options = PaddleOcrVlGenerateOptions {
-            repetition_penalty: 0.0,
-            ..PaddleOcrVlGenerateOptions::default()
-        };
-
-        let error = validate_generate_options(&options).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("repetition_penalty must be a positive finite number")
-        );
+        assert_eq!(options.language, None);
     }
 
     #[test]
