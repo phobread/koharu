@@ -77,7 +77,22 @@ pub fn refine_segmentation_mask(
 }
 
 pub fn crop_text_block_bbox(image: &DynamicImage, block: &TextRegion) -> DynamicImage {
-    let [x1, y1, x2, y2] = expanded_text_block_crop_bounds(image.width(), image.height(), block);
+    let [x1, y1, x2, y2] = if has_expanded_crop_bounds(block) {
+        expanded_text_block_crop_bounds(image.width(), image.height(), block)
+    } else {
+        // Plain detector boxes hug the ink, and OCR models misread glyphs
+        // that touch the crop border. Add the margin here rather than in the
+        // shared bounds: mask consumers rely on those staying tight.
+        let (pad_x, pad_y) = ocr_crop_margin(block);
+        clamp_crop_bounds(
+            image.width(),
+            image.height(),
+            block.x - pad_x,
+            block.y - pad_y,
+            block.x + block.width + pad_x,
+            block.y + block.height + pad_y,
+        )
+    };
     image.crop_imm(x1, y1, x2.saturating_sub(x1), y2.saturating_sub(y1))
 }
 
@@ -335,18 +350,55 @@ pub fn extract_text_block_regions(image: &DynamicImage, block: &TextRegion) -> V
     }
 }
 
+/// CTD blocks and anything carrying line polygons get expanded crop bounds
+/// (line-polygon union plus OCR margin) from
+/// [`expanded_text_block_crop_bounds`]; plain detector boxes come back tight.
+fn has_expanded_crop_bounds(block: &TextRegion) -> bool {
+    block.detector.as_deref() == Some("ctd")
+        || block
+            .line_polygons
+            .as_ref()
+            .is_some_and(|lines| !lines.is_empty())
+}
+
+/// Margin around a text block for OCR crops: proportional to the detected
+/// font size, slightly larger across the text direction than along it.
+fn ocr_crop_margin(block: &TextRegion) -> (f32, f32) {
+    let font = block
+        .detected_font_size_px
+        .unwrap_or_else(|| block.width.min(block.height).max(1.0));
+    let base_pad = (font * 0.08).max(2.0);
+    match block.source_direction.unwrap_or(TextDirection::Horizontal) {
+        TextDirection::Horizontal => ((font * 0.12).max(base_pad), (font * 0.18).max(base_pad)),
+        TextDirection::Vertical => ((font * 0.18).max(base_pad), (font * 0.12).max(base_pad)),
+    }
+}
+
+fn clamp_crop_bounds(
+    image_width: u32,
+    image_height: u32,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+) -> [u32; 4] {
+    let x1 = min_x
+        .floor()
+        .clamp(0.0, image_width.saturating_sub(1) as f32) as u32;
+    let y1 = min_y
+        .floor()
+        .clamp(0.0, image_height.saturating_sub(1) as f32) as u32;
+    let x2 = max_x.ceil().clamp(x1 as f32 + 1.0, image_width as f32) as u32;
+    let y2 = max_y.ceil().clamp(y1 as f32 + 1.0, image_height as f32) as u32;
+    [x1, y1, x2, y2]
+}
+
 pub fn expanded_text_block_crop_bounds(
     image_width: u32,
     image_height: u32,
     block: &TextRegion,
 ) -> [u32; 4] {
-    let should_expand = block.detector.as_deref() == Some("ctd")
-        || block
-            .line_polygons
-            .as_ref()
-            .map(|lines| !lines.is_empty())
-            .unwrap_or(false);
-    if !should_expand {
+    if !has_expanded_crop_bounds(block) {
         let x1 = block.x.max(0.0).floor() as u32;
         let y1 = block.y.max(0.0).floor() as u32;
         let x2 = (block.x + block.width)
@@ -374,28 +426,15 @@ pub fn expanded_text_block_crop_bounds(
         }
     }
 
-    let font = block
-        .detected_font_size_px
-        .unwrap_or_else(|| block.width.min(block.height).max(1.0));
-    let base_pad = (font * 0.08).max(2.0);
-    let (pad_x, pad_y) = match block.source_direction.unwrap_or(TextDirection::Horizontal) {
-        TextDirection::Horizontal => ((font * 0.12).max(base_pad), (font * 0.18).max(base_pad)),
-        TextDirection::Vertical => ((font * 0.18).max(base_pad), (font * 0.12).max(base_pad)),
-    };
-
-    let x1 = (min_x - pad_x)
-        .floor()
-        .clamp(0.0, image_width.saturating_sub(1) as f32) as u32;
-    let y1 = (min_y - pad_y)
-        .floor()
-        .clamp(0.0, image_height.saturating_sub(1) as f32) as u32;
-    let x2 = (max_x + pad_x)
-        .ceil()
-        .clamp(x1 as f32 + 1.0, image_width as f32) as u32;
-    let y2 = (max_y + pad_y)
-        .ceil()
-        .clamp(y1 as f32 + 1.0, image_height as f32) as u32;
-    [x1, y1, x2, y2]
+    let (pad_x, pad_y) = ocr_crop_margin(block);
+    clamp_crop_bounds(
+        image_width,
+        image_height,
+        min_x - pad_x,
+        min_y - pad_y,
+        max_x + pad_x,
+        max_y + pad_y,
+    )
 }
 
 fn warp_line_region(image: &RgbImage, block: &TextRegion, line: &Quad) -> Option<RgbImage> {
@@ -616,8 +655,32 @@ mod tests {
 
         let regions = extract_text_block_regions(&image, &block);
         assert_eq!(regions.len(), 1);
-        assert_eq!(regions[0].width(), 10);
-        assert_eq!(regions[0].height(), 8);
+        // The 10×8 box gains the 2px OCR margin on every side.
+        assert_eq!(regions[0].width(), 14);
+        assert_eq!(regions[0].height(), 12);
+    }
+
+    #[test]
+    fn crop_text_block_bbox_pads_plain_detector_boxes() {
+        let mut image = RgbImage::from_pixel(24, 24, Rgb([255, 255, 255]));
+        // Ink on the box's top-left corner, where a tight crop would leave it
+        // touching the border.
+        image.put_pixel(4, 5, Rgb([0, 0, 0]));
+        let image = DynamicImage::ImageRgb8(image);
+        let block = TextRegion {
+            x: 4.0,
+            y: 5.0,
+            width: 10.0,
+            height: 8.0,
+            detector: Some("comic-text-bubble-detector".to_string()),
+            ..Default::default()
+        };
+
+        let crop = crop_text_block_bbox(&image, &block).to_rgb8();
+        assert_eq!((crop.width(), crop.height()), (14, 12));
+        // The corner glyph pixel sits inset by the margin instead of on the
+        // crop border.
+        assert_eq!(crop.get_pixel(2, 2).0, [0, 0, 0]);
     }
 
     #[test]
@@ -753,13 +816,14 @@ mod tests {
         assert!(crop.get_pixel(1, 1)[0] > 200);
         assert!(crop.get_pixel(crop.width() - 2, crop.height() - 2)[0] > 200);
 
-        // A straight block passes through the plain bbox crop.
+        // A straight block goes through the bbox crop, which adds the OCR
+        // margin (2px along the text, 2.16px across it for a 12px font).
         let straight = TextRegion {
             rotation_deg: Some(0.0),
             ..block.clone()
         };
         let plain = crop_text_block_deskewed(&image, &straight);
-        assert_eq!(plain.width(), 76);
-        assert_eq!(plain.height(), 12);
+        assert_eq!(plain.width(), 80);
+        assert_eq!(plain.height(), 18);
     }
 }
