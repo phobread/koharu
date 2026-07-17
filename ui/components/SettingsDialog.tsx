@@ -145,6 +145,7 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       translator: cfg.pipeline.translator,
       inpainter: cfg.pipeline.inpainter,
       renderer: cfg.pipeline.renderer,
+      flux2Steps: cfg.pipeline.flux2_steps,
     }
   }
   if (cfg.providers) {
@@ -1013,24 +1014,52 @@ function EnginesPane({
     <div className='space-y-4'>
       <p className='text-xs text-muted-foreground'>{t('settings.enginesDescription')}</p>
       {sections.map(({ label, key, engines }) => (
-        <div key={key} className='space-y-1.5'>
-          <Label className='text-xs'>{label}</Label>
-          <Select
-            value={pipeline[key] ?? engines[0]?.id ?? ''}
-            onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
-          >
-            <SelectTrigger className='w-full'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {engines.map((e) => (
-                <SelectItem key={e.id} value={e.id}>
-                  {e.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <Fragment key={key}>
+          <div className='space-y-1.5'>
+            <Label className='text-xs'>{label}</Label>
+            <Select
+              value={pipeline[key] ?? engines[0]?.id ?? ''}
+              onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {engines.map((e) => (
+                  <SelectItem key={e.id} value={e.id}>
+                    {e.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {key === 'inpainter' && pipeline.inpainter === 'flux2-klein' && (
+            <div className='space-y-1.5'>
+              <Label className='text-xs'>{t('settings.flux2KleinQuality')}</Label>
+              <div
+                role='group'
+                aria-label={t('settings.flux2KleinQuality')}
+                className='grid grid-cols-2 gap-2'
+              >
+                {[
+                  { steps: 2, label: t('settings.flux2Fast') },
+                  { steps: 4, label: t('settings.flux2Quality') },
+                ].map(({ steps, label }) => (
+                  <Button
+                    key={steps}
+                    type='button'
+                    variant={pipeline.flux2_steps === steps ? 'secondary' : 'outline'}
+                    size='sm'
+                    aria-pressed={pipeline.flux2_steps === steps}
+                    onClick={() => onChange({ ...pipeline, flux2_steps: steps })}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+        </Fragment>
       ))}
     </div>
   )

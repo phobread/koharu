@@ -1070,6 +1070,8 @@
             "default": {
               "bubble_segmenter": "speech-bubble-segmentation",
               "detector": "pp-doclayout-v3",
+              "flux2_steps": 4,
+              "flux2_strength": 1.0,
               "font_detector": "yuzumarker-font-detection",
               "inpainter": "lama-manga",
               "ocr": "paddle-ocr-vl-1.6",
@@ -2671,6 +2673,17 @@
             "type": "string",
             "default": "pp-doclayout-v3"
           },
+          "flux2_steps": {
+            "type": "integer",
+            "format": "int32",
+            "default": 4,
+            "minimum": 0
+          },
+          "flux2_strength": {
+            "type": "number",
+            "format": "double",
+            "default": 1.0
+          },
           "font_detector": {
             "type": "string",
             "default": "yuzumarker-font-detection"
@@ -2705,6 +2718,15 @@
           },
           "detector": {
             "type": ["string", "null"]
+          },
+          "flux2Steps": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "minimum": 0
+          },
+          "flux2Strength": {
+            "type": ["number", "null"],
+            "format": "double"
           },
           "fontDetector": {
             "type": ["string", "null"]
