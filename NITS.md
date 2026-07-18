@@ -9,7 +9,7 @@ the accepted/fixed list). Each entry: location — issue — why deferred.
   6c52152d (2026-07-16): "KHLG" + u16 version header mirroring scene.bin;
   headerless logs = legacy v0; replay dispatches by version and rejects
   newer-than-known; future Op changes add a frozen compat decode at the seam.
-  5 tests. (The op non-failure-atomicity item just below is separate + still open.)
+  5 tests. (The separate op failure-atomicity item below is also now fixed.)
 - ~~crates/koharu-app/src/history.rs:81 + crates/koharu-core/src/op.rs:413 —
   op application is not failure-atomic~~ FIXED 0a771a55 (2026-07-17):
   History::apply/undo/redo clone-apply-swap with write-ahead frame ordering
