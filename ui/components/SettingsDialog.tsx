@@ -77,6 +77,7 @@ import {
   useGetCodexAuthStatus,
   useGetGoogleFontsCatalog,
   useListFonts,
+  clearProjectCache,
 } from '@/lib/api/default/default'
 import type {
   AppConfig,
@@ -256,12 +257,6 @@ export function SettingsDialog({
       cancelled = true
     }
   }, [open])
-
-  const checkForUpdates = updater.checkForUpdates
-  useEffect(() => {
-    if (!open || !isTauri()) return
-    void checkForUpdates()
-  }, [open, checkForUpdates])
 
   useEffect(() => {
     if (!open) hydratedForOpenRef.current = false
@@ -1672,9 +1667,51 @@ function StoragePane({
 }) {
   const { t } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [clearingCache, setClearingCache] = useState(false)
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null)
+  const [cacheError, setCacheError] = useState<string | null>(null)
+
+  const clearCache = async () => {
+    if (clearingCache) return
+    setClearingCache(true)
+    setCacheMessage(null)
+    setCacheError(null)
+    try {
+      const result = await clearProjectCache()
+      setCacheMessage(
+        t('settings.cacheCleared', {
+          size: `${(result.bytesFreed / 1_000_000).toFixed(2)} MB`,
+          count: result.filesRemoved,
+        }),
+      )
+      if (result.filesSkipped > 0) setCacheError(t('settings.cacheSkipped'))
+    } catch {
+      setCacheError(t('settings.cacheClearFailed'))
+    } finally {
+      setClearingCache(false)
+    }
+  }
 
   return (
     <>
+      <Section
+        title={t('settings.projectCache')}
+        description={t('settings.projectCacheDescription')}
+      >
+        <Button variant='outline' onClick={() => void clearCache()} disabled={clearingCache}>
+          {clearingCache ? t('settings.clearingCache') : t('settings.clearCache')}
+        </Button>
+        {cacheMessage && (
+          <p role='status' className='text-xs text-muted-foreground'>
+            {cacheMessage}
+          </p>
+        )}
+        {cacheError && (
+          <p role='alert' className='text-xs text-destructive'>
+            {cacheError}
+          </p>
+        )}
+      </Section>
       <Section title={t('settings.runtime')} description={t('settings.runtimeDescription')}>
         <div className='space-y-1.5'>
           <Label className='text-xs'>{t('settings.dataPath')}</Label>

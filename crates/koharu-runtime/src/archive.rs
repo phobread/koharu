@@ -11,6 +11,7 @@ const RUNTIME_LIB_EXTENSIONS: &[&str] = &[".dll", ".so", ".dylib"];
 
 pub(crate) enum ArchiveKind {
     Zip,
+    Tar,
     TarGz,
 }
 
@@ -23,6 +24,8 @@ pub(crate) enum ExtractPolicy<'a> {
 pub(crate) fn detect_kind(file_name: &str) -> Result<ArchiveKind> {
     if file_name.ends_with(".zip") {
         Ok(ArchiveKind::Zip)
+    } else if file_name.ends_with(".tar") {
+        Ok(ArchiveKind::Tar)
     } else if file_name.ends_with(".tar.gz") {
         Ok(ArchiveKind::TarGz)
     } else {
@@ -38,6 +41,7 @@ pub(crate) fn extract(
 ) -> Result<()> {
     match kind {
         ArchiveKind::Zip => extract_zip(archive_path, output_dir, policy),
+        ArchiveKind::Tar => extract_tar(archive_path, output_dir, policy),
         ArchiveKind::TarGz => extract_tar_gz(archive_path, output_dir, policy),
     }
 }
@@ -78,7 +82,22 @@ fn extract_zip(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<'_>
 fn extract_tar_gz(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<'_>) -> Result<()> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("failed to open `{}`", archive_path.display()))?;
-    let mut archive = tar::Archive::new(GzDecoder::new(file));
+    extract_tar_reader(GzDecoder::new(file), archive_path, output_dir, policy)
+}
+
+fn extract_tar(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<'_>) -> Result<()> {
+    let file = fs::File::open(archive_path)
+        .with_context(|| format!("failed to open `{}`", archive_path.display()))?;
+    extract_tar_reader(file, archive_path, output_dir, policy)
+}
+
+fn extract_tar_reader(
+    reader: impl io::Read,
+    archive_path: &Path,
+    output_dir: &Path,
+    policy: ExtractPolicy<'_>,
+) -> Result<()> {
+    let mut archive = tar::Archive::new(reader);
     let mut aliases = Vec::new();
     let mut best_depths = HashMap::new();
 
@@ -247,6 +266,10 @@ mod tests {
         assert!(matches!(
             detect_kind("runtime.zip").unwrap(),
             ArchiveKind::Zip
+        ));
+        assert!(matches!(
+            detect_kind("model.tar").unwrap(),
+            ArchiveKind::Tar
         ));
         assert!(matches!(
             detect_kind("runtime.tar.gz").unwrap(),

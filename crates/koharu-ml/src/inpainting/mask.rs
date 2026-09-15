@@ -237,7 +237,7 @@ fn fill_text_block_region(
     }
 }
 
-fn fill_enclosed_holes(mask: &GrayImage) -> GrayImage {
+pub(crate) fn fill_enclosed_holes(mask: &GrayImage) -> GrayImage {
     let (width, height) = mask.dimensions();
     if width == 0 || height == 0 {
         return mask.clone();

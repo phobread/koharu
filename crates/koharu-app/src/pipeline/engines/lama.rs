@@ -43,8 +43,12 @@ impl Engine for Model {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
                     Some((_, blob)) => {
                         let inpainted = ctx.blobs.load_image(&blob)?;
-                        let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-                        restore_region_from_source(&inpainted, &source, &r)
+                        if ctx.options.restore_source_region.unwrap_or(true) {
+                            let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
+                            restore_region_from_source(&inpainted, &source, &r)
+                        } else {
+                            inpainted
+                        }
                     }
                     None => load_source_image(ctx.scene, ctx.page, ctx.blobs)?,
                 };

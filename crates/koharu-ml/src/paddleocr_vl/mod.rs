@@ -198,15 +198,13 @@ impl PaddleOcrVl {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
         let downloads = runtime.downloads();
         let files = ModelFiles {
-            config: downloads.huggingface_model(HF_REPO, "config.json").await?,
+            config: downloads.bundled_model(HF_REPO, "config.json").await?,
             preprocessor: downloads
-                .huggingface_model(HF_REPO, "preprocessor_config.json")
+                .bundled_model(HF_REPO, "preprocessor_config.json")
                 .await?,
-            tokenizer: downloads
-                .huggingface_model(HF_REPO, "tokenizer.json")
-                .await?,
+            tokenizer: downloads.bundled_model(HF_REPO, "tokenizer.json").await?,
             weights: downloads
-                .huggingface_model(HF_REPO, "model.safetensors")
+                .bundled_model(HF_REPO, "model.safetensors")
                 .await?,
         };
         Self::load_from_files(files, cpu)

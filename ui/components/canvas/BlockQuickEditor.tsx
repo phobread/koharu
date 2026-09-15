@@ -5,13 +5,15 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { RichTextDraftTextarea } from '@/components/ui/rich-text-draft-textarea'
 import { SplittableDraftTextarea } from '@/components/ui/splittable-draft-textarea'
 import type { TextNodeEntry } from '@/hooks/useCurrentPage'
 import type { Page, TextDataPatch } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender } from '@/lib/io/scene'
-import { applyBlockSplit } from '@/lib/io/splitNode'
+import { splitBlock } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
-import { splitTextBlockAt, type SplitField } from '@/lib/splitBlock'
+import type { SplitField } from '@/lib/splitBlock'
+import { effectiveTextColor } from '@/lib/textStyle'
 
 const EDITOR_WIDTH = 240
 const EDITOR_GAP = 10
@@ -59,16 +61,7 @@ export function BlockQuickEditor({
   // point → the block divides along its text flow. The editor closes itself
   // afterwards because the edited node is replaced by the two halves.
   const splitAt = (field: SplitField, offset: number) => {
-    const direction =
-      (field === 'text' ? node.data.sourceDirection : node.data.renderedDirection) ?? 'horizontal'
-    const split = splitTextBlockAt(
-      box,
-      { text: node.data.text, translation: node.data.translation },
-      { field, offset },
-      direction,
-    )
-    if (!split) return
-    void applyBlockSplit(page, node.id, split)
+    void splitBlock(page.id, node.id, { field, offset })
   }
 
   // Slant: rotation about the box centre, matching the canvas outline and
@@ -163,12 +156,15 @@ export function BlockQuickEditor({
         <span className='text-[10px] text-muted-foreground uppercase'>
           {t('textBlocks.translationLabel')}
         </span>
-        <SplittableDraftTextarea
+        <RichTextDraftTextarea
           data-testid='quick-editor-translation'
           value={node.data.translation ?? ''}
+          styleRanges={node.data.styleRanges ?? []}
+          inheritedColor={effectiveTextColor(node.data.style, node.data.renderedTextColor)}
+          inheritedEffect={node.data.style?.effect}
           placeholder={t('textBlocks.addTranslationPlaceholder')}
           rows={2}
-          onValueChange={(value) => patch({ translation: value })}
+          onPatch={patch}
           className='min-h-0 resize-none bg-background px-1.5 py-1 text-xs'
           splitLabel={t('textBlocks.splitAtCursor')}
           onSplit={(offset) => splitAt('translation', offset)}

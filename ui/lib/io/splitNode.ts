@@ -1,8 +1,15 @@
 import { isTextNode } from '@/hooks/useCurrentPage'
-import type { Node, NodeDataPatch, Page, Transform } from '@/lib/api/schemas'
-import { applyOp, queueAutoRender } from '@/lib/io/scene'
+import type { Node, NodeDataPatch, Page, TextStyleRange, Transform } from '@/lib/api/schemas'
+import { applyOp, applyOpFromScene, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
-import { mergeTextBlocks, type BlockSplit } from '@/lib/splitBlock'
+import { sliceTextStyleRanges, utf16OffsetToUtf8 } from '@/lib/richText'
+import {
+  mergeTextBlocks,
+  splitTextBlock,
+  splitTextBlockAt,
+  type BlockSplit,
+  type SplitField,
+} from '@/lib/splitBlock'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 /**
@@ -18,18 +25,67 @@ import { useSelectionStore } from '@/lib/stores/selectionStore'
  * the surviving half.
  */
 export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSplit) {
+  const op = buildSplitOp(page, nodeId, split)
+  if (!op) return
+  await applyOp(op)
+  useSelectionStore.getState().selectMany([nodeId])
+  queueAutoRender(page.id)
+}
+
+/** Caret comes from the local editor; text/ranges come from the saved state
+ * after its queued edits finish, never from an older component snapshot. */
+export async function splitBlock(
+  pageId: string,
+  nodeId: string,
+  cut?: { field: SplitField; offset: number },
+) {
+  const applied = await applyOpFromScene((scene) => {
+    const page = scene.pages[pageId]
+    const node = page?.nodes[nodeId]
+    if (!node || !isTextNode(node) || !node.transform) return null
+    const data = node.kind.text
+    const direction =
+      (cut?.field === 'text'
+        ? data.sourceDirection
+        : (data.writingDirection ?? data.renderedDirection ?? data.sourceDirection)) ?? 'horizontal'
+    const split = cut
+      ? splitTextBlockAt(node.transform, data, cut, direction)
+      : splitTextBlock(node.transform, data, direction)
+    return split ? (buildSplitOp(page, nodeId, split) ?? null) : null
+  })
+  if (applied) {
+    useSelectionStore.getState().selectMany([nodeId])
+    queueAutoRender(pageId)
+  }
+}
+
+function buildSplitOp(page: Page, nodeId: string, split: BlockSplit) {
   const node = page.nodes[nodeId]
   if (!node || !isTextNode(node) || !node.transform) return
   const data = node.kind.text
 
-  const at = Object.keys(page.nodes).length
+  const at = Object.keys(page.nodes).indexOf(nodeId) + 1
   const newId = crypto.randomUUID()
+  const originalTranslation = data.translation ?? ''
+  const rangesA = sliceTextStyleRanges(
+    originalTranslation,
+    data.styleRanges ?? [],
+    split.a.translationSpan.start,
+    split.a.translationSpan.end,
+  )
+  const rangesB = sliceTextStyleRanges(
+    originalTranslation,
+    data.styleRanges ?? [],
+    split.b.translationSpan.start,
+    split.b.translationSpan.end,
+  )
   const updateA = ops.updateNode(page.id, nodeId, {
     transform: split.a.transform,
     data: {
       text: {
         text: split.a.text,
-        translation: split.a.translation,
+        translation: split.a.translation ?? '',
+        styleRanges: rangesA,
         lockLayoutBox: true,
       },
     } as NodeDataPatch,
@@ -42,17 +98,18 @@ export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSp
       text: {
         text: split.b.text,
         translation: split.b.translation,
+        styleRanges: rangesB,
         style: data.style ?? undefined,
         fontPrediction: data.fontPrediction ?? undefined,
         sourceDirection: data.sourceDirection ?? undefined,
+        renderedDirection: data.renderedDirection ?? undefined,
+        writingDirection: data.writingDirection ?? undefined,
         sourceLang: data.sourceLang ?? undefined,
         lockLayoutBox: true,
       },
     },
   }
-  await applyOp(ops.batch('Split block', [updateA, ops.addNode(page.id, at, newNode)]))
-  useSelectionStore.getState().selectMany([nodeId])
-  queueAutoRender(page.id)
+  return ops.batch('Split block', [updateA, ops.addNode(page.id, at, newNode)])
 }
 
 /**
@@ -62,6 +119,29 @@ export async function applyBlockSplit(page: Page, nodeId: string, split: BlockSp
  * removed. Selects the survivor and queues a re-render.
  */
 export async function applyBlockMerge(page: Page, nodeIds: string[]) {
+  const merged = buildMergeOp(page, nodeIds)
+  if (!merged) return
+  await applyOp(merged.op)
+  useSelectionStore.getState().selectMany([merged.survivorId])
+  queueAutoRender(page.id)
+}
+
+export async function mergeBlocks(pageId: string, nodeIds: string[]) {
+  let survivorId: string | undefined
+  const applied = await applyOpFromScene((scene) => {
+    const page = scene.pages[pageId]
+    if (!page) return null
+    const merged = buildMergeOp(page, nodeIds)
+    survivorId = merged?.survivorId
+    return merged?.op ?? null
+  })
+  if (applied && survivorId) {
+    useSelectionStore.getState().selectMany([survivorId])
+    queueAutoRender(pageId)
+  }
+}
+
+function buildMergeOp(page: Page, nodeIds: string[]) {
   const wanted = new Set(nodeIds)
   // Page order = reading order, so texts join in the order they're read.
   const entries: {
@@ -69,6 +149,7 @@ export async function applyBlockMerge(page: Page, nodeIds: string[]) {
     transform: Transform
     text?: string | null
     translation?: string | null
+    styleRanges: TextStyleRange[]
   }[] = []
   for (const id of Object.keys(page.nodes)) {
     if (!wanted.has(id)) continue
@@ -79,6 +160,7 @@ export async function applyBlockMerge(page: Page, nodeIds: string[]) {
       transform: n.transform,
       text: n.kind.text.text,
       translation: n.kind.text.translation,
+      styleRanges: n.kind.text.styleRanges ?? [],
     })
   }
   if (entries.length < 2) return
@@ -88,13 +170,21 @@ export async function applyBlockMerge(page: Page, nodeIds: string[]) {
 
   const nodes = entries.map((e) => e.node)
   const survivor = nodes[0]
+  const mergedRanges = mergeStyleRanges(
+    merged.translation ?? '',
+    entries.map((entry) => ({
+      text: entry.translation ?? '',
+      ranges: entry.styleRanges,
+    })),
+  )
   const batch = [
     ops.updateNode(page.id, survivor.id, {
       transform: merged.transform,
       data: {
         text: {
           text: merged.text,
-          translation: merged.translation,
+          translation: merged.translation ?? '',
+          styleRanges: mergedRanges,
           lockLayoutBox: true,
         },
       } as NodeDataPatch,
@@ -108,7 +198,36 @@ export async function applyBlockMerge(page: Page, nodeIds: string[]) {
     batch.push(ops.removeNode(page.id, n.id, n, idx < 0 ? 0 : idx))
     if (idx >= 0) keys.splice(idx, 1)
   }
-  await applyOp(ops.batch('Merge blocks', batch))
-  useSelectionStore.getState().selectMany([survivor.id])
-  queueAutoRender(page.id)
+  return { op: ops.batch('Merge blocks', batch), survivorId: survivor.id }
+}
+
+function mergeStyleRanges(
+  mergedText: string,
+  parts: { text: string; ranges: TextStyleRange[] }[],
+): TextStyleRange[] {
+  const merged: TextStyleRange[] = []
+  let searchFrom = 0
+  for (const part of parts) {
+    const fragment = part.text.trim()
+    if (!fragment) continue
+    const index = mergedText.indexOf(fragment, searchFrom)
+    if (index < 0) continue
+    const byteOffset = utf16OffsetToUtf8(mergedText, index)
+    const trimStart = part.text.length - part.text.trimStart().length
+    const local = sliceTextStyleRanges(
+      part.text,
+      part.ranges,
+      trimStart,
+      trimStart + fragment.length,
+    )
+    merged.push(
+      ...local.map((range) => ({
+        ...range,
+        start: range.start + byteOffset,
+        end: range.end + byteOffset,
+      })),
+    )
+    searchFrom = index + fragment.length
+  }
+  return merged
 }

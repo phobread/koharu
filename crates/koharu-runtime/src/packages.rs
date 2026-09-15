@@ -91,17 +91,15 @@ macro_rules! declare_hf_model_package {
             }
 
             fn present(runtime: &$crate::Runtime) -> anyhow::Result<bool> {
-                Ok(
-                    $crate::hf_hub::Cache::new(runtime.root().join("models").join("huggingface"))
-                        .model($repo.to_string())
-                        .get($file)
-                        .is_some(),
-                )
+                Ok(runtime
+                    .downloads()
+                    .cached_bundled_model($repo, $file)?
+                    .is_some())
             }
 
             fn ensure(runtime: &$crate::Runtime) -> $crate::packages::PackageFuture<'_> {
                 Box::pin(async move {
-                    runtime.downloads().huggingface_model($repo, $file).await?;
+                    runtime.downloads().bundled_model($repo, $file).await?;
                     Ok(())
                 })
             }

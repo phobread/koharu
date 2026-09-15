@@ -56,9 +56,9 @@ impl PPDocLayoutV3 {
         let device = device(cpu)?;
         let dtype = loading::model_dtype(&device);
         let downloads = runtime.downloads();
-        let config_path = downloads.huggingface_model(HF_REPO, "config.json").await?;
+        let config_path = downloads.bundled_model(HF_REPO, "config.json").await?;
         let preprocessor_path = downloads
-            .huggingface_model(HF_REPO, "preprocessor_config.json")
+            .bundled_model(HF_REPO, "preprocessor_config.json")
             .await?;
         let config = loading::read_json::<PPDocLayoutV3Config>(&config_path)
             .with_context(|| format!("failed to load {}", config_path.display()))?;
@@ -70,7 +70,7 @@ impl PPDocLayoutV3 {
         let std =
             Tensor::from_slice(&preprocessor.image_std, (1, 3, 1, 1), &device)?.to_dtype(dtype)?;
         let weights_path = downloads
-            .huggingface_model(HF_REPO, "model.safetensors")
+            .bundled_model(HF_REPO, "model.safetensors")
             .await?;
         let model = loading::load_mmaped_safetensors_path_with_dtype(
             &weights_path,

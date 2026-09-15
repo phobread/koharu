@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
+import { filenameFromContentDisposition, sanitiseExportDirectoryName } from '@/lib/io/saveBlob'
+
+describe('sanitiseExportDirectoryName', () => {
+  it('keeps readable project names while replacing path-unsafe characters', () => {
+    expect(sanitiseExportDirectoryName('  Bad: End / Vol. 1  ')).toBe('Bad_ End _ Vol. 1')
+  })
+
+  it('handles empty and Windows-reserved directory names', () => {
+    expect(sanitiseExportDirectoryName('')).toBe('Untitled')
+    expect(sanitiseExportDirectoryName('CON')).toBe('_CON')
+    expect(sanitiseExportDirectoryName('page. ')).toBe('page')
+  })
+})
 
 describe('filenameFromContentDisposition', () => {
   it('returns undefined for null / empty', () => {

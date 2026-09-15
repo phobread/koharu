@@ -7,6 +7,7 @@ pub mod comic_text_detector;
 pub mod flux2_klein;
 pub mod font_detector;
 pub mod inpainting;
+pub mod korean_ocr;
 pub mod lama;
 pub mod loading;
 pub mod manga_ocr;

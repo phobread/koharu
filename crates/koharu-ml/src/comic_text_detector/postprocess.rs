@@ -7,6 +7,7 @@ use imageproc::{
     distance_transform::Norm,
     geometric_transformations::{Interpolation, Projection, warp_into},
     morphology::dilate,
+    region_labelling::{Connectivity, connected_components},
 };
 
 const FINAL_MASK_DILATE_RADIUS: u8 = 2;
@@ -23,7 +24,7 @@ pub struct ComicTextDetection {
 }
 
 pub fn refine_segmentation_mask(
-    _image: &DynamicImage,
+    image: &DynamicImage,
     pred_mask: &GrayImage,
     blocks: &[TextRegion],
 ) -> GrayImage {
@@ -63,7 +64,8 @@ pub fn refine_segmentation_mask(
         }
     });
 
-    let dilated = dilate(&base, Norm::L1, FINAL_MASK_DILATE_RADIUS);
+    let completed = complete_partial_glyphs(image, &base, &expanded_bounds);
+    let dilated = dilate(&completed, Norm::L1, FINAL_MASK_DILATE_RADIUS);
 
     // Final clipping pass: Ensure the dilated mask never escapes the block boundaries
     // even if it thickens beyond its original source pixel edges.
@@ -74,6 +76,85 @@ pub fn refine_segmentation_mask(
             Luma([0])
         }
     })
+}
+
+/// Complete partially segmented, high-contrast glyph components. The source
+/// component must be anchored in the detector's mask and entirely contained
+/// in a text box: a background or drawing line crossing the box is excluded.
+/// This runs during segmentation only. Subsequent manual mask erasures remain
+/// authoritative when the user runs an inpainter again.
+pub fn complete_partial_glyphs(
+    image: &DynamicImage,
+    base: &GrayImage,
+    bounds: &[[u32; 4]],
+) -> GrayImage {
+    let mut completed = base.clone();
+    if image.width() != base.width() || image.height() != base.height() {
+        return completed;
+    }
+    let rgb = image.to_rgb8();
+    for &[x0, y0, x1, y1] in bounds {
+        let width = x1.saturating_sub(x0);
+        let height = y1.saturating_sub(y0);
+        if width < 3 || height < 3 {
+            continue;
+        }
+        let mut additions = GrayImage::new(width, height);
+        for white in [false, true] {
+            let candidates = GrayImage::from_fn(width, height, |x, y| {
+                let pixel = rgb.get_pixel(x0 + x, y0 + y).0;
+                let extreme = if white {
+                    pixel.into_iter().all(|v| v >= 235)
+                } else {
+                    pixel.into_iter().all(|v| v <= 45)
+                };
+                Luma([if extreme { 255 } else { 0 }])
+            });
+            let labels = connected_components(&candidates, Connectivity::Eight, Luma([0]));
+            let count = labels.pixels().map(|p| p[0]).max().unwrap_or(0) as usize + 1;
+            // area, anchored pixels, min x/y, max x/y
+            let mut stats = vec![[0, 0, width, height, 0, 0]; count];
+            for (x, y, label) in labels.enumerate_pixels() {
+                if label[0] == 0 {
+                    continue;
+                }
+                let stat = &mut stats[label[0] as usize];
+                stat[0] += 1;
+                stat[1] += u32::from(base.get_pixel(x0 + x, y0 + y)[0] > 0);
+                stat[2] = stat[2].min(x);
+                stat[3] = stat[3].min(y);
+                stat[4] = stat[4].max(x);
+                stat[5] = stat[5].max(y);
+            }
+            let accepted: Vec<bool> = stats
+                .iter()
+                .map(|&[area, anchored, min_x, min_y, max_x, max_y]| {
+                    if area < 8 || anchored < 2 || anchored * 10 < area {
+                        return false;
+                    }
+                    if min_x == 0 || min_y == 0 || max_x + 1 == width || max_y + 1 == height {
+                        return false;
+                    }
+                    let w = max_x - min_x + 1;
+                    let h = max_y - min_y + 1;
+                    // Long panel/drawing strokes are not glyph completions.
+                    w.min(h) >= 2 && w.max(h) <= w.min(h) * 10
+                })
+                .collect();
+            for (x, y, label) in labels.enumerate_pixels() {
+                if accepted[label[0] as usize] {
+                    additions.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+        let additions = crate::inpainting::mask::fill_enclosed_holes(&additions);
+        for (x, y, pixel) in additions.enumerate_pixels() {
+            if pixel[0] > 0 {
+                completed.put_pixel(x0 + x, y0 + y, *pixel);
+            }
+        }
+    }
+    completed
 }
 
 pub fn crop_text_block_bbox(image: &DynamicImage, block: &TextRegion) -> DynamicImage {
@@ -592,6 +673,65 @@ fn vector_norm(vector: [f32; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segmentation_completes_anchored_outline_but_preserves_art_and_unseeded_marks() {
+        let mut source = RgbImage::from_pixel(100, 100, Rgb([140; 3]));
+        let mut seed = GrayImage::new(100, 100);
+        // An outlined glyph whose right half segmentation missed.
+        for y in 20..50 {
+            for x in 20..50 {
+                if x < 24 || x >= 46 || y < 24 || y >= 46 {
+                    source.put_pixel(x, y, Rgb([0; 3]));
+                    if x < 30 {
+                        seed.put_pixel(x, y, Luma([255]));
+                    }
+                }
+            }
+        }
+        // A drawing stroke crosses the box: overlap alone cannot extend it.
+        for y in 65..70 {
+            for x in 0..100 {
+                source.put_pixel(x, y, Rgb([0; 3]));
+            }
+        }
+        seed.put_pixel(30, 67, Luma([255]));
+        // An unrelated isolated mark has no detector support.
+        for y in 30..36 {
+            for x in 70..76 {
+                source.put_pixel(x, y, Rgb([0; 3]));
+            }
+        }
+        let completed =
+            complete_partial_glyphs(&DynamicImage::ImageRgb8(source), &seed, &[[10, 10, 90, 90]]);
+        assert_eq!(completed.get_pixel(48, 32)[0], 255);
+        assert_eq!(completed.get_pixel(35, 35)[0], 255); // enclosed counter
+        assert_eq!(completed.get_pixel(70, 67)[0], 0);
+        assert_eq!(completed.get_pixel(72, 32)[0], 0);
+        assert_eq!(completed.get_pixel(30, 67)[0], 255); // original seed kept
+    }
+
+    #[test]
+    fn segmentation_completes_white_glyphs_without_filling_bright_background() {
+        let mut source = RgbImage::from_pixel(80, 80, Rgb([100; 3]));
+        let mut seed = GrayImage::new(80, 80);
+        for y in 20..40 {
+            for x in 20..40 {
+                source.put_pixel(x, y, Rgb([255; 3]));
+                if x < 25 {
+                    seed.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+        let result =
+            complete_partial_glyphs(&DynamicImage::ImageRgb8(source), &seed, &[[10, 10, 70, 70]]);
+        assert_eq!(result.get_pixel(38, 30)[0], 255);
+        let white = DynamicImage::ImageRgb8(RgbImage::from_pixel(80, 80, Rgb([255; 3])));
+        assert_eq!(
+            complete_partial_glyphs(&white, &seed, &[[10, 10, 70, 70]]),
+            seed
+        );
+    }
 
     #[test]
     fn refine_segmentation_mask_erases_when_blocks_are_missing() {

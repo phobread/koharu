@@ -67,6 +67,38 @@ function renderSettings(inpainter: string, flux2Steps: number) {
   )
 }
 
+describe('SettingsDialog project cache', () => {
+  it('clears only through the cache endpoint and reports the result', async () => {
+    installSettingsHandlers({ pipeline, providers: [] })
+    let calls = 0
+    server.use(
+      http.post('/api/v1/storage/project-cache/clear', () => {
+        calls++
+        return HttpResponse.json({ bytesFreed: 1234, filesRemoved: 2, filesSkipped: 0 })
+      }),
+    )
+    renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='runtime' />)
+    expect(await screen.findByText('settings.projectCacheDescription')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'settings.clearCache' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('settings.cacheCleared')
+    expect(calls).toBe(1)
+  })
+
+  it('reports cache failures without reporting success', async () => {
+    installSettingsHandlers({ pipeline, providers: [] })
+    server.use(
+      http.post(
+        '/api/v1/storage/project-cache/clear',
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    )
+    renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='runtime' />)
+    await userEvent.click(await screen.findByRole('button', { name: 'settings.clearCache' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('settings.cacheClearFailed')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
 describe('SettingsDialog Flux.2 Klein quality', () => {
   it('shows the quality row only for the selected Flux.2 Klein inpainter', async () => {
     const lama = renderSettings('lama-manga', 2)

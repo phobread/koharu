@@ -400,6 +400,7 @@ async fn synthesize_translations(app: &App, page: PageId) -> Result<()> {
             {
                 let patch = koharu_core::NodeDataPatch::Text(koharu_core::TextDataPatch {
                     translation: Some(Some(raw.clone())),
+                    style_ranges: Some(Vec::new()),
                     ..Default::default()
                 });
                 ops.push(Op::UpdateNode {

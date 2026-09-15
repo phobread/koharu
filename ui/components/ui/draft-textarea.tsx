@@ -10,12 +10,15 @@ export type DraftTextareaProps = Omit<
   'value' | 'onChange'
 > & {
   value: string
-  onValueChange: (value: string) => void
+  onValueChange: (value: string, element: HTMLTextAreaElement) => void
+  /** Allow an authoritative parent to replace the draft while focused. */
+  syncWhileFocused?: boolean
 }
 
 export function DraftTextarea({
   value,
   onValueChange,
+  syncWhileFocused = false,
   onFocus,
   onBlur,
   onCompositionStart,
@@ -29,9 +32,9 @@ export function DraftTextarea({
   const pendingCommitRef = useRef<string | null>(null)
   const lastExternalValueRef = useRef(value)
 
-  const commitValue = (nextValue: string) => {
+  const commitValue = (nextValue: string, element: HTMLTextAreaElement) => {
     pendingCommitRef.current = null
-    onValueChange(nextValue)
+    onValueChange(nextValue, element)
   }
 
   useEffect(() => {
@@ -41,14 +44,16 @@ export function DraftTextarea({
   useEffect(() => {
     lastExternalValueRef.current = value
 
-    // While the user is focused or composing, preserve their draft.
-    // Stale server refetches must not override what the user is actively typing.
-    if (isFocusedRef.current || isComposingRef.current) {
+    // While the user is composing, preserve the IME's active draft. Ordinary
+    // focused edits also stay local unless an authoritative parent explicitly
+    // opts into replacing them (the rich editor filters stale acknowledgements
+    // before enabling this path).
+    if (isComposingRef.current || (isFocusedRef.current && !syncWhileFocused)) {
       return
     }
 
     setDraftValue(value)
-  }, [value])
+  }, [syncWhileFocused, value])
 
   return (
     <Textarea
@@ -60,7 +65,7 @@ export function DraftTextarea({
       }}
       onBlur={(event) => {
         if (pendingCommitRef.current !== null) {
-          commitValue(pendingCommitRef.current)
+          commitValue(pendingCommitRef.current, event.currentTarget)
         }
         isComposingRef.current = false
         isFocusedRef.current = false
@@ -74,7 +79,7 @@ export function DraftTextarea({
         isComposingRef.current = false
         const committedValue = event.currentTarget.value
         setDraftValue(committedValue)
-        commitValue(committedValue)
+        commitValue(committedValue, event.currentTarget)
         onCompositionEnd?.(event)
       }}
       onChange={(event) => {
@@ -84,7 +89,7 @@ export function DraftTextarea({
           pendingCommitRef.current = nextValue
           return
         }
-        commitValue(nextValue)
+        commitValue(nextValue, event.currentTarget)
       }}
     />
   )

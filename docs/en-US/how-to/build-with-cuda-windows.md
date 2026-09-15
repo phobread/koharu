@@ -9,13 +9,13 @@ CUDA GPU acceleration on Windows, including the non-obvious failures you will hi
 to fix them. It complements [Build From Source](build-from-source.md); read that first
 for the general flow.
 
-Verified on: Windows 11, NVIDIA RTX 4050 Laptop (6 GB, compute 8.9), 2026-06-18.
+Verified on: Windows 11, NVIDIA RTX 4050 Laptop (6 GB, compute 8.9), 2026-07-18.
 
 ## TL;DR of the gotchas
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `Unsupported cuda toolkit version: 13.3` | `cudarc` 0.19.7 supports CUDA ≤ 13.2 only, exact match | Install CUDA Toolkit **13.2** (not 13.3) |
+| `Unsupported cuda toolkit version: <version>` | `cudarc` uses an exact `major.minor` allow-list; the locked 0.19.8 supports CUDA ≤ 13.3 | Install CUDA Toolkit **13.3**, or update `cudarc` before using a newer toolkit |
 | `preprocessor.h … C1189: MSVC traditional preprocessor` | CUDA 13 CCCL rejects MSVC legacy preprocessor | `NVCC_PREPEND_FLAGS=-Xcompiler=/Zc:preprocessor` |
 | `cpp_dialect.h … libcu++ requires at least C++ 17` | CUDA 13 dropped C++14; candle passes no `-std` | `NVCC_APPEND_FLAGS=-std=c++17` |
 | `Unable to find libclang` (building `koharu-llm`) | llama.cpp bindings need libclang | Install LLVM, set `LIBCLANG_PATH` |
@@ -26,22 +26,21 @@ Verified on: Windows 11, NVIDIA RTX 4050 Laptop (6 GB, compute 8.9), 2026-06-18.
 - **Visual Studio 2022** with the C++ workload (provides `cl.exe`).
 - **Rust ≥ 1.95** (2024 edition) and **Bun ≥ 1.0**.
 
-## 1. CUDA Toolkit 13.2 (NOT 13.3)
+## 1. CUDA Toolkit 13.3 Update 1
 
 `cudarc` (pulled in by candle) parses `nvcc --version` and requires an *exact*
-`major.minor` from a hardcoded list whose newest entry is **13.2**. CUDA 13.3 makes the
-build panic. winget offers 13.2 directly:
+`major.minor` from a hardcoded list. The locked `cudarc` 0.19.8 supports **CUDA 13.3**.
+Download NVIDIA's Windows local installer and verify its published checksum before running it:
 
 ```powershell
-# if you already installed 13.3, remove it first (elevated):
-winget uninstall --id Nvidia.CUDA
-# winget may leave the v13.3 folder behind; delete it to avoid duplicates.
-
-winget install --id Nvidia.CUDA --version 13.2
+# CUDA 13.3 Update 1 (Windows x86_64 local installer)
+# https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_windows.exe
+Get-FileHash .\cuda_13.3.1_windows.exe -Algorithm MD5
+# Expected: f5a1806cd4f1b2d140ac37e3a09d1ca8
 ```
 
-Confirm: `nvcc --version` reports `release 13.2`. `CUDA_PATH` should point at
-`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2`.
+Confirm: `nvcc --version` reports `release 13.3`. `CUDA_PATH` should point at
+`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`.
 
 ## 2. cuDNN 9.x (cuda13 build)
 
@@ -54,7 +53,7 @@ https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/
 ```
 
 Extract and copy `bin\*`, `include\*`, `lib\*` into the matching folders under
-`…\CUDA\v13.2`. (`cudarc` uses dynamic loading, so the DLLs are picked up at runtime from
+`…\CUDA\v13.3`. (`cudarc` uses dynamic loading, so the DLLs are picked up at runtime from
 the CUDA `bin` on `PATH`.)
 
 ## 3. LLVM / libclang (for the local-LLM crate)
@@ -84,7 +83,7 @@ C++17 dialect errors above).
 
 ```powershell
 bun install
-bun run build            # full desktop app -> target\release\koharu.exe
+bun run build            # full desktop app -> target\release\KoharuFORK.exe
 # or, lower level (note: --features cuda is required; it is not a default):
 bun cargo build --release -p koharu --features cuda
 ```
@@ -99,7 +98,7 @@ Run headless and drive one detection through the HTTP API (see
 [Run GUI, Headless, and MCP Modes](run-gui-headless-and-mcp.md)):
 
 ```powershell
-koharu.exe --headless --port 4000 --debug
+KoharuFORK.exe --headless --port 4000 --debug
 # POST /api/v1/projects {"name":"t"}
 # POST /api/v1/pages/from-paths {"paths":["<image.png>"],"replace":false}
 # POST /api/v1/pipelines {"steps":["comic-text-detector"]}
@@ -118,6 +117,6 @@ context is already gone (`thread local panicked on drop, aborting`, exit `0xC000
 It is cosmetic (output is already written) and originates in upstream `cudarc` / the
 `mayocream/candle` fork.
 
-The **full `koharu.exe` app is unaffected**: its long-lived multithreaded runtime cleans
+The **full `KoharuFORK.exe` app is unaffected**: its long-lived multithreaded runtime cleans
 up the cuDNN handle while the CUDA context is still valid, so it runs GPU inference and
 shuts down cleanly (verified).

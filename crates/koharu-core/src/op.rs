@@ -28,7 +28,7 @@ use crate::scene::{
     ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, NodeKindTag, Page, PageId,
     ProjectStyle, Scene, TextData, Transform,
 };
-use crate::style::TextStyle;
+use crate::style::{TextStyle, TextStyleRange};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -223,6 +223,10 @@ pub struct TextDataPatch {
     pub rendered_text_color: Option<Option<[u8; 4]>>,
     #[serde(default)]
     pub lock_layout_box: Option<bool>,
+    #[serde(default)]
+    pub style_ranges: Option<Vec<TextStyleRange>>,
+    #[serde(default)]
+    pub writing_direction: Option<Option<TextDirection>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
@@ -401,6 +405,11 @@ impl Op {
                             existing,
                         });
                     }
+                    if let (NodeKind::Text(text), NodeDataPatch::Text(text_patch)) =
+                        (&node.kind, data_patch)
+                    {
+                        validate_text_patch(text, text_patch)?;
+                    }
                 }
                 *prev = capture_prev_node_patch(node, patch);
                 apply_node_patch(node, patch);
@@ -562,6 +571,11 @@ impl Op {
                             existing,
                         });
                     }
+                    if let (NodeKind::Text(text), NodeDataPatch::Text(text_patch)) =
+                        (&node.kind, data_patch)
+                    {
+                        validate_text_patch(text, text_patch)?;
+                    }
                 }
                 Ok(())
             }
@@ -624,7 +638,16 @@ fn reorder_indexmap<K: Copy + std::hash::Hash + Eq, V>(
 }
 
 fn validate_page_invariants(page: &Page) -> OpResult {
-    validate_node_invariants(page.nodes.values())
+    validate_node_invariants(page.nodes.values())?;
+    for node in page.nodes.values() {
+        if let NodeKind::Text(text) = &node.kind {
+            validate_text_style_ranges(
+                text.translation.as_deref().unwrap_or(""),
+                &text.style_ranges,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Check only the invariant delta introduced by `candidate`.
@@ -666,7 +689,61 @@ fn page_invariants_allow(page: &Page, candidate: &Node) -> OpResult {
                 });
             }
         }
-        NodeKind::Image(_) | NodeKind::Text(_) => {}
+        NodeKind::Text(text) => {
+            validate_text_style_ranges(
+                text.translation.as_deref().unwrap_or(""),
+                &text.style_ranges,
+            )?;
+        }
+        NodeKind::Image(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_text_patch(data: &TextData, patch: &TextDataPatch) -> OpResult {
+    if patch.translation.is_some() && !data.style_ranges.is_empty() && patch.style_ranges.is_none()
+    {
+        return Err(OpError::Invariant(
+            "translation changes must also update character style ranges",
+        ));
+    }
+    if let Some(ranges) = &patch.style_ranges {
+        let translation = patch
+            .translation
+            .as_ref()
+            .map(|value| value.as_deref().unwrap_or(""))
+            .unwrap_or_else(|| data.translation.as_deref().unwrap_or(""));
+        validate_text_style_ranges(translation, ranges)?;
+    }
+    Ok(())
+}
+
+fn validate_text_style_ranges(
+    translation: &str,
+    ranges: &[crate::style::TextStyleRange],
+) -> OpResult {
+    for range in ranges {
+        let Ok(start) = usize::try_from(range.start) else {
+            return Err(OpError::Invariant(
+                "character style range start is too large",
+            ));
+        };
+        let Ok(end) = usize::try_from(range.end) else {
+            return Err(OpError::Invariant("character style range end is too large"));
+        };
+        if start >= end || end > translation.len() {
+            return Err(OpError::Invariant(
+                "character style range is outside the translation",
+            ));
+        }
+        if !translation.is_char_boundary(start) || !translation.is_char_boundary(end) {
+            return Err(OpError::Invariant(
+                "character style range is not on a UTF-8 boundary",
+            ));
+        }
+        if range.style.is_empty() {
+            return Err(OpError::Invariant("character style range has no overrides"));
+        }
     }
     Ok(())
 }
@@ -767,6 +844,8 @@ fn capture_prev_text(kind: &NodeKind, p: &TextDataPatch) -> TextDataPatch {
             .as_ref()
             .map(|_| data.rendered_text_color),
         lock_layout_box: p.lock_layout_box.as_ref().map(|_| data.lock_layout_box),
+        style_ranges: p.style_ranges.as_ref().map(|_| data.style_ranges.clone()),
+        writing_direction: p.writing_direction.as_ref().map(|_| data.writing_direction),
     }
 }
 
@@ -863,6 +942,12 @@ fn apply_text_patch(t: &mut TextData, p: &TextDataPatch) {
     if let Some(v) = p.lock_layout_box {
         t.lock_layout_box = v;
     }
+    if let Some(v) = &p.style_ranges {
+        t.style_ranges = v.clone();
+    }
+    if let Some(v) = p.writing_direction {
+        t.writing_direction = v;
+    }
 }
 
 fn apply_image_patch(i: &mut ImageData, p: &ImageDataPatch) {
@@ -918,6 +1003,18 @@ mod tests {
                 natural_width: 100,
                 natural_height: 100,
                 name: Some("layer.png".into()),
+            }),
+        }
+    }
+
+    fn text_node(translation: &str) -> Node {
+        Node {
+            id: NodeId::new(),
+            transform: Transform::default(),
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                translation: Some(translation.to_string()),
+                ..Default::default()
             }),
         }
     }
@@ -979,6 +1076,135 @@ mod tests {
         let mut undo = op.inverse();
         undo.apply(&mut scene).unwrap();
         assert_eq!(scene.node(page_id, node_id).unwrap().transform.x, 0.0);
+    }
+
+    #[test]
+    fn character_style_patch_and_inverse_round_trip() {
+        let mut scene = seed_scene();
+        let page = blank_page();
+        let page_id = page.id;
+        Op::AddPage { page, at: 0 }.apply(&mut scene).unwrap();
+        let node = text_node("Hello world");
+        let node_id = node.id;
+        Op::AddNode {
+            page: page_id,
+            node,
+            at: 0,
+        }
+        .apply(&mut scene)
+        .unwrap();
+
+        let ranges = vec![TextStyleRange {
+            start: 6,
+            end: 11,
+            style: crate::TextRangeStyle {
+                color: Some([200, 20, 30, 255]),
+                bold: Some(true),
+                italic: None,
+            },
+        }];
+        let mut op = Op::UpdateNode {
+            page: page_id,
+            id: node_id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    style_ranges: Some(ranges.clone()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        op.apply(&mut scene).unwrap();
+        let NodeKind::Text(text) = &scene.node(page_id, node_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.style_ranges, ranges);
+
+        op.inverse().apply(&mut scene).unwrap();
+        let NodeKind::Text(text) = &scene.node(page_id, node_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert!(text.style_ranges.is_empty());
+    }
+
+    #[test]
+    fn writing_direction_patch_and_inverse_round_trip() {
+        let mut scene = seed_scene();
+        let page = blank_page();
+        let page_id = page.id;
+        Op::AddPage { page, at: 0 }.apply(&mut scene).unwrap();
+        let node = text_node("Vertical");
+        let node_id = node.id;
+        Op::AddNode {
+            page: page_id,
+            node,
+            at: 0,
+        }
+        .apply(&mut scene)
+        .unwrap();
+
+        let mut op = Op::UpdateNode {
+            page: page_id,
+            id: node_id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    writing_direction: Some(Some(TextDirection::Vertical)),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        op.apply(&mut scene).unwrap();
+        let NodeKind::Text(text) = &scene.node(page_id, node_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.writing_direction, Some(TextDirection::Vertical));
+
+        op.inverse().apply(&mut scene).unwrap();
+        let NodeKind::Text(text) = &scene.node(page_id, node_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.writing_direction, None);
+    }
+
+    #[test]
+    fn rejects_style_range_that_splits_utf8_character() {
+        let mut scene = seed_scene();
+        let page = blank_page();
+        let page_id = page.id;
+        Op::AddPage { page, at: 0 }.apply(&mut scene).unwrap();
+        let node = text_node("A猫B");
+        let node_id = node.id;
+        Op::AddNode {
+            page: page_id,
+            node,
+            at: 0,
+        }
+        .apply(&mut scene)
+        .unwrap();
+        let result = Op::UpdateNode {
+            page: page_id,
+            id: node_id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    style_ranges: Some(vec![TextStyleRange {
+                        start: 1,
+                        end: 2,
+                        style: crate::TextRangeStyle {
+                            bold: Some(true),
+                            ..Default::default()
+                        },
+                    }]),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        }
+        .apply(&mut scene);
+        assert!(matches!(result, Err(OpError::Invariant(_))));
     }
 
     #[test]

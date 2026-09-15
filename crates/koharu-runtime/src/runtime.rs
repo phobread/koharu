@@ -156,6 +156,12 @@ impl Runtime {
     pub fn llama_directory(&self) -> Result<PathBuf> {
         crate::llama::runtime_dir(self)
     }
+
+    /// Lazily install the small CPU runtime and recognition model used to
+    /// verify Korean OCR on inverse-colour text panels.
+    pub async fn ensure_korean_ocr_assets(&self) -> Result<crate::KoreanOcrAssets> {
+        crate::korean_ocr::ensure_assets(self).await
+    }
 }
 
 pub type RuntimeManager = Runtime;

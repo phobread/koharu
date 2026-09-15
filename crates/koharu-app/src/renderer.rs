@@ -7,23 +7,22 @@
 //! Pure output: the pipeline engine ([`crate::pipeline::engines::renderer`])
 //! takes a `RenderOutput` and translates sprites + final composite into ops.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use image::{DynamicImage, GrayImage, Rgba, RgbaImage, imageops};
 use koharu_core::{
     FontFaceInfo, FontPrediction, FontSource, GradientDirection, NodeId, TextAlign, TextDirection,
-    TextShaderEffect, TextStrokeStyle, TextStyle, Transform,
+    TextShaderEffect, TextStrokeStyle, TextStyle, TextStyleRange, Transform,
 };
 
 use koharu_renderer::{
     TextAlign as RendererTextAlign, TextShaderEffect as RendererEffect,
     font::{FaceInfo, Font, FontBook},
     layout::{LayoutRun, TextLayout, WritingMode},
-    renderer::{RasterOptions, RenderOptions, RenderStrokeOptions, TinySkiaRenderer},
+    renderer::{
+        RasterOptions, RenderOptions, RenderStrokeOptions, RenderStyleRange, TinySkiaRenderer,
+    },
     text::{
         latin::{BubbleIndex, LayoutBox},
         script::{font_families_for_text, writing_mode_for_block},
@@ -45,9 +44,11 @@ pub struct RenderBlockInput {
     pub transform: Transform,
     pub translation: String,
     pub style: Option<TextStyle>,
+    pub style_ranges: Vec<TextStyleRange>,
     pub font_prediction: Option<FontPrediction>,
     pub source_direction: Option<TextDirection>,
     pub rendered_direction: Option<TextDirection>,
+    pub writing_direction: Option<TextDirection>,
     pub lock_layout_box: bool,
 }
 
@@ -59,7 +60,7 @@ pub struct PageRenderOptions {
     pub document_font: Option<String>,
     /// Global default text size. Caps the auto-fit search so text is at most
     /// this size but still shrinks to fit its box. A per-node explicit
-    /// `style.font_size` overrides it. `None` keeps the box-derived cap.
+    /// `style.font_size` overrides it. `None` uses the renderer's 300 px cap.
     pub document_font_size: Option<f32>,
     /// Global default alignment used when a block has no explicit
     /// `style.text_align`. `None` keeps the renderer's centre default.
@@ -71,15 +72,16 @@ pub struct PageRenderOptions {
     pub raster: RasterOptions,
 }
 
-/// Per-block sprite output. `transform` becomes `TextData.sprite_transform`
-/// when the renderer expanded the layout beyond the original bubble.
+/// Per-block sprite output. `expanded_transform` becomes
+/// `TextData.sprite_transform` and places the tightly sized sprite within the
+/// authoritative node rectangle.
 pub struct RenderedBlock {
     pub node_id: NodeId,
     pub sprite: DynamicImage,
     pub rendered_direction: TextDirection,
     pub expanded_transform: Option<Transform>,
-    /// Font size the fit actually settled on (auto-fit result or explicit
-    /// override) — persisted so the UI can scale text with box resizes.
+    /// Font size the fit actually settled on (auto-fit result or a fitted
+    /// explicit preference) — persisted for the UI's size readout.
     pub font_size: f32,
     /// Text colour actually painted (manual pick or auto contrast result) —
     /// persisted so the UI swatch can show the real colour for auto blocks.
@@ -297,6 +299,12 @@ impl Renderer {
         if translation.is_empty() {
             return Ok(None);
         }
+        let trim_start = block.translation.len() - block.translation.trim_start().len();
+        let render_style_ranges = renderer_style_ranges(
+            &block.style_ranges,
+            trim_start,
+            trim_start + translation.len(),
+        );
 
         let layout_source = layout_source_from_input(block, translation);
 
@@ -351,10 +359,9 @@ impl Renderer {
             .without_hyphenation();
         // A document default size caps the auto-fit search (text still shrinks
         // to fit a tight box); otherwise the cap is derived from the box.
-        let max_font = match document_font_size {
-            Some(size) => size.max(min_font_size + 1.0),
-            None => max_font_size_for_box(layout_box, min_font_size),
-        };
+        let max_font = document_font_size
+            .unwrap_or(MAX_AUTO_FONT_SIZE)
+            .clamp(1.0, MAX_AUTO_FONT_SIZE);
         // Reserve clearance for the outline. The sprite canvas is sized to the
         // glyph fill and the stroke paints *outward* beyond it, so without
         // canvas padding the outline clips at the sprite edge no matter how
@@ -379,10 +386,9 @@ impl Renderer {
         // frame, then the sprite raster is rotated about its centre and the
         // emitted transform becomes the rotated AABB with rotation 0 (baked
         // in). Downstream consumers — page composite, UI overlay, PSD export
-        // — all place sprites by that transform and need no rotation logic,
-        // and mask-collision fitting below tests the true rotated footprint.
+        // — all place sprites by that transform and need no rotation logic.
         let rotation_deg = effective_rotation(block.transform.rotation_deg);
-        let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
+        let render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
             let resolved_stroke = resolve_stroke_style(
                 block.font_prediction.as_ref(),
                 style.stroke.as_ref(),
@@ -400,6 +406,7 @@ impl Renderer {
                     effect: shader_core_to_renderer(block_effect),
                     padding: stroke_clearance(resolved_stroke.as_ref()),
                     stroke: resolved_stroke.clone(),
+                    style_ranges: render_style_ranges.clone(),
                     raster,
                     ..Default::default()
                 },
@@ -419,6 +426,7 @@ impl Renderer {
                             effect: shader_core_to_renderer(block_effect),
                             padding: stroke_clearance(resolved_stroke.as_ref()),
                             stroke: resolved_stroke,
+                            style_ranges: render_style_ranges.clone(),
                             raster,
                             ..Default::default()
                         },
@@ -440,28 +448,6 @@ impl Renderer {
             })
         };
 
-        if let Some((mask, bubble_id)) = bubble_mask.zip(resolved_box.bubble_id) {
-            let candidate = fit_rendered_with_mask_collision(
-                &layout_builder,
-                translation,
-                fit_box,
-                style.font_size,
-                min_font_size,
-                max_font,
-                mask,
-                bubble_id,
-                &mut render_candidate,
-            )?;
-            return Ok(Some(RenderedBlock {
-                node_id: block.node_id,
-                sprite: DynamicImage::ImageRgba8(candidate.image),
-                rendered_direction: rendered_direction_for_writing_mode(writing_mode),
-                expanded_transform: Some(candidate.transform),
-                font_size: candidate.font_size,
-                text_color: color,
-            }));
-        }
-
         let layout = fit_font_size(
             &layout_builder,
             translation,
@@ -471,6 +457,33 @@ impl Renderer {
             min_font_size,
             max_font,
         )?;
+
+        // Synthetic bold/italic extends beyond the upright layout's ink bounds.
+        // Reserve the measured effect clearance, then only shrink the font so
+        // the padded sprite still fits the user's box.
+        let effect_clearance = self.renderer.effect_padding(
+            &layout,
+            &RenderOptions {
+                font_size: layout.font_size,
+                effect: shader_core_to_renderer(block_effect),
+                style_ranges: render_style_ranges.clone(),
+                ..Default::default()
+            },
+        )?;
+        let layout = if effect_clearance > 0.0 {
+            let effect_box = inset_layout_box(fit_box, effect_clearance);
+            fit_font_size(
+                &layout_builder,
+                translation,
+                effect_box.width,
+                effect_box.height,
+                Some(layout.font_size),
+                min_font_size,
+                layout.font_size,
+            )?
+        } else {
+            layout
+        };
 
         let candidate = render_candidate(&layout)?;
 
@@ -599,22 +612,36 @@ impl Renderer {
     }
 }
 
+fn renderer_style_ranges(
+    ranges: &[TextStyleRange],
+    trim_start: usize,
+    trim_end: usize,
+) -> Vec<RenderStyleRange> {
+    ranges
+        .iter()
+        .filter_map(|range| {
+            let start = usize::try_from(range.start).ok()?.max(trim_start);
+            let end = usize::try_from(range.end).ok()?.min(trim_end);
+            (start < end && !range.style.is_empty()).then(|| RenderStyleRange {
+                range: start - trim_start..end - trim_start,
+                color: range.style.color,
+                bold: range.style.bold,
+                italic: range.style.italic,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers: font sizing
 // ---------------------------------------------------------------------------
 
-const MASK_COLLISION_ALPHA_THRESHOLD: u8 = 8;
-const FIT_EPSILON: f32 = 0.5;
+const MAX_AUTO_FONT_SIZE: f32 = 300.0;
 
 struct RenderedTextCandidate {
     image: RgbaImage,
     transform: Transform,
     font_size: f32,
-}
-
-struct MaskCollisionAttempt {
-    candidate: RenderedTextCandidate,
-    valid: bool,
 }
 
 fn min_font_size_for_image(image_width: u32, image_height: u32) -> f32 {
@@ -639,19 +666,10 @@ fn effective_min_font_size(image_min: f32, lock_layout_box: bool) -> f32 {
     }
 }
 
-/// Maximum font size for the given layout box, derived from its dimensions.
-/// Caps extreme cases (huge empty bubble + short text → giant glyphs).
-fn max_font_size_for_box(layout_box: LayoutBox, min_size: f32) -> f32 {
-    const GLOBAL_CAP_PX: f32 = 72.0;
-    let by_height = layout_box.height * 0.45;
-    let by_width = layout_box.width * 0.9;
-    by_height.min(by_width).clamp(min_size + 1.0, GLOBAL_CAP_PX)
-}
-
 /// Binary-search the largest integer font size in `[min_size, max_size]`
 /// whose shaped layout still fits inside the constraint box. An
-/// `explicit_size` override (user-set per-block font size) bypasses the
-/// search.
+/// `explicit_size` override is the preferred size, but still shrinks when
+/// necessary so a manual choice can never paint outside the text box.
 fn fit_font_size<'a>(
     layout_builder: &TextLayout<'a>,
     text: &str,
@@ -669,12 +687,34 @@ fn fit_font_size<'a>(
             .with_max_height(constraint_height)
             .run(text)
     };
-    if let Some(s) = explicit_size {
-        return run_at(s);
-    }
-
     let fits =
         |run: &LayoutRun<'a>| run.width <= constraint_width && run.height <= constraint_height;
+
+    if let Some(size) = explicit_size {
+        let size = size.clamp(1.0, MAX_AUTO_FONT_SIZE);
+        let preferred = run_at(size)?;
+        if fits(&preferred) {
+            return Ok(preferred);
+        }
+
+        // The requested size overflows. Preserve it as an upper bound and
+        // find the largest smaller size that fits, down to a final 1 px
+        // least-overflow fallback for pathologically tiny boxes.
+        let mut lo = 1;
+        let mut hi = (size.floor() as i32 - 1).max(0);
+        let mut best = run_at(1.0)?;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let candidate = run_at(mid as f32)?;
+            if fits(&candidate) {
+                best = candidate;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return Ok(best);
+    }
 
     let min_size = min_size.max(1.0).round() as i32;
     let max_size = (max_size.round() as i32).max(min_size);
@@ -690,8 +730,7 @@ fn fit_font_size<'a>(
     if !fits(&best) {
         // The readability floor is a preference, not a licence to overflow:
         // auto-fit text must always stay inside its box, so keep shrinking
-        // below the floor until it fits. Only an explicit user-set size may
-        // exceed the box.
+        // below the floor until it fits.
         let mut lo = 1;
         let mut hi = min_size - 1;
         while lo <= hi {
@@ -723,206 +762,6 @@ fn fit_font_size<'a>(
     Ok(best)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fit_rendered_with_mask_collision<'a, F>(
-    layout_builder: &TextLayout<'a>,
-    text: &str,
-    layout_box: LayoutBox,
-    explicit_size: Option<f32>,
-    min_size: f32,
-    max_size: f32,
-    mask: &GrayImage,
-    bubble_id: u8,
-    render_candidate: &mut F,
-) -> Result<RenderedTextCandidate>
-where
-    F: FnMut(&LayoutRun<'a>) -> Result<RenderedTextCandidate>,
-{
-    if let Some(size) = explicit_size {
-        let attempt = render_mask_collision_attempt(
-            layout_builder,
-            text,
-            layout_box,
-            size.max(1.0),
-            mask,
-            bubble_id,
-            render_candidate,
-        )?;
-        return Ok(attempt.candidate);
-    }
-
-    let min_size = min_size.max(1.0).round() as i32;
-    let max_size = (max_size.max(1.0).round() as i32).max(min_size);
-
-    if let Some(candidate) = try_mask_collision_size(
-        layout_builder,
-        text,
-        layout_box,
-        max_size as f32,
-        mask,
-        bubble_id,
-        render_candidate,
-    )? {
-        return Ok(candidate);
-    }
-
-    let min_attempt = render_mask_collision_attempt(
-        layout_builder,
-        text,
-        layout_box,
-        min_size as f32,
-        mask,
-        bubble_id,
-        render_candidate,
-    )?;
-    if !min_attempt.valid {
-        // Same soft floor as `fit_font_size`: prefer shrinking below the
-        // readability minimum over spilling outside the box/bubble.
-        let mut lo = 1;
-        let mut hi = min_size - 1;
-        let mut below_floor_best: Option<RenderedTextCandidate> = None;
-        while lo <= hi {
-            let mid = lo + (hi - lo) / 2;
-            if let Some(candidate) = try_mask_collision_size(
-                layout_builder,
-                text,
-                layout_box,
-                mid as f32,
-                mask,
-                bubble_id,
-                render_candidate,
-            )? {
-                below_floor_best = Some(candidate);
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        return Ok(below_floor_best.unwrap_or(min_attempt.candidate));
-    }
-    let mut best = min_attempt.candidate;
-
-    let mut lo = min_size + 1;
-    let mut hi = max_size - 1;
-    while lo <= hi {
-        let mid = lo + (hi - lo) / 2;
-        if let Some(candidate) = try_mask_collision_size(
-            layout_builder,
-            text,
-            layout_box,
-            mid as f32,
-            mask,
-            bubble_id,
-            render_candidate,
-        )? {
-            best = candidate;
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-
-    Ok(best)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn try_mask_collision_size<'a, F>(
-    layout_builder: &TextLayout<'a>,
-    text: &str,
-    layout_box: LayoutBox,
-    font_size: f32,
-    mask: &GrayImage,
-    bubble_id: u8,
-    render_candidate: &mut F,
-) -> Result<Option<RenderedTextCandidate>>
-where
-    F: FnMut(&LayoutRun<'a>) -> Result<RenderedTextCandidate>,
-{
-    let layout = run_collision_layout_at(layout_builder, text, layout_box, font_size)?;
-    let fits_layout_box = layout_fits_collision_attempt(&layout, layout_box);
-    if !fits_layout_box {
-        return Ok(None);
-    }
-
-    let candidate = render_candidate(&layout)?;
-    if sprite_collides_with_bubble_mask(&candidate.image, &candidate.transform, mask, bubble_id) {
-        return Ok(None);
-    }
-    Ok(Some(candidate))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_mask_collision_attempt<'a, F>(
-    layout_builder: &TextLayout<'a>,
-    text: &str,
-    layout_box: LayoutBox,
-    font_size: f32,
-    mask: &GrayImage,
-    bubble_id: u8,
-    render_candidate: &mut F,
-) -> Result<MaskCollisionAttempt>
-where
-    F: FnMut(&LayoutRun<'a>) -> Result<RenderedTextCandidate>,
-{
-    let layout = run_collision_layout_at(layout_builder, text, layout_box, font_size)?;
-    let fits_layout_box = layout_fits_collision_attempt(&layout, layout_box);
-    let candidate = render_candidate(&layout)?;
-    let valid = fits_layout_box
-        && !sprite_collides_with_bubble_mask(
-            &candidate.image,
-            &candidate.transform,
-            mask,
-            bubble_id,
-        );
-    Ok(MaskCollisionAttempt { candidate, valid })
-}
-
-fn run_collision_layout_at<'a>(
-    layout_builder: &TextLayout<'a>,
-    text: &str,
-    layout_box: LayoutBox,
-    font_size: f32,
-) -> Result<LayoutRun<'a>> {
-    layout_builder
-        .clone()
-        .with_font_size(font_size.max(1.0))
-        .with_max_width(layout_box.width.max(1.0))
-        .with_max_height(layout_box.height.max(1.0))
-        .run(text)
-}
-
-fn layout_fits_collision_attempt(layout: &LayoutRun<'_>, layout_box: LayoutBox) -> bool {
-    layout.width <= layout_box.width + FIT_EPSILON
-        && layout.height <= layout_box.height + FIT_EPSILON
-}
-
-fn sprite_collides_with_bubble_mask(
-    sprite: &RgbaImage,
-    transform: &Transform,
-    mask: &GrayImage,
-    bubble_id: u8,
-) -> bool {
-    let origin_x = transform.x.round() as i32;
-    let origin_y = transform.y.round() as i32;
-    let mask_w = mask.width() as i32;
-    let mask_h = mask.height() as i32;
-
-    for (x, y, pixel) in sprite.enumerate_pixels() {
-        if pixel.0[3] <= MASK_COLLISION_ALPHA_THRESHOLD {
-            continue;
-        }
-        let mask_x = origin_x + x as i32;
-        let mask_y = origin_y + y as i32;
-        if mask_x < 0 || mask_y < 0 || mask_x >= mask_w || mask_y >= mask_h {
-            return true;
-        }
-        if mask.get_pixel(mask_x as u32, mask_y as u32).0[0] != bubble_id {
-            return true;
-        }
-    }
-    false
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ResolvedLayoutBox {
     seed_box: LayoutBox,
@@ -934,73 +773,31 @@ fn resolve_layout_boxes(
     blocks: &[RenderBlockInput],
     bubble_index: Option<&BubbleIndex>,
 ) -> Vec<ResolvedLayoutBox> {
-    let Some(bubble_index) = bubble_index else {
-        return blocks
-            .iter()
-            .map(|block| {
-                let seed_box = seed_layout_box(block);
-                ResolvedLayoutBox {
-                    seed_box,
-                    layout_box: seed_box,
-                    bubble_id: None,
+    blocks
+        .iter()
+        .map(|block| {
+            let seed_box = seed_layout_box(block);
+            // The visible node rectangle is always the authoritative layout
+            // boundary. Bubble detection may identify which interior to use
+            // for automatic contrast sampling, but must never replace the
+            // user's box or make untouched first renders behave differently
+            // from manually resized boxes.
+            let bubble_id = bubble_index.and_then(|index| {
+                let translation = block.translation.trim();
+                if translation.is_empty() {
+                    return None;
                 }
-            })
-            .collect();
-    };
-
-    let mut counts: HashMap<u8, usize> = HashMap::new();
-    let mut matches = Vec::with_capacity(blocks.len());
-
-    for block in blocks {
-        let seed_box = seed_layout_box(block);
-        let translation = block.translation.trim();
-        // Locked (manually sized/split) boxes never expand to the bubble's
-        // safe area, but they must still *occupy* it: without counting them,
-        // resizing one block in a shared bubble would leave its neighbour as
-        // the sole occupant, blowing it up to the whole bubble and painting
-        // over the locked box.
-        let occupied = if translation.is_empty() {
-            None
-        } else {
-            let layout_source = layout_source_from_input(block, translation);
-            let writing_mode = writing_mode_for_block(&layout_source);
-            bubble_index.lookup_match(seed_box, writing_mode)
-        };
-        if let Some(matched) = occupied {
-            *counts.entry(matched.id).or_insert(0) += 1;
-        }
-        let bubble_match = if block.lock_layout_box {
-            None
-        } else {
-            occupied
-        };
-        matches.push((seed_box, bubble_match));
-    }
-
-    matches
-        .into_iter()
-        .map(|(seed_box, bubble_match)| match bubble_match {
-            // Connected bubbles can contain multiple independently detected
-            // text blocks. Expanding all of them to the same safe area makes
-            // their layouts collide, so shared bubbles keep each block's
-            // original detector box.
-            Some(matched) if counts.get(&matched.id).copied().unwrap_or(0) == 1 => {
-                ResolvedLayoutBox {
-                    seed_box,
-                    layout_box: matched.layout_box,
-                    bubble_id: Some(matched.id),
-                }
+                let layout_source = layout_source_from_input(block, translation);
+                let writing_mode = writing_mode_for_block(&layout_source);
+                index
+                    .lookup_match(seed_box, writing_mode)
+                    .map(|matched| matched.id)
+            });
+            ResolvedLayoutBox {
+                seed_box,
+                layout_box: seed_box,
+                bubble_id,
             }
-            Some(matched) => ResolvedLayoutBox {
-                seed_box,
-                layout_box: seed_box,
-                bubble_id: Some(matched.id),
-            },
-            None => ResolvedLayoutBox {
-                seed_box,
-                layout_box: seed_box,
-                bubble_id: None,
-            },
         })
         .collect()
 }
@@ -1086,6 +883,7 @@ fn layout_source_from_input(block: &RenderBlockInput, translation: &str) -> Rend
         height: block.transform.height.max(1.0),
         text: translation.to_string(),
         source_direction: block.source_direction.map(core_direction_to_renderer),
+        writing_direction: block.writing_direction.map(core_direction_to_renderer),
     }
 }
 
@@ -1491,13 +1289,32 @@ fn placement_origin(input: &RenderBlockInput, expanded: &Option<Transform>) -> (
 mod tests {
     use super::*;
     use image::{GrayImage, Luma, Rgba, RgbaImage};
-    use koharu_core::NodeId;
+    use koharu_core::{NodeId, TextRangeStyle};
 
     #[test]
     fn default_font_families_should_fill_empty_list() {
         let mut font_families = Vec::new();
         apply_default_font_families(&mut font_families, "hello");
         assert!(!font_families.is_empty());
+    }
+
+    #[test]
+    fn character_ranges_are_shifted_past_trimmed_leading_space() {
+        let ranges = renderer_style_ranges(
+            &[TextStyleRange {
+                start: 4,
+                end: 9,
+                style: TextRangeStyle {
+                    bold: Some(true),
+                    ..Default::default()
+                },
+            }],
+            2,
+            9,
+        );
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].range, 2..7);
+        assert_eq!(ranges[0].bold, Some(true));
     }
 
     #[test]
@@ -1753,56 +1570,6 @@ mod tests {
     }
 
     #[test]
-    fn mask_collision_fit_renders_min_size_when_no_safe_size_exists() -> Result<()> {
-        let font = any_system_font();
-        let layout_builder = TextLayout::new(&font, None);
-        let layout_box = LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width: 24.0,
-            height: 12.0,
-        };
-        let mask = GrayImage::from_pixel(64, 64, Luma([0u8]));
-        let mut rendered_sizes = Vec::new();
-        let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
-            rendered_sizes.push(layout.font_size);
-            let width = layout.width.ceil().max(1.0) as u32;
-            let height = layout.height.ceil().max(1.0) as u32;
-            Ok(RenderedTextCandidate {
-                image: RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255])),
-                font_size: layout.font_size,
-                transform: Transform {
-                    x: 0.0,
-                    y: 0.0,
-                    width: width as f32,
-                    height: height as f32,
-                    rotation_deg: 0.0,
-                },
-            })
-        };
-
-        let candidate = fit_rendered_with_mask_collision(
-            &layout_builder,
-            "overflowing text",
-            layout_box,
-            None,
-            12.0,
-            18.0,
-            &mask,
-            1,
-            &mut render_candidate,
-        )?;
-
-        // Every size collides (the mask has no bubble-1 pixels), so the
-        // readability-floor candidate is returned as the least-bad option.
-        assert!(rendered_sizes.contains(&12.0));
-        assert_eq!(candidate.font_size, 12.0);
-        assert!(candidate.image.width() >= 1);
-        assert!(candidate.image.height() >= 1);
-        Ok(())
-    }
-
-    #[test]
     fn auto_fit_shrinks_below_readability_floor_instead_of_overflowing() -> Result<()> {
         let font = any_system_font();
         let layout_builder = TextLayout::new(&font, None).without_hyphenation();
@@ -1828,7 +1595,69 @@ mod tests {
     }
 
     #[test]
-    fn shared_bubble_keeps_seed_boxes_to_avoid_overlap() {
+    fn auto_fit_can_grow_past_the_legacy_72_px_cap() -> Result<()> {
+        let font = any_system_font();
+        let layout_builder = TextLayout::new(&font, None).without_hyphenation();
+        let layout = fit_font_size(
+            &layout_builder,
+            "Hi",
+            500.0,
+            300.0,
+            None,
+            12.0,
+            MAX_AUTO_FONT_SIZE,
+        )?;
+        assert!(
+            layout.font_size > 72.0,
+            "expected large boxes to use more than 72 px, got {}",
+            layout.font_size
+        );
+        assert!(layout.width <= 500.0 && layout.height <= 300.0);
+        Ok(())
+    }
+
+    #[test]
+    fn page_four_block_five_geometry_grows_and_stays_inside_box() -> Result<()> {
+        let font = any_system_font();
+        let layout_builder = TextLayout::new(&font, None).without_hyphenation();
+        let layout = fit_font_size(
+            &layout_builder,
+            "...as if I existed from the very beginning just to submit to this merciless male... ♡",
+            1337.0,
+            395.0,
+            None,
+            28.0,
+            MAX_AUTO_FONT_SIZE,
+        )?;
+        assert!(
+            layout.font_size > 72.0,
+            "expected the reported block to grow past its old cap, got {}",
+            layout.font_size
+        );
+        assert!(layout.width <= 1337.0 && layout.height <= 395.0);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_font_size_shrinks_instead_of_overflowing_box() -> Result<()> {
+        let font = any_system_font();
+        let layout_builder = TextLayout::new(&font, None).without_hyphenation();
+        let layout = fit_font_size(
+            &layout_builder,
+            "overflowing text",
+            48.0,
+            30.0,
+            Some(200.0),
+            12.0,
+            MAX_AUTO_FONT_SIZE,
+        )?;
+        assert!(layout.font_size < 200.0);
+        assert!(layout.width <= 48.0 && layout.height <= 30.0);
+        Ok(())
+    }
+
+    #[test]
+    fn every_block_keeps_its_seed_box_inside_a_shared_bubble() {
         let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
         paint_rect(&mut mask, 10, 10, 190, 190, 1);
         let index = BubbleIndex::new(mask);
@@ -1846,7 +1675,7 @@ mod tests {
     }
 
     #[test]
-    fn single_block_can_still_expand_into_its_bubble() {
+    fn first_render_keeps_the_visible_text_box_inside_a_bubble() {
         let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
         paint_rect(&mut mask, 20, 20, 180, 180, 1);
         let index = BubbleIndex::new(mask);
@@ -1854,8 +1683,7 @@ mod tests {
 
         let layout_boxes = resolve_layout_boxes(&blocks, Some(&index));
 
-        assert!(layout_boxes[0].layout_box.width > blocks[0].transform.width);
-        assert!(layout_boxes[0].layout_box.height > blocks[0].transform.height);
+        assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
         assert_eq!(layout_boxes[0].bubble_id, Some(1));
     }
 
@@ -1871,13 +1699,11 @@ mod tests {
         let layout_boxes = resolve_layout_boxes(&blocks, Some(&index));
 
         assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
-        assert_eq!(layout_boxes[0].bubble_id, None);
+        assert_eq!(layout_boxes[0].bubble_id, Some(1));
     }
 
     #[test]
-    fn locked_block_still_occupies_shared_bubble_so_neighbour_keeps_seed_box() {
-        // Resizing a block locks it; the unlocked neighbour in the same
-        // bubble must NOT become the "sole occupant" and expand over it.
+    fn locked_and_unlocked_blocks_follow_the_same_box_rule() {
         let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
         paint_rect(&mut mask, 10, 10, 190, 190, 1);
         let mut locked = block(30.0, 30.0, 40.0, 80.0, "hello");
@@ -1888,58 +1714,10 @@ mod tests {
 
         let layout_boxes = resolve_layout_boxes(&blocks, Some(&index));
 
-        // Locked box: unchanged, opts out of bubble handling entirely.
         assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
-        assert_eq!(layout_boxes[0].bubble_id, None);
-        // Neighbour: keeps its own detector box instead of the bubble area.
+        assert_eq!(layout_boxes[0].bubble_id, Some(1));
         assert_eq!(layout_boxes[1].layout_box, seed_layout_box(&blocks[1]));
         assert_eq!(layout_boxes[1].bubble_id, Some(1));
-    }
-
-    #[test]
-    fn mask_collision_detects_alpha_outside_matched_bubble() {
-        let mut mask = GrayImage::from_pixel(10, 10, Luma([0u8]));
-        paint_rect(&mut mask, 2, 2, 8, 8, 1);
-        let sprite = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 255]));
-
-        let inside = Transform {
-            x: 3.0,
-            y: 3.0,
-            width: 4.0,
-            height: 4.0,
-            rotation_deg: 0.0,
-        };
-        assert!(!sprite_collides_with_bubble_mask(
-            &sprite, &inside, &mask, 1
-        ));
-
-        let outside = Transform {
-            x: 0.0,
-            y: 0.0,
-            width: 4.0,
-            height: 4.0,
-            rotation_deg: 0.0,
-        };
-        assert!(sprite_collides_with_bubble_mask(
-            &sprite, &outside, &mask, 1
-        ));
-    }
-
-    #[test]
-    fn mask_collision_ignores_transparent_sprite_pixels() {
-        let mask = GrayImage::from_pixel(4, 4, Luma([0u8]));
-        let sprite = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 0]));
-        let transform = Transform {
-            x: 0.0,
-            y: 0.0,
-            width: 4.0,
-            height: 4.0,
-            rotation_deg: 0.0,
-        };
-
-        assert!(!sprite_collides_with_bubble_mask(
-            &sprite, &transform, &mask, 1
-        ));
     }
 
     fn block(x: f32, y: f32, width: f32, height: f32, translation: &str) -> RenderBlockInput {
@@ -1954,9 +1732,11 @@ mod tests {
             },
             translation: translation.to_string(),
             style: None,
+            style_ranges: Vec::new(),
             font_prediction: None,
             source_direction: None,
             rendered_direction: None,
+            writing_direction: None,
             lock_layout_box: false,
         }
     }

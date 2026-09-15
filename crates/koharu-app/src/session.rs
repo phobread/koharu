@@ -26,7 +26,7 @@ use chrono::Utc;
 use fs4::FileExt;
 use koharu_core::{Scene, op::Op};
 use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::blobs::BlobStore;
 use crate::history::{self, History};
@@ -51,9 +51,12 @@ const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 ///     black/white are finally expressible as manual picks.
 /// v5: `TextStrokeStyle.color` became `Option` too — `None` = contrast
 ///     against the text colour instead of a hard-coded white.
-/// v6: current layout (`TextData` gained `rendered_text_color` — the colour
-///     the renderer actually painted, so the UI swatch stops guessing).
-const SCENE_FORMAT_VERSION: u16 = 6;
+/// v6: `TextData` gained `rendered_text_color` — the colour the renderer
+///     actually painted, so the UI swatch stops guessing.
+/// v7: `TextData` gained character-level `style_ranges`.
+/// v8: current layout (`TextData` gained the explicit `writing_direction`
+///     override).
+const SCENE_FORMAT_VERSION: u16 = 8;
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -144,9 +147,20 @@ impl ProjectSession {
 
     /// Apply an Op. Returns the epoch after apply. On error the scene is
     /// unchanged because history applies to a clone and swaps on commit.
+    ///
+    /// Every deletion entry point (panel, canvas, RPC, MCP, pipeline batches)
+    /// funnels through here, so this is where a text node's erase-mask
+    /// contribution, its inpainted pixels and the stale rendered composite
+    /// are retired with it — see [`crate::text_erase`]. The extra ops join
+    /// the caller's op in one batch, so the whole thing is a single atomic,
+    /// undoable history entry. If those layers can't be read or written the
+    /// deletion fails as a whole; a malformed op is passed through unchanged
+    /// and fails in history. Either way the scene, log and undo stacks are
+    /// untouched.
     pub fn apply(&self, op: Op) -> Result<u64> {
         let mut history = self.history.lock();
         let mut scene = self.scene.write();
+        let op = crate::text_erase::sync_deleted_text_erase(&scene, &self.blobs, op)?;
         history.apply(&mut scene, op)
     }
 
@@ -252,18 +266,24 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
         return match version {
-            SCENE_FORMAT_VERSION => postcard::from_bytes(payload).context("postcard decode (v6)"),
-            5 => postcard::from_bytes::<compat::SnapshotV5>(payload)
-                .context("postcard decode (v5)")
+            SCENE_FORMAT_VERSION => decode_postcard_exact(payload, "v8"),
+            // The first vertical-writing build accidentally reused v7 for
+            // the v8 layout. Exact consumption distinguishes the real v7
+            // shape from snapshots written during that collision window.
+            7 => match decode_postcard_exact::<compat::SnapshotV7>(payload, "v7") {
+                Ok(snap) => Ok(snap.upgrade()),
+                Err(v7_err) => decode_postcard_exact::<Snapshot>(payload, "v7 collision layout")
+                    .with_context(|| format!("canonical v7 also failed: {v7_err:#}")),
+            },
+            6 => decode_postcard_exact::<compat::SnapshotV6>(payload, "v6")
+                .map(compat::SnapshotV6::upgrade),
+            5 => decode_postcard_exact::<compat::SnapshotV5>(payload, "v5")
                 .map(compat::SnapshotV5::upgrade),
-            4 => postcard::from_bytes::<compat::SnapshotV4>(payload)
-                .context("postcard decode (v4)")
+            4 => decode_postcard_exact::<compat::SnapshotV4>(payload, "v4")
                 .map(compat::SnapshotV4::upgrade),
-            3 => postcard::from_bytes::<compat::SnapshotV3>(payload)
-                .context("postcard decode (v3)")
+            3 => decode_postcard_exact::<compat::SnapshotV3>(payload, "v3")
                 .map(compat::SnapshotV3::upgrade),
-            2 => postcard::from_bytes::<compat::SnapshotV2>(payload)
-                .context("postcard decode (v2)")
+            2 => decode_postcard_exact::<compat::SnapshotV2>(payload, "v2")
                 .map(compat::SnapshotV2::upgrade),
             _ => anyhow::bail!(
                 "unsupported scene.bin format version {version} (written by a newer build?)"
@@ -277,12 +297,38 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         return Ok(snap);
     }
 
+    // A few interim builds wrote then-current layouts without a header. Keep
+    // both recoverable, requiring full consumption so a wrong shape cannot
+    // silently decode a prefix.
+    if let Ok((snap, rest)) = postcard::take_from_bytes::<compat::SnapshotV7>(bytes)
+        && rest.is_empty()
+    {
+        return Ok(snap.upgrade());
+    }
+
+    if let Ok((snap, rest)) = postcard::take_from_bytes::<compat::SnapshotV6>(bytes)
+        && rest.is_empty()
+    {
+        return Ok(snap.upgrade());
+    }
+
     let (legacy, rest) = postcard::take_from_bytes::<compat::SnapshotV1>(bytes)
-        .context("postcard decode (current and v1 layouts both failed)")?;
+        .context("postcard decode (current, v7, v6, and v1 layouts all failed)")?;
     if !rest.is_empty() {
         anyhow::bail!("trailing bytes after v1 snapshot — file corrupt?");
     }
     Ok(legacy.upgrade())
+}
+
+fn decode_postcard_exact<T: DeserializeOwned>(bytes: &[u8], version: &str) -> Result<T> {
+    let (value, rest) =
+        postcard::take_from_bytes(bytes).with_context(|| format!("postcard decode ({version})"))?;
+    anyhow::ensure!(
+        rest.is_empty(),
+        "postcard decode ({version}) left {} trailing bytes",
+        rest.len()
+    );
+    Ok(value)
 }
 
 /// Legacy (pre-versioning) on-disk layouts, decoded field-for-field as they
@@ -294,7 +340,7 @@ mod compat {
     use indexmap::IndexMap;
     use koharu_core::{
         BlobRef, FontPrediction, ImageData, MaskData, Node, NodeId, NodeKind, Page, PageId,
-        ProjectMeta, Scene, TextData, TextDirection, TextStyle, Transform,
+        ProjectMeta, Scene, TextData, TextDirection, TextStyle, TextStyleRange, Transform,
     };
     use serde::Deserialize;
 
@@ -484,6 +530,8 @@ mod compat {
                 rendered_font_size_px: None,
                 rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
             }
         }
     }
@@ -653,6 +701,8 @@ mod compat {
                 rendered_font_size_px: self.rendered_font_size_px,
                 rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
             }
         }
     }
@@ -822,6 +872,8 @@ mod compat {
                 rendered_font_size_px: self.rendered_font_size_px,
                 rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
             }
         }
     }
@@ -991,6 +1043,8 @@ mod compat {
                 rendered_font_size_px: self.rendered_font_size_px,
                 rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
             }
         }
     }
@@ -1133,6 +1187,297 @@ mod compat {
                 // The renderer refills this on the next render.
                 rendered_text_color: None,
                 lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v6 → v7: `TextData` gained character-level `style_ranges`.
+    // -----------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV6 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV6,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV6 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV6>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV6 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV6>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV6 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV6,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV6 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV6),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// Exact v6 layout: current `TextData` minus the appended style ranges and
+    /// writing-direction override.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV6 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyle>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) rendered_text_color: Option<[u8; 4]>,
+        pub(super) lock_layout_box: bool,
+    }
+
+    impl SnapshotV6 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV6 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV6::Image(d) => NodeKind::Image(d),
+                                    NodeKindV6::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV6::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV6 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: self.rendered_text_color,
+                lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // v7 → v8: `TextData` gained the explicit `writing_direction` override.
+    // -----------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SnapshotV7 {
+        pub(super) epoch: u64,
+        pub(super) scene: SceneV7,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct SceneV7 {
+        pub(super) project: ProjectMeta,
+        pub(super) pages: IndexMap<PageId, PageV7>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct PageV7 {
+        pub(super) id: PageId,
+        pub(super) name: String,
+        pub(super) width: u32,
+        pub(super) height: u32,
+        pub(super) nodes: IndexMap<NodeId, NodeV7>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct NodeV7 {
+        pub(super) id: NodeId,
+        pub(super) transform: Transform,
+        pub(super) visible: bool,
+        pub(super) kind: NodeKindV7,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) enum NodeKindV7 {
+        #[allow(dead_code)]
+        Image(ImageData),
+        Text(TextDataV7),
+        #[allow(dead_code)]
+        Mask(MaskData),
+    }
+
+    /// Exact v7 layout: current `TextData` minus the appended writing-axis
+    /// override. This format was shipped by the rich-text build.
+    #[derive(Default, Deserialize)]
+    #[cfg_attr(test, derive(serde::Serialize))]
+    pub(super) struct TextDataV7 {
+        pub(super) confidence: f32,
+        pub(super) source_lang: Option<String>,
+        pub(super) source_direction: Option<TextDirection>,
+        pub(super) rendered_direction: Option<TextDirection>,
+        pub(super) line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        pub(super) rotation_deg: Option<f32>,
+        pub(super) detected_font_size_px: Option<f32>,
+        pub(super) detector: Option<String>,
+        pub(super) text: Option<String>,
+        pub(super) translation: Option<String>,
+        pub(super) style: Option<TextStyle>,
+        pub(super) font_prediction: Option<FontPrediction>,
+        pub(super) sprite: Option<BlobRef>,
+        pub(super) sprite_transform: Option<Transform>,
+        pub(super) rendered_font_size_px: Option<f32>,
+        pub(super) rendered_text_color: Option<[u8; 4]>,
+        pub(super) lock_layout_box: bool,
+        pub(super) style_ranges: Vec<TextStyleRange>,
+    }
+
+    impl SnapshotV7 {
+        pub(super) fn upgrade(self) -> Snapshot {
+            Snapshot {
+                epoch: self.epoch,
+                scene: Scene {
+                    project: self.scene.project,
+                    pages: self
+                        .scene
+                        .pages
+                        .into_iter()
+                        .map(|(id, p)| (id, p.upgrade()))
+                        .collect(),
+                },
+            }
+        }
+    }
+
+    impl PageV7 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, n)| {
+                        (
+                            id,
+                            Node {
+                                id: n.id,
+                                transform: n.transform,
+                                visible: n.visible,
+                                kind: match n.kind {
+                                    NodeKindV7::Image(d) => NodeKind::Image(d),
+                                    NodeKindV7::Mask(d) => NodeKind::Mask(d),
+                                    NodeKindV7::Text(d) => NodeKind::Text(d.upgrade()),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl TextDataV7 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: self.rendered_text_color,
+                lock_layout_box: self.lock_layout_box,
+                style_ranges: self.style_ranges,
+                writing_direction: None,
             }
         }
     }
@@ -1154,7 +1499,9 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use koharu_core::{
-        Node, NodeId, NodeKind, Op, Page, PageId, TextData, TextShaderEffect, TextStyle, Transform,
+        BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, Op, Page,
+        PageId, TextData, TextDirection, TextRangeStyle, TextShaderEffect, TextStyle,
+        TextStyleRange, Transform,
     };
     use tempfile::tempdir;
 
@@ -1670,6 +2017,179 @@ mod tests {
     }
 
     #[test]
+    fn v6_scene_bin_adds_later_text_defaults() {
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v6").unwrap();
+            drop(session);
+        }
+
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            node_id,
+            compat::NodeV6 {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV6::Text(compat::TextDataV6 {
+                    translation: Some("Hello world".to_string()),
+                    rendered_text_color: Some([12, 34, 56, 255]),
+                    lock_layout_box: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV6 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v6 = compat::SnapshotV6 {
+            epoch: 12,
+            scene: compat::SceneV6 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&6u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v6).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v6 scene.bin must open");
+        let scene = session.scene.read();
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("Hello world"));
+        assert_eq!(text.rendered_text_color, Some([12, 34, 56, 255]));
+        assert!(text.lock_layout_box);
+        assert!(text.style_ranges.is_empty());
+        assert_eq!(text.writing_direction, None);
+    }
+
+    #[test]
+    fn v7_scene_bin_preserves_ranges_and_defaults_writing_direction() {
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "v7").unwrap();
+            drop(session);
+        }
+
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let style_range = TextStyleRange {
+            start: 0,
+            end: 5,
+            style: TextRangeStyle {
+                bold: Some(true),
+                ..Default::default()
+            },
+        };
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            node_id,
+            compat::NodeV7 {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV7::Text(compat::TextDataV7 {
+                    translation: Some("Hello world".to_string()),
+                    rendered_text_color: Some([12, 34, 56, 255]),
+                    lock_layout_box: true,
+                    style_ranges: vec![style_range],
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV7 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v7 = compat::SnapshotV7 {
+            epoch: 13,
+            scene: compat::SceneV7 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        bytes.extend_from_slice(&7u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&v7).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("v7 scene.bin must open");
+        let scene = session.scene.read();
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("Hello world"));
+        assert_eq!(text.rendered_text_color, Some([12, 34, 56, 255]));
+        assert!(text.lock_layout_box);
+        assert_eq!(text.style_ranges, vec![style_range]);
+        assert_eq!(text.writing_direction, None);
+    }
+
+    #[test]
+    fn collided_v7_scene_with_writing_direction_is_recovered() {
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "collided-v7").unwrap();
+            drop(session);
+        }
+
+        let mut scene = Scene::default();
+        let mut page = Page::new("p1", 800, 600);
+        let page_id = page.id;
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    translation: Some("VERTICAL".to_string()),
+                    writing_direction: Some(TextDirection::Vertical),
+                    ..Default::default()
+                }),
+            },
+        );
+        scene.pages.insert(page_id, page);
+
+        let snap = Snapshot { epoch: 14, scene };
+        let mut bytes = SCENE_MAGIC.to_vec();
+        // Reproduce the faulty build: v8 payload under the already-used v7
+        // header. The repaired decoder must recover it before writing v8.
+        bytes.extend_from_slice(&7u16.to_le_bytes());
+        bytes.extend_from_slice(&postcard::to_allocvec(&snap).unwrap());
+        std::fs::write(path.join(SCENE_FILE).as_std_path(), bytes).unwrap();
+
+        let session = ProjectSession::open(&path).expect("collided v7 scene.bin must open");
+        let scene = session.scene.read();
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("VERTICAL"));
+        assert_eq!(text.writing_direction, Some(TextDirection::Vertical));
+    }
+
+    #[test]
     fn future_scene_bin_version_is_rejected_cleanly() {
         let (_tmp, path) = tmp_dir();
         {
@@ -1761,5 +2281,356 @@ mod tests {
             .expect("second open must fail");
         assert!(err.to_string().contains("already open"));
         drop(a);
+    }
+
+    #[test]
+    fn headerless_v6_scene_bin_with_mixed_nodes_upgrades() {
+        // A few interim v6 builds wrote scene.bin without the "KSCN" header.
+        // The headerless fallback chain in `decode_snapshot` must decode such a
+        // payload via the v6 layout — not be mis-caught by the current (v8) or
+        // v7 attempts — across multiple text nodes and mixed node kinds, and
+        // upgrade every text node with the fields v6 predates (`style_ranges`,
+        // `writing_direction`) defaulted.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "headerless-v6").unwrap();
+            drop(session); // only project.toml written; we supply scene.bin below
+        }
+
+        let page_id = PageId::new();
+        let image_id = NodeId::new();
+        let text1_id = NodeId::new();
+        let mask_id = NodeId::new();
+        let text2_id = NodeId::new();
+
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            image_id,
+            compat::NodeV6 {
+                id: image_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV6::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob: BlobRef::new("deadbeef"),
+                    opacity: 1.0,
+                    natural_width: 800,
+                    natural_height: 600,
+                    name: None,
+                }),
+            },
+        );
+        nodes.insert(
+            text1_id,
+            compat::NodeV6 {
+                id: text1_id,
+                transform: Transform {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 100.0,
+                    height: 40.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: compat::NodeKindV6::Text(compat::TextDataV6 {
+                    text: Some("こんにちは".to_string()),
+                    translation: Some("Hello".to_string()),
+                    rendered_text_color: Some([12, 34, 56, 255]),
+                    lock_layout_box: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        nodes.insert(
+            mask_id,
+            compat::NodeV6 {
+                id: mask_id,
+                transform: Transform::default(),
+                visible: false,
+                kind: compat::NodeKindV6::Mask(MaskData {
+                    role: MaskRole::Segment,
+                    blob: BlobRef::new("cafef00d"),
+                }),
+            },
+        );
+        nodes.insert(
+            text2_id,
+            compat::NodeV6 {
+                id: text2_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV6::Text(compat::TextDataV6 {
+                    translation: Some("World".to_string()),
+                    ..Default::default()
+                }),
+            },
+        );
+
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV6 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v6 = compat::SnapshotV6 {
+            epoch: 12,
+            scene: compat::SceneV6 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        // Headerless: postcard payload only, no "KSCN" magic / version prefix.
+        std::fs::write(
+            path.join(SCENE_FILE).as_std_path(),
+            postcard::to_allocvec(&v6).unwrap(),
+        )
+        .unwrap();
+
+        let session = ProjectSession::open(&path).expect("headerless v6 scene.bin must open");
+        let scene = session.scene.read();
+        let page = scene.pages.get(&page_id).expect("page survives upgrade");
+        assert_eq!(page.nodes.len(), 4, "all mixed nodes survive");
+
+        let NodeKind::Image(image) = &page.nodes.get(&image_id).unwrap().kind else {
+            panic!("expected image node");
+        };
+        assert_eq!(image.role, ImageRole::Source);
+        assert_eq!(image.blob.hash(), "deadbeef");
+
+        let NodeKind::Mask(mask) = &page.nodes.get(&mask_id).unwrap().kind else {
+            panic!("expected mask node");
+        };
+        assert_eq!(mask.role, MaskRole::Segment);
+        assert_eq!(mask.blob.hash(), "cafef00d");
+
+        let NodeKind::Text(text1) = &page.nodes.get(&text1_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text1.translation.as_deref(), Some("Hello"));
+        assert_eq!(text1.rendered_text_color, Some([12, 34, 56, 255]));
+        assert!(text1.lock_layout_box, "trailing bool must decode intact");
+        assert!(text1.style_ranges.is_empty(), "v6 predates style_ranges");
+        assert_eq!(
+            text1.writing_direction, None,
+            "v6 predates writing_direction"
+        );
+
+        let NodeKind::Text(text2) = &page.nodes.get(&text2_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text2.translation.as_deref(), Some("World"));
+        assert!(text2.style_ranges.is_empty());
+        assert_eq!(text2.writing_direction, None);
+    }
+
+    #[test]
+    fn headerless_v7_scene_bin_with_multiple_text_nodes_upgrades() {
+        // Interim v7 (rich-text) builds also wrote headerless scene.bin. The
+        // fallback chain must decode via the v7 layout across multiple text
+        // nodes and mixed kinds, preserving character `style_ranges` and
+        // defaulting the v8-only `writing_direction`.
+        let (_tmp, path) = tmp_dir();
+        {
+            let session = ProjectSession::create(&path, "headerless-v7").unwrap();
+            drop(session);
+        }
+
+        let page_id = PageId::new();
+        let image_id = NodeId::new();
+        let text1_id = NodeId::new();
+        let text2_id = NodeId::new();
+
+        let bold = TextStyleRange {
+            start: 0,
+            end: 5,
+            style: TextRangeStyle {
+                bold: Some(true),
+                ..Default::default()
+            },
+        };
+        let italic = TextStyleRange {
+            start: 6,
+            end: 11,
+            style: TextRangeStyle {
+                italic: Some(true),
+                ..Default::default()
+            },
+        };
+
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(
+            image_id,
+            compat::NodeV7 {
+                id: image_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV7::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob: BlobRef::new("deadbeef"),
+                    opacity: 1.0,
+                    natural_width: 800,
+                    natural_height: 600,
+                    name: None,
+                }),
+            },
+        );
+        nodes.insert(
+            text1_id,
+            compat::NodeV7 {
+                id: text1_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV7::Text(compat::TextDataV7 {
+                    translation: Some("Hello world".to_string()),
+                    rendered_text_color: Some([12, 34, 56, 255]),
+                    lock_layout_box: true,
+                    style_ranges: vec![bold, italic],
+                    ..Default::default()
+                }),
+            },
+        );
+        nodes.insert(
+            text2_id,
+            compat::NodeV7 {
+                id: text2_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: compat::NodeKindV7::Text(compat::TextDataV7 {
+                    translation: Some("plain".to_string()),
+                    ..Default::default()
+                }),
+            },
+        );
+
+        let mut pages = indexmap::IndexMap::new();
+        pages.insert(
+            page_id,
+            compat::PageV7 {
+                id: page_id,
+                name: "p1".to_string(),
+                width: 800,
+                height: 600,
+                nodes,
+            },
+        );
+        let v7 = compat::SnapshotV7 {
+            epoch: 13,
+            scene: compat::SceneV7 {
+                project: koharu_core::ProjectMeta::default(),
+                pages,
+            },
+        };
+        std::fs::write(
+            path.join(SCENE_FILE).as_std_path(),
+            postcard::to_allocvec(&v7).unwrap(),
+        )
+        .unwrap();
+
+        let session = ProjectSession::open(&path).expect("headerless v7 scene.bin must open");
+        let scene = session.scene.read();
+        let page = scene.pages.get(&page_id).expect("page survives upgrade");
+        assert_eq!(page.nodes.len(), 3, "all mixed nodes survive");
+
+        let NodeKind::Image(image) = &page.nodes.get(&image_id).unwrap().kind else {
+            panic!("expected image node");
+        };
+        assert_eq!(image.role, ImageRole::Source);
+
+        let NodeKind::Text(text1) = &page.nodes.get(&text1_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text1.translation.as_deref(), Some("Hello world"));
+        assert_eq!(text1.rendered_text_color, Some([12, 34, 56, 255]));
+        assert!(text1.lock_layout_box);
+        assert_eq!(
+            text1.style_ranges,
+            vec![bold, italic],
+            "character style ranges survive the v7 upgrade"
+        );
+        assert_eq!(
+            text1.writing_direction, None,
+            "v7 predates writing_direction"
+        );
+
+        let NodeKind::Text(text2) = &page.nodes.get(&text2_id).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text2.translation.as_deref(), Some("plain"));
+        assert!(text2.style_ranges.is_empty());
+        assert_eq!(text2.writing_direction, None);
+    }
+
+    #[test]
+    fn compact_reopen_preserves_style_ranges_and_writing_direction() {
+        // Current (v8) write path: a compacted scene.bin must round-trip both
+        // character `style_ranges` and an explicit vertical `writing_direction`
+        // — the fields appended for scene formats v7 and v8.
+        let (_tmp, path) = tmp_dir();
+        let page_id: PageId;
+        let node_id: NodeId;
+        {
+            let session = ProjectSession::create(&path, "v8-round-trip").unwrap();
+            let page = Page::new("p1", 800, 600);
+            page_id = page.id;
+            session
+                .apply(Op::AddPage { page, at: 0 })
+                .expect("apply AddPage");
+
+            node_id = NodeId::new();
+            let mut scene = session.scene.write();
+            let page = scene.pages.get_mut(&page_id).expect("page");
+            page.nodes.insert(
+                node_id,
+                Node {
+                    id: node_id,
+                    transform: Transform::default(),
+                    visible: true,
+                    kind: NodeKind::Text(TextData {
+                        translation: Some("Hello world".to_string()),
+                        style_ranges: vec![TextStyleRange {
+                            start: 0,
+                            end: 5,
+                            style: TextRangeStyle {
+                                bold: Some(true),
+                                ..Default::default()
+                            },
+                        }],
+                        writing_direction: Some(TextDirection::Vertical),
+                        ..Default::default()
+                    }),
+                },
+            );
+            drop(scene);
+            session.compact().unwrap();
+        }
+
+        let session = ProjectSession::open(&path).unwrap();
+        let scene = session.scene.read();
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("Hello world"));
+        assert_eq!(
+            text.style_ranges,
+            vec![TextStyleRange {
+                start: 0,
+                end: 5,
+                style: TextRangeStyle {
+                    bold: Some(true),
+                    ..Default::default()
+                },
+            }],
+            "character style ranges survive a v8 compact/reopen"
+        );
+        assert_eq!(
+            text.writing_direction,
+            Some(TextDirection::Vertical),
+            "explicit writing direction survives a v8 compact/reopen"
+        );
     }
 }

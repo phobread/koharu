@@ -33,17 +33,16 @@ import { useBlockDrafting, type BlockDraft } from '@/hooks/useBlockDrafting'
 import { useBrushCursor } from '@/hooks/useBrushCursor'
 import { useBrushLayerDisplay } from '@/hooks/useBrushLayerDisplay'
 import { useCanvasZoom } from '@/hooks/useCanvasZoom'
-import { findImageBlob, findMaskBlob, isTextNode, useCurrentPage } from '@/hooks/useCurrentPage'
+import { findImageBlob, findMaskBlob, useCurrentPage } from '@/hooks/useCurrentPage'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import type { Node, Transform } from '@/lib/api/schemas'
 import { applyOp } from '@/lib/io/scene'
-import { applyBlockMerge, applyBlockSplit } from '@/lib/io/splitNode'
+import { mergeBlocks, splitBlock } from '@/lib/io/splitNode'
 import { uninpaintBlocks } from '@/lib/io/uninpaintBlock'
 import { ops } from '@/lib/ops'
-import { splitTextBlock } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -152,14 +151,7 @@ export function Workspace() {
   const splitTextNode = useCallback(
     async (nodeId: string) => {
       if (!page) return
-      const node = page.nodes[nodeId]
-      if (!node || !isTextNode(node) || !node.transform) return
-      const data = node.kind.text
-      const split = splitTextBlock(node.transform, {
-        text: data.text,
-        translation: data.translation,
-      })
-      await applyBlockSplit(page, nodeId, split)
+      await splitBlock(page.id, nodeId)
     },
     [page],
   )
@@ -170,7 +162,7 @@ export function Workspace() {
   const mergeSelectedBlocks = useCallback(async () => {
     if (!page) return
     const ids = Array.from(useSelectionStore.getState().nodeIds).filter((id): id is string => !!id)
-    await applyBlockMerge(page, ids)
+    await mergeBlocks(page.id, ids)
   }, [page])
 
   // Clear the segment mask under the selected blocks and re-inpaint, so the
@@ -336,7 +328,10 @@ export function Workspace() {
     {
       target: viewportRef,
       eventOptions: { passive: false },
-      drag: { filterTaps: true, pointer: { mouse: true, buttons: [1, 4] } },
+      // Panning is pointer-only. Keyboard dragging makes use-gesture consume
+      // arrow keydowns bubbling from the selected block's quick-editor
+      // textareas, preventing their native caret movement.
+      drag: { filterTaps: true, keys: false, pointer: { mouse: true, buttons: [1, 4] } },
       wheel: { preventDefault: false },
       pinch: {
         threshold: 0.1,

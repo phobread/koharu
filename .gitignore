@@ -49,7 +49,9 @@ playwright-report/
 test-results/
 
 # Misc
-AGENTS.md
+# Local build/test evidence and maintenance records are never source artifacts.
+.recovery/
+.maintenance/
 
 # Zensical
 site/

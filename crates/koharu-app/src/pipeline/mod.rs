@@ -18,6 +18,7 @@ pub use engines::support;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use anyhow::{Result, bail};
 use koharu_core::{Op, PageId, PipelineStep};
@@ -211,9 +212,16 @@ pub async fn run(
                 llm: &llm,
                 renderer: &renderer,
             };
+            let step_started = Instant::now();
             let step_result = async { engine.run(ctx).await }
                 .instrument(tracing::info_span!("step", engine = info.id, page = %page_id))
                 .await;
+            tracing::info!(
+                engine = info.id,
+                page = %page_id,
+                elapsed_ms = step_started.elapsed().as_millis(),
+                "pipeline step finished"
+            );
             let ops = match step_result {
                 Ok(ops) => ops,
                 Err(err) => {

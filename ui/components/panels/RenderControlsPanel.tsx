@@ -38,6 +38,7 @@ import type {
   GradientDirection,
   Op,
   TextAlign,
+  TextDirection,
   TextFillGradient,
   TextShaderEffect,
   TextStrokeStyle,
@@ -327,6 +328,13 @@ export function RenderControlsPanel() {
   // nudges start from the real size instead of an arbitrary constant.
   const renderedFontSize: number | undefined = selectedNode?.data.renderedFontSizePx ?? undefined
 
+  const writingDirectionTargets = selectedNodes.length > 0 ? selectedNodes : textNodes
+  const writingDirectionValues = new Set(
+    writingDirectionTargets.map((node) => node.data.writingDirection ?? 'auto'),
+  )
+  const currentWritingDirection: TextDirection | 'auto' | undefined =
+    writingDirectionValues.size === 1 ? writingDirectionValues.values().next().value : undefined
+
   const effectiveAlign: TextAlign =
     selectedNode?.data.style?.textAlign ??
     firstNode?.data.style?.textAlign ??
@@ -461,6 +469,20 @@ export function RenderControlsPanel() {
   const updateBoxPadding = (px: number) => {
     setBoxPadding(px)
     if (page) queueAutoRender(page.id)
+  }
+
+  const applyWritingDirection = (direction: TextDirection | 'auto') => {
+    if (!page || writingDirectionTargets.length === 0) return
+    void (async () => {
+      const inner = writingDirectionTargets.map((node) =>
+        ops.updateText(page.id, node.id, {
+          writingDirection: direction === 'auto' ? null : direction,
+        }),
+      )
+      const op = inner.length === 1 ? inner[0] : ops.batch('Writing direction update', inner)
+      await applyOp(op)
+      queueAutoRender(page.id)
+    })()
   }
 
   const effectItems: {
@@ -818,6 +840,63 @@ export function RenderControlsPanel() {
                 </TooltipTrigger>
                 <TooltipContent side='bottom' sideOffset={4}>
                   {item.label}
+                </TooltipContent>
+              </Tooltip>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Writing direction */}
+      <div className='flex flex-col gap-0.5'>
+        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+          {t('render.writingDirectionLabel')}
+        </span>
+        <div className='grid grid-cols-3 gap-1'>
+          {(
+            [
+              {
+                value: 'auto',
+                label: t('render.writingDirectionAuto'),
+                Icon: RotateCcwIcon,
+              },
+              {
+                value: 'horizontal',
+                label: t('render.writingDirectionHorizontal'),
+                Icon: MoveRightIcon,
+              },
+              {
+                value: 'vertical',
+                label: t('render.writingDirectionVertical'),
+                Icon: MoveDownIcon,
+              },
+            ] as const
+          ).map(({ value, label, Icon }) => {
+            const active = currentWritingDirection === value
+            return (
+              <Tooltip key={value}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    aria-label={label}
+                    aria-pressed={active}
+                    data-testid={`render-writing-${value}`}
+                    disabled={!hasNodes}
+                    className={cn(
+                      'h-7 min-w-0 gap-1 px-2 text-[11px]',
+                      active &&
+                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                    )}
+                    onClick={() => applyWritingDirection(value)}
+                  >
+                    <Icon className='size-3 shrink-0' />
+                    <span className='truncate'>{label}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='bottom' sideOffset={4}>
+                  {label}
                 </TooltipContent>
               </Tooltip>
             )

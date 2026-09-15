@@ -259,6 +259,39 @@ pub struct TextStyle {
     pub gradient: Option<TextFillGradient>,
 }
 
+/// Character-level overrides for a slice of translated text. Each optional
+/// field inherits the block's [`TextStyle`] when absent; explicit booleans let
+/// a range turn bold/italic off even when the whole block enables it.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TextRangeStyle {
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
+    #[serde(default)]
+    pub bold: Option<bool>,
+    #[serde(default)]
+    pub italic: Option<bool>,
+}
+
+impl TextRangeStyle {
+    pub fn is_empty(self) -> bool {
+        self.color.is_none() && self.bold.is_none() && self.italic.is_none()
+    }
+}
+
+/// A half-open UTF-8 byte range (`start..end`) in `TextData::translation`.
+/// Ranges may overlap; later entries win per property. Producers should keep
+/// them sorted, non-empty, and on character boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TextStyleRange {
+    pub start: u32,
+    pub end: u32,
+    pub style: TextRangeStyle,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GradientDirection, TextFillGradient, TextShaderEffect, TextStyle};

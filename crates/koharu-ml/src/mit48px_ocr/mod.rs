@@ -82,9 +82,9 @@ impl Mit48pxOcr {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
         let hf = runtime.downloads();
         let files = ModelFiles {
-            config: hf.huggingface_model(HF_REPO, "config.json").await?,
-            dictionary: hf.huggingface_model(HF_REPO, "alphabet-all-v7.txt").await?,
-            weights: hf.huggingface_model(HF_REPO, "model.safetensors").await?,
+            config: hf.bundled_model(HF_REPO, "config.json").await?,
+            dictionary: hf.bundled_model(HF_REPO, "alphabet-all-v7.txt").await?,
+            weights: hf.bundled_model(HF_REPO, "model.safetensors").await?,
         };
         Self::load_from_files(files, cpu)
     }

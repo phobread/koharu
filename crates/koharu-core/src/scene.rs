@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::blob::BlobRef;
 use crate::font::{FontPrediction, TextDirection};
-use crate::style::TextStyle;
+use crate::style::{TextStyle, TextStyleRange};
 
 // ---------------------------------------------------------------------------
 // Ids
@@ -318,6 +318,15 @@ pub struct TextData {
     pub rendered_text_color: Option<[u8; 4]>,
     #[serde(default)]
     pub lock_layout_box: bool,
+    /// Character-level overrides for the rendered translation. Appended for
+    /// scene format v7; older layouts are frozen in `session.rs::compat`.
+    #[serde(default)]
+    pub style_ranges: Vec<TextStyleRange>,
+    /// Explicit writing-axis override for this block. `None` keeps the
+    /// renderer's automatic source-script/detector behaviour. Appended for
+    /// scene format v8; older layouts are frozen in `session.rs::compat`.
+    #[serde(default)]
+    pub writing_direction: Option<TextDirection>,
 }
 
 // ---------------------------------------------------------------------------

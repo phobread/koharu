@@ -20,8 +20,9 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use atomicwrites::{AtomicFile, OverwriteBehavior};
 use koharu_core::{Op, Scene};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Default cap for the in-memory undo stack. The log on disk is not capped —
 /// it's compacted on snapshot.
@@ -35,7 +36,7 @@ const MAX_FRAME_LEN: u32 = 512 * 1024 * 1024;
 /// `MAX_FRAME_LEN`, so a guarded length prefix can never be mistaken for the
 /// magic and the formats are unambiguous.
 const HISTORY_LOG_MAGIC: [u8; 4] = *b"KHLG";
-const HISTORY_LOG_VERSION: u16 = 1;
+const HISTORY_LOG_VERSION: u16 = 3;
 
 // ---------------------------------------------------------------------------
 // Log frames
@@ -45,6 +46,660 @@ const HISTORY_LOG_VERSION: u16 = 1;
 struct LogFrame {
     epoch: u64,
     op: Op,
+}
+
+/// Frozen history-log layouts. v1 predates `TextData::style_ranges`; v2 has
+/// style ranges but predates `TextData::writing_direction`. Postcard is
+/// positional, so every old operation capable of carrying a text node/patch
+/// decodes through its exact historical shape before being upgraded.
+mod compat {
+    use indexmap::IndexMap;
+    use koharu_core::{
+        BlobRef, FontPrediction, ImageData, ImageDataPatch, MaskData, MaskDataPatch, Node, NodeId,
+        NodeKind, Op, Page, PageId, PagePatch, ProjectMetaPatch, TextData, TextDataPatch,
+        TextDirection, TextStyle, TextStyleRange, Transform,
+    };
+    use serde::Deserialize;
+
+    use super::LogFrame;
+
+    #[derive(Deserialize)]
+    pub(super) struct LogFrameV1 {
+        epoch: u64,
+        op: OpV1,
+    }
+
+    #[derive(Deserialize)]
+    enum OpV1 {
+        UpdateProjectMeta {
+            patch: ProjectMetaPatch,
+            prev: ProjectMetaPatch,
+        },
+        AddPage {
+            page: PageV1,
+            at: usize,
+        },
+        RemovePage {
+            id: PageId,
+            prev_page: PageV1,
+            prev_index: usize,
+        },
+        UpdatePage {
+            id: PageId,
+            patch: PagePatch,
+            prev: PagePatch,
+        },
+        ReorderPages {
+            order: Vec<PageId>,
+            prev_order: Vec<PageId>,
+        },
+        AddNode {
+            page: PageId,
+            node: NodeV1,
+            at: usize,
+        },
+        RemoveNode {
+            page: PageId,
+            id: NodeId,
+            prev_node: NodeV1,
+            prev_index: usize,
+        },
+        UpdateNode {
+            page: PageId,
+            id: NodeId,
+            patch: NodePatchV1,
+            prev: NodePatchV1,
+        },
+        ReorderNodes {
+            page: PageId,
+            order: Vec<NodeId>,
+            prev_order: Vec<NodeId>,
+        },
+        Batch {
+            ops: Vec<OpV1>,
+            label: String,
+        },
+    }
+
+    #[derive(Deserialize)]
+    struct PageV1 {
+        id: PageId,
+        name: String,
+        width: u32,
+        height: u32,
+        nodes: IndexMap<NodeId, NodeV1>,
+    }
+
+    #[derive(Deserialize)]
+    struct NodeV1 {
+        id: NodeId,
+        transform: Transform,
+        visible: bool,
+        kind: NodeKindV1,
+    }
+
+    #[derive(Deserialize)]
+    enum NodeKindV1 {
+        Image(ImageData),
+        Text(TextDataV1),
+        Mask(MaskData),
+    }
+
+    #[derive(Default, Deserialize)]
+    struct TextDataV1 {
+        confidence: f32,
+        source_lang: Option<String>,
+        source_direction: Option<TextDirection>,
+        rendered_direction: Option<TextDirection>,
+        line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+        rotation_deg: Option<f32>,
+        detected_font_size_px: Option<f32>,
+        detector: Option<String>,
+        text: Option<String>,
+        translation: Option<String>,
+        style: Option<TextStyle>,
+        font_prediction: Option<FontPrediction>,
+        sprite: Option<BlobRef>,
+        sprite_transform: Option<Transform>,
+        rendered_font_size_px: Option<f32>,
+        rendered_text_color: Option<[u8; 4]>,
+        lock_layout_box: bool,
+    }
+
+    #[derive(Default, Deserialize)]
+    struct NodePatchV1 {
+        transform: Option<Transform>,
+        visible: Option<bool>,
+        data: Option<NodeDataPatchV1>,
+    }
+
+    #[derive(Deserialize)]
+    enum NodeDataPatchV1 {
+        Text(TextDataPatchV1),
+        Image(ImageDataPatch),
+        Mask(MaskDataPatch),
+    }
+
+    #[derive(Default, Deserialize)]
+    struct TextDataPatchV1 {
+        confidence: Option<f32>,
+        source_lang: Option<Option<String>>,
+        source_direction: Option<Option<TextDirection>>,
+        rendered_direction: Option<Option<TextDirection>>,
+        line_polygons: Option<Option<Vec<[[f32; 2]; 4]>>>,
+        rotation_deg: Option<Option<f32>>,
+        detected_font_size_px: Option<Option<f32>>,
+        detector: Option<Option<String>>,
+        text: Option<Option<String>>,
+        translation: Option<Option<String>>,
+        style: Option<Option<TextStyle>>,
+        font_prediction: Option<Option<FontPrediction>>,
+        sprite: Option<Option<BlobRef>>,
+        sprite_transform: Option<Option<Transform>>,
+        rendered_font_size_px: Option<Option<f32>>,
+        rendered_text_color: Option<Option<[u8; 4]>>,
+        lock_layout_box: Option<bool>,
+    }
+
+    impl LogFrameV1 {
+        pub(super) fn upgrade(self) -> LogFrame {
+            LogFrame {
+                epoch: self.epoch,
+                op: self.op.upgrade(),
+            }
+        }
+    }
+
+    impl OpV1 {
+        fn upgrade(self) -> Op {
+            match self {
+                Self::UpdateProjectMeta { patch, prev } => Op::UpdateProjectMeta { patch, prev },
+                Self::AddPage { page, at } => Op::AddPage {
+                    page: page.upgrade(),
+                    at,
+                },
+                Self::RemovePage {
+                    id,
+                    prev_page,
+                    prev_index,
+                } => Op::RemovePage {
+                    id,
+                    prev_page: prev_page.upgrade(),
+                    prev_index,
+                },
+                Self::UpdatePage { id, patch, prev } => Op::UpdatePage { id, patch, prev },
+                Self::ReorderPages { order, prev_order } => Op::ReorderPages { order, prev_order },
+                Self::AddNode { page, node, at } => Op::AddNode {
+                    page,
+                    node: node.upgrade(),
+                    at,
+                },
+                Self::RemoveNode {
+                    page,
+                    id,
+                    prev_node,
+                    prev_index,
+                } => Op::RemoveNode {
+                    page,
+                    id,
+                    prev_node: prev_node.upgrade(),
+                    prev_index,
+                },
+                Self::UpdateNode {
+                    page,
+                    id,
+                    patch,
+                    prev,
+                } => Op::UpdateNode {
+                    page,
+                    id,
+                    patch: patch.upgrade(),
+                    prev: prev.upgrade(),
+                },
+                Self::ReorderNodes {
+                    page,
+                    order,
+                    prev_order,
+                } => Op::ReorderNodes {
+                    page,
+                    order,
+                    prev_order,
+                },
+                Self::Batch { ops, label } => Op::Batch {
+                    ops: ops.into_iter().map(Self::upgrade).collect(),
+                    label,
+                },
+            }
+        }
+    }
+
+    impl PageV1 {
+        fn upgrade(self) -> Page {
+            Page {
+                id: self.id,
+                name: self.name,
+                width: self.width,
+                height: self.height,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, node)| (id, node.upgrade()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl NodeV1 {
+        fn upgrade(self) -> Node {
+            Node {
+                id: self.id,
+                transform: self.transform,
+                visible: self.visible,
+                kind: match self.kind {
+                    NodeKindV1::Image(data) => NodeKind::Image(data),
+                    NodeKindV1::Text(data) => NodeKind::Text(data.upgrade()),
+                    NodeKindV1::Mask(data) => NodeKind::Mask(data),
+                },
+            }
+        }
+    }
+
+    impl TextDataV1 {
+        fn upgrade(self) -> TextData {
+            TextData {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: self.rendered_text_color,
+                lock_layout_box: self.lock_layout_box,
+                style_ranges: Vec::new(),
+                writing_direction: None,
+            }
+        }
+    }
+
+    impl NodePatchV1 {
+        fn upgrade(self) -> koharu_core::NodePatch {
+            koharu_core::NodePatch {
+                transform: self.transform,
+                visible: self.visible,
+                data: self.data.map(NodeDataPatchV1::upgrade),
+            }
+        }
+    }
+
+    impl NodeDataPatchV1 {
+        fn upgrade(self) -> koharu_core::NodeDataPatch {
+            match self {
+                Self::Text(data) => koharu_core::NodeDataPatch::Text(data.upgrade()),
+                Self::Image(data) => koharu_core::NodeDataPatch::Image(data),
+                Self::Mask(data) => koharu_core::NodeDataPatch::Mask(data),
+            }
+        }
+    }
+
+    impl TextDataPatchV1 {
+        fn upgrade(self) -> TextDataPatch {
+            TextDataPatch {
+                confidence: self.confidence,
+                source_lang: self.source_lang,
+                source_direction: self.source_direction,
+                rendered_direction: self.rendered_direction,
+                line_polygons: self.line_polygons,
+                rotation_deg: self.rotation_deg,
+                detected_font_size_px: self.detected_font_size_px,
+                detector: self.detector,
+                text: self.text,
+                translation: self.translation,
+                style: self.style,
+                font_prediction: self.font_prediction,
+                sprite: self.sprite,
+                sprite_transform: self.sprite_transform,
+                rendered_font_size_px: self.rendered_font_size_px,
+                rendered_text_color: self.rendered_text_color,
+                lock_layout_box: self.lock_layout_box,
+                style_ranges: None,
+                writing_direction: None,
+            }
+        }
+    }
+
+    /// Exact history-log v2 layout: rich-text ranges are present, but the
+    /// writing-direction fields have not yet been appended.
+    pub(super) mod v2 {
+        use super::*;
+
+        #[derive(Deserialize)]
+        pub(in crate::history) struct LogFrameV2 {
+            epoch: u64,
+            op: OpV2,
+        }
+
+        #[derive(Deserialize)]
+        enum OpV2 {
+            UpdateProjectMeta {
+                patch: ProjectMetaPatch,
+                prev: ProjectMetaPatch,
+            },
+            AddPage {
+                page: PageV2,
+                at: usize,
+            },
+            RemovePage {
+                id: PageId,
+                prev_page: PageV2,
+                prev_index: usize,
+            },
+            UpdatePage {
+                id: PageId,
+                patch: PagePatch,
+                prev: PagePatch,
+            },
+            ReorderPages {
+                order: Vec<PageId>,
+                prev_order: Vec<PageId>,
+            },
+            AddNode {
+                page: PageId,
+                node: NodeV2,
+                at: usize,
+            },
+            RemoveNode {
+                page: PageId,
+                id: NodeId,
+                prev_node: NodeV2,
+                prev_index: usize,
+            },
+            UpdateNode {
+                page: PageId,
+                id: NodeId,
+                patch: NodePatchV2,
+                prev: NodePatchV2,
+            },
+            ReorderNodes {
+                page: PageId,
+                order: Vec<NodeId>,
+                prev_order: Vec<NodeId>,
+            },
+            Batch {
+                ops: Vec<OpV2>,
+                label: String,
+            },
+        }
+
+        #[derive(Deserialize)]
+        struct PageV2 {
+            id: PageId,
+            name: String,
+            width: u32,
+            height: u32,
+            nodes: IndexMap<NodeId, NodeV2>,
+        }
+
+        #[derive(Deserialize)]
+        struct NodeV2 {
+            id: NodeId,
+            transform: Transform,
+            visible: bool,
+            kind: NodeKindV2,
+        }
+
+        #[derive(Deserialize)]
+        enum NodeKindV2 {
+            Image(ImageData),
+            Text(TextDataV2),
+            Mask(MaskData),
+        }
+
+        #[derive(Default, Deserialize)]
+        struct TextDataV2 {
+            confidence: f32,
+            source_lang: Option<String>,
+            source_direction: Option<TextDirection>,
+            rendered_direction: Option<TextDirection>,
+            line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+            rotation_deg: Option<f32>,
+            detected_font_size_px: Option<f32>,
+            detector: Option<String>,
+            text: Option<String>,
+            translation: Option<String>,
+            style: Option<TextStyle>,
+            font_prediction: Option<FontPrediction>,
+            sprite: Option<BlobRef>,
+            sprite_transform: Option<Transform>,
+            rendered_font_size_px: Option<f32>,
+            rendered_text_color: Option<[u8; 4]>,
+            lock_layout_box: bool,
+            style_ranges: Vec<TextStyleRange>,
+        }
+
+        #[derive(Default, Deserialize)]
+        struct NodePatchV2 {
+            transform: Option<Transform>,
+            visible: Option<bool>,
+            data: Option<NodeDataPatchV2>,
+        }
+
+        #[derive(Deserialize)]
+        enum NodeDataPatchV2 {
+            Text(TextDataPatchV2),
+            Image(ImageDataPatch),
+            Mask(MaskDataPatch),
+        }
+
+        #[derive(Default, Deserialize)]
+        struct TextDataPatchV2 {
+            confidence: Option<f32>,
+            source_lang: Option<Option<String>>,
+            source_direction: Option<Option<TextDirection>>,
+            rendered_direction: Option<Option<TextDirection>>,
+            line_polygons: Option<Option<Vec<[[f32; 2]; 4]>>>,
+            rotation_deg: Option<Option<f32>>,
+            detected_font_size_px: Option<Option<f32>>,
+            detector: Option<Option<String>>,
+            text: Option<Option<String>>,
+            translation: Option<Option<String>>,
+            style: Option<Option<TextStyle>>,
+            font_prediction: Option<Option<FontPrediction>>,
+            sprite: Option<Option<BlobRef>>,
+            sprite_transform: Option<Option<Transform>>,
+            rendered_font_size_px: Option<Option<f32>>,
+            rendered_text_color: Option<Option<[u8; 4]>>,
+            lock_layout_box: Option<bool>,
+            style_ranges: Option<Vec<TextStyleRange>>,
+        }
+
+        impl LogFrameV2 {
+            pub(in crate::history) fn upgrade(self) -> LogFrame {
+                LogFrame {
+                    epoch: self.epoch,
+                    op: self.op.upgrade(),
+                }
+            }
+        }
+
+        impl OpV2 {
+            fn upgrade(self) -> Op {
+                match self {
+                    Self::UpdateProjectMeta { patch, prev } => {
+                        Op::UpdateProjectMeta { patch, prev }
+                    }
+                    Self::AddPage { page, at } => Op::AddPage {
+                        page: page.upgrade(),
+                        at,
+                    },
+                    Self::RemovePage {
+                        id,
+                        prev_page,
+                        prev_index,
+                    } => Op::RemovePage {
+                        id,
+                        prev_page: prev_page.upgrade(),
+                        prev_index,
+                    },
+                    Self::UpdatePage { id, patch, prev } => Op::UpdatePage { id, patch, prev },
+                    Self::ReorderPages { order, prev_order } => {
+                        Op::ReorderPages { order, prev_order }
+                    }
+                    Self::AddNode { page, node, at } => Op::AddNode {
+                        page,
+                        node: node.upgrade(),
+                        at,
+                    },
+                    Self::RemoveNode {
+                        page,
+                        id,
+                        prev_node,
+                        prev_index,
+                    } => Op::RemoveNode {
+                        page,
+                        id,
+                        prev_node: prev_node.upgrade(),
+                        prev_index,
+                    },
+                    Self::UpdateNode {
+                        page,
+                        id,
+                        patch,
+                        prev,
+                    } => Op::UpdateNode {
+                        page,
+                        id,
+                        patch: patch.upgrade(),
+                        prev: prev.upgrade(),
+                    },
+                    Self::ReorderNodes {
+                        page,
+                        order,
+                        prev_order,
+                    } => Op::ReorderNodes {
+                        page,
+                        order,
+                        prev_order,
+                    },
+                    Self::Batch { ops, label } => Op::Batch {
+                        ops: ops.into_iter().map(Self::upgrade).collect(),
+                        label,
+                    },
+                }
+            }
+        }
+
+        impl PageV2 {
+            fn upgrade(self) -> Page {
+                Page {
+                    id: self.id,
+                    name: self.name,
+                    width: self.width,
+                    height: self.height,
+                    nodes: self
+                        .nodes
+                        .into_iter()
+                        .map(|(id, node)| (id, node.upgrade()))
+                        .collect(),
+                }
+            }
+        }
+
+        impl NodeV2 {
+            fn upgrade(self) -> Node {
+                Node {
+                    id: self.id,
+                    transform: self.transform,
+                    visible: self.visible,
+                    kind: match self.kind {
+                        NodeKindV2::Image(data) => NodeKind::Image(data),
+                        NodeKindV2::Text(data) => NodeKind::Text(data.upgrade()),
+                        NodeKindV2::Mask(data) => NodeKind::Mask(data),
+                    },
+                }
+            }
+        }
+
+        impl TextDataV2 {
+            fn upgrade(self) -> TextData {
+                TextData {
+                    confidence: self.confidence,
+                    source_lang: self.source_lang,
+                    source_direction: self.source_direction,
+                    rendered_direction: self.rendered_direction,
+                    line_polygons: self.line_polygons,
+                    rotation_deg: self.rotation_deg,
+                    detected_font_size_px: self.detected_font_size_px,
+                    detector: self.detector,
+                    text: self.text,
+                    translation: self.translation,
+                    style: self.style,
+                    font_prediction: self.font_prediction,
+                    sprite: self.sprite,
+                    sprite_transform: self.sprite_transform,
+                    rendered_font_size_px: self.rendered_font_size_px,
+                    rendered_text_color: self.rendered_text_color,
+                    lock_layout_box: self.lock_layout_box,
+                    style_ranges: self.style_ranges,
+                    writing_direction: None,
+                }
+            }
+        }
+
+        impl NodePatchV2 {
+            fn upgrade(self) -> koharu_core::NodePatch {
+                koharu_core::NodePatch {
+                    transform: self.transform,
+                    visible: self.visible,
+                    data: self.data.map(NodeDataPatchV2::upgrade),
+                }
+            }
+        }
+
+        impl NodeDataPatchV2 {
+            fn upgrade(self) -> koharu_core::NodeDataPatch {
+                match self {
+                    Self::Text(data) => koharu_core::NodeDataPatch::Text(data.upgrade()),
+                    Self::Image(data) => koharu_core::NodeDataPatch::Image(data),
+                    Self::Mask(data) => koharu_core::NodeDataPatch::Mask(data),
+                }
+            }
+        }
+
+        impl TextDataPatchV2 {
+            fn upgrade(self) -> TextDataPatch {
+                TextDataPatch {
+                    confidence: self.confidence,
+                    source_lang: self.source_lang,
+                    source_direction: self.source_direction,
+                    rendered_direction: self.rendered_direction,
+                    line_polygons: self.line_polygons,
+                    rotation_deg: self.rotation_deg,
+                    detected_font_size_px: self.detected_font_size_px,
+                    detector: self.detector,
+                    text: self.text,
+                    translation: self.translation,
+                    style: self.style,
+                    font_prediction: self.font_prediction,
+                    sprite: self.sprite,
+                    sprite_transform: self.sprite_transform,
+                    rendered_font_size_px: self.rendered_font_size_px,
+                    rendered_text_color: self.rendered_text_color,
+                    lock_layout_box: self.lock_layout_box,
+                    style_ranges: self.style_ranges,
+                    writing_direction: None,
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +948,7 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
             }
             let version = u16::from_le_bytes(version);
             match version {
-                HISTORY_LOG_VERSION => Some(version),
+                1 | 2 | HISTORY_LOG_VERSION => Some(version),
                 _ => anyhow::bail!(
                     "unsupported history.log format version {version} (written by a newer build?)"
                 ),
@@ -316,6 +971,8 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
     };
     let mut discarded_tail = false;
     let mut epoch = start_epoch;
+    let migrate_legacy = log_version != Some(HISTORY_LOG_VERSION);
+    let mut migrated_frames = Vec::new();
     loop {
         let mut len_buf = [0u8; 4];
         match reader.read(&mut len_buf[..1]) {
@@ -366,12 +1023,19 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame body")),
         }
-        let decoded = match log_version {
-            None | Some(HISTORY_LOG_VERSION) => postcard::from_bytes::<LogFrame>(&buf),
-            // When v2 changes the layout, decode v1 via compat::LogFrameV1 here.
+        let frame: Result<LogFrame> = match log_version {
+            Some(HISTORY_LOG_VERSION) => decode_frame_exact::<LogFrame>(&buf),
+            Some(2) => match decode_frame_exact::<compat::v2::LogFrameV2>(&buf) {
+                Ok(frame) => Ok(frame.upgrade()),
+                Err(v2_err) => decode_frame_exact::<LogFrame>(&buf)
+                    .with_context(|| format!("canonical history v2 also failed: {v2_err:#}")),
+            },
+            None | Some(1) => {
+                decode_frame_exact::<compat::LogFrameV1>(&buf).map(compat::LogFrameV1::upgrade)
+            }
             Some(_) => unreachable!("unsupported history log version was rejected above"),
         };
-        let frame = match decoded {
+        let frame = match frame {
             Ok(frame) => frame,
             Err(err) => {
                 tracing::warn!(
@@ -384,19 +1048,25 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
             }
         };
         valid_len += 4 + len as u64;
+        if migrate_legacy {
+            migrated_frames.push(LogFrame {
+                epoch: frame.epoch,
+                op: frame.op.clone(),
+            });
+        }
         if frame.epoch > epoch {
             let mut op = frame.op;
             op.apply(scene).context("replay op")?;
             epoch = frame.epoch;
         }
     }
+    drop(reader);
     if discarded_tail && std::fs::metadata(log_path)?.len() > valid_len {
         tracing::warn!(
             path = %log_path.display(),
             valid_len,
             "truncating invalid trailing bytes from history log"
         );
-        drop(reader);
         let file = OpenOptions::new()
             .write(true)
             .open(log_path)
@@ -405,13 +1075,54 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
             .context("truncate invalid history log tail")?;
         file.sync_all().context("sync repaired history log")?;
     }
+    if migrate_legacy {
+        migrate_history_log(log_path, &migrated_frames)?;
+    }
     Ok(epoch)
+}
+
+fn decode_frame_exact<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let (value, rest) = postcard::take_from_bytes(bytes).context("decode history frame")?;
+    anyhow::ensure!(
+        rest.is_empty(),
+        "history frame left {} trailing bytes",
+        rest.len()
+    );
+    Ok(value)
+}
+
+/// Rewrite a fully decoded legacy log under the current header/layout before
+/// `History::open` appends another frame. The atomic replacement means a
+/// crash cannot leave a mixed-version log.
+fn migrate_history_log(log_path: &Path, frames: &[LogFrame]) -> Result<()> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&HISTORY_LOG_MAGIC);
+    bytes.extend_from_slice(&HISTORY_LOG_VERSION.to_le_bytes());
+    for frame in frames {
+        let body = postcard::to_allocvec(frame).context("encode migrated history frame")?;
+        let len = u32::try_from(body.len()).context("migrated history frame too large")?;
+        anyhow::ensure!(
+            len <= MAX_FRAME_LEN,
+            "migrated history frame length {len} exceeds maximum {MAX_FRAME_LEN}"
+        );
+        bytes.extend_from_slice(&len.to_le_bytes());
+        bytes.extend_from_slice(&body);
+    }
+    AtomicFile::new(log_path, OverwriteBehavior::AllowOverwrite)
+        .write(|file| {
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .context("migrate history log to current format")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::{BlobRef, ImageData, ImageRole, Node, NodeId, NodeKind, Page, Transform};
+    use koharu_core::{
+        BlobRef, FontPrediction, ImageData, ImageRole, Node, NodeId, NodeKind, Page, PageId,
+        TextData, TextDirection, TextRangeStyle, TextStyle, TextStyleRange, Transform,
+    };
     use tempfile::tempdir;
 
     fn add_page(name: &str) -> Op {
@@ -508,6 +1219,12 @@ mod tests {
         let mut replayed = base.clone();
         assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 2);
         assert_same_scene(&replayed, &expected);
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(&migrated[..4], &HISTORY_LOG_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes([migrated[4], migrated[5]]),
+            HISTORY_LOG_VERSION
+        );
     }
 
     #[test]
@@ -540,12 +1257,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("history.log");
         let mut bytes = HISTORY_LOG_MAGIC.to_vec();
-        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
         bytes.extend_from_slice(&[1, 2, 3]);
         std::fs::write(&path, bytes).unwrap();
 
         let err = replay(&path, 0, &mut Scene::default()).unwrap_err();
-        assert!(format!("{err:#}").contains("unsupported history.log format version 2"));
+        assert!(format!("{err:#}").contains("unsupported history.log format version 4"));
     }
 
     #[test]
@@ -704,6 +1421,7 @@ mod tests {
         file.write_all(&200u32.to_le_bytes()).unwrap();
         file.write_all(&[1, 2, 3]).unwrap();
         file.flush().unwrap();
+        drop(file);
 
         let base = Scene::default();
         let mut expected = base.clone();
@@ -714,6 +1432,417 @@ mod tests {
         let mut replayed = base;
         assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 2);
         assert_same_scene(&replayed, &expected);
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), valid_len);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            valid_len + (HISTORY_LOG_MAGIC.len() + 2) as u64
+        );
+    }
+
+    #[test]
+    fn failed_log_write_discards_buffer_and_repairs_tail_before_retry() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let base = Scene::default();
+        let mut scene = base.clone();
+        let mut history = History::open(&path, 0).unwrap();
+        history
+            .apply(
+                &mut scene,
+                Op::AddPage {
+                    page: Page::new("committed", 100, 100),
+                    at: 0,
+                },
+            )
+            .unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        let before = postcard::to_allocvec(&scene).unwrap();
+        // Model a partially written tail, then force flush to fail using a real
+        // read-only file handle. No production-only fault injection is needed.
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[8, 0])
+            .unwrap();
+        history.log = BufWriter::new(File::open(&path).unwrap());
+        let op = Op::AddPage {
+            page: Page::new("retry", 100, 100),
+            at: 1,
+        };
+        assert!(history.apply(&mut scene, op.clone()).is_err());
+        assert_eq!(postcard::to_allocvec(&scene).unwrap(), before);
+        assert_eq!(history.epoch(), 1);
+        assert_eq!(history.committed_len, committed.len() as u64);
+        assert_eq!(history.undo_stack.len(), 1);
+        assert!(history.redo_stack.is_empty());
+        assert!(!history.poisoned);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(history.apply(&mut scene, op).unwrap(), 2);
+        drop(history);
+        let mut replayed = base;
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 2);
+        assert_same_scene(&replayed, &scene);
+    }
+
+    #[test]
+    fn failed_log_rollback_blocks_writes_until_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let base = Scene::default();
+        let mut scene = base.clone();
+        let mut history = History::open(&path, 0).unwrap();
+        history
+            .apply(
+                &mut scene,
+                Op::AddPage {
+                    page: Page::new("committed", 100, 100),
+                    at: 0,
+                },
+            )
+            .unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        let before = postcard::to_allocvec(&scene).unwrap();
+        history.log = BufWriter::new(File::open(&path).unwrap());
+        history.log_path = dir.path().join("missing/history.log");
+        let op = Op::AddPage {
+            page: Page::new("retry", 100, 100),
+            at: 1,
+        };
+        assert!(
+            history
+                .apply(&mut scene, op.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("rollback also failed")
+        );
+        assert!(history.poisoned);
+        history.log_path = path.clone();
+        assert!(
+            history
+                .apply(&mut scene, op.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("previously failed")
+        );
+        assert_eq!(postcard::to_allocvec(&scene).unwrap(), before);
+        assert_eq!(history.epoch(), 1);
+        assert_eq!(history.committed_len, committed.len() as u64);
+        assert_eq!(history.undo_stack.len(), 1);
+        assert!(history.redo_stack.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        drop(history);
+        let mut replayed = base;
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 1);
+        assert_same_scene(&replayed, &scene);
+        let mut reopened = History::open(&path, 1).unwrap();
+        assert_eq!(reopened.apply(&mut replayed, op).unwrap(), 2);
+    }
+
+    #[test]
+    fn v1_text_patch_replays_and_migrates_to_current() {
+        #[derive(Serialize)]
+        struct FrameV1 {
+            epoch: u64,
+            op: OpV1,
+        }
+
+        // Only the selected variant's payload is serialized; the seven unit
+        // placeholders preserve UpdateNode's historical enum index.
+        #[allow(dead_code)]
+        #[derive(Serialize)]
+        enum OpV1 {
+            UpdateProjectMeta,
+            AddPage,
+            RemovePage,
+            UpdatePage,
+            ReorderPages,
+            AddNode,
+            RemoveNode,
+            UpdateNode {
+                page: PageId,
+                id: NodeId,
+                patch: NodePatchV1,
+                prev: NodePatchV1,
+            },
+            ReorderNodes,
+            Batch,
+        }
+
+        #[derive(Default, Serialize)]
+        struct NodePatchV1 {
+            transform: Option<Transform>,
+            visible: Option<bool>,
+            data: Option<NodeDataPatchV1>,
+        }
+
+        #[allow(dead_code)]
+        #[derive(Serialize)]
+        enum NodeDataPatchV1 {
+            Text(TextDataPatchV1),
+            Image,
+            Mask,
+        }
+
+        #[derive(Default, Serialize)]
+        struct TextDataPatchV1 {
+            confidence: Option<f32>,
+            source_lang: Option<Option<String>>,
+            source_direction: Option<Option<TextDirection>>,
+            rendered_direction: Option<Option<TextDirection>>,
+            line_polygons: Option<Option<Vec<[[f32; 2]; 4]>>>,
+            rotation_deg: Option<Option<f32>>,
+            detected_font_size_px: Option<Option<f32>>,
+            detector: Option<Option<String>>,
+            text: Option<Option<String>>,
+            translation: Option<Option<String>>,
+            style: Option<Option<TextStyle>>,
+            font_prediction: Option<Option<FontPrediction>>,
+            sprite: Option<Option<BlobRef>>,
+            sprite_transform: Option<Option<Transform>>,
+            rendered_font_size_px: Option<Option<f32>>,
+            rendered_text_color: Option<Option<[u8; 4]>>,
+            lock_layout_box: Option<bool>,
+        }
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut page = Page::new("p", 100, 100);
+        let page_id = page.id;
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData::default()),
+            },
+        );
+        scene.pages.insert(page_id, page);
+
+        let frame = FrameV1 {
+            epoch: 1,
+            op: OpV1::UpdateNode {
+                page: page_id,
+                id: node_id,
+                patch: NodePatchV1 {
+                    data: Some(NodeDataPatchV1::Text(TextDataPatchV1 {
+                        translation: Some(Some("formatted later".to_string())),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatchV1::default(),
+            },
+        };
+        let body = postcard::to_allocvec(&frame).unwrap();
+        let mut bytes = HISTORY_LOG_MAGIC.to_vec();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(replay(&path, 0, &mut scene).unwrap(), 1);
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("formatted later"));
+        assert!(text.style_ranges.is_empty());
+        assert_eq!(text.writing_direction, None);
+
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(&migrated[..4], &HISTORY_LOG_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes([migrated[4], migrated[5]]),
+            HISTORY_LOG_VERSION
+        );
+    }
+
+    #[test]
+    fn v2_rich_text_patch_replays_and_defaults_writing_direction() {
+        #[derive(Serialize)]
+        struct FrameV2 {
+            epoch: u64,
+            op: OpV2,
+        }
+
+        #[allow(dead_code)]
+        #[derive(Serialize)]
+        enum OpV2 {
+            UpdateProjectMeta,
+            AddPage,
+            RemovePage,
+            UpdatePage,
+            ReorderPages,
+            AddNode,
+            RemoveNode,
+            UpdateNode {
+                page: PageId,
+                id: NodeId,
+                patch: NodePatchV2,
+                prev: NodePatchV2,
+            },
+            ReorderNodes,
+            Batch,
+        }
+
+        #[derive(Default, Serialize)]
+        struct NodePatchV2 {
+            transform: Option<Transform>,
+            visible: Option<bool>,
+            data: Option<NodeDataPatchV2>,
+        }
+
+        #[allow(dead_code)]
+        #[derive(Serialize)]
+        enum NodeDataPatchV2 {
+            Text(TextDataPatchV2),
+            Image,
+            Mask,
+        }
+
+        #[derive(Default, Serialize)]
+        struct TextDataPatchV2 {
+            confidence: Option<f32>,
+            source_lang: Option<Option<String>>,
+            source_direction: Option<Option<TextDirection>>,
+            rendered_direction: Option<Option<TextDirection>>,
+            line_polygons: Option<Option<Vec<[[f32; 2]; 4]>>>,
+            rotation_deg: Option<Option<f32>>,
+            detected_font_size_px: Option<Option<f32>>,
+            detector: Option<Option<String>>,
+            text: Option<Option<String>>,
+            translation: Option<Option<String>>,
+            style: Option<Option<TextStyle>>,
+            font_prediction: Option<Option<FontPrediction>>,
+            sprite: Option<Option<BlobRef>>,
+            sprite_transform: Option<Option<Transform>>,
+            rendered_font_size_px: Option<Option<f32>>,
+            rendered_text_color: Option<Option<[u8; 4]>>,
+            lock_layout_box: Option<bool>,
+            style_ranges: Option<Vec<TextStyleRange>>,
+        }
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut page = Page::new("p", 100, 100);
+        let page_id = page.id;
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData::default()),
+            },
+        );
+        scene.pages.insert(page_id, page);
+
+        let style_range = TextStyleRange {
+            start: 0,
+            end: 9,
+            style: TextRangeStyle {
+                italic: Some(true),
+                ..Default::default()
+            },
+        };
+        let frame = FrameV2 {
+            epoch: 1,
+            op: OpV2::UpdateNode {
+                page: page_id,
+                id: node_id,
+                patch: NodePatchV2 {
+                    data: Some(NodeDataPatchV2::Text(TextDataPatchV2 {
+                        translation: Some(Some("formatted later".to_string())),
+                        style_ranges: Some(vec![style_range]),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatchV2::default(),
+            },
+        };
+        let body = postcard::to_allocvec(&frame).unwrap();
+        let mut bytes = HISTORY_LOG_MAGIC.to_vec();
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(replay(&path, 0, &mut scene).unwrap(), 1);
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.translation.as_deref(), Some("formatted later"));
+        assert_eq!(text.style_ranges, vec![style_range]);
+        assert_eq!(text.writing_direction, None);
+
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(&migrated[..4], &HISTORY_LOG_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes([migrated[4], migrated[5]]),
+            HISTORY_LOG_VERSION
+        );
+    }
+
+    #[test]
+    fn collided_v2_history_preserves_writing_direction() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut page = Page::new("p", 100, 100);
+        let page_id = page.id;
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData::default()),
+            },
+        );
+        scene.pages.insert(page_id, page);
+
+        let frame = LogFrame {
+            epoch: 1,
+            op: Op::UpdateNode {
+                page: page_id,
+                id: node_id,
+                patch: koharu_core::NodePatch {
+                    data: Some(koharu_core::NodeDataPatch::Text(
+                        koharu_core::TextDataPatch {
+                            writing_direction: Some(Some(TextDirection::Vertical)),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                },
+                prev: Default::default(),
+            },
+        };
+        let body = postcard::to_allocvec(&frame).unwrap();
+        let mut bytes = HISTORY_LOG_MAGIC.to_vec();
+        // Reproduce the faulty build: v3 frame payload under a v2 header.
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(replay(&path, 0, &mut scene).unwrap(), 1);
+        let NodeKind::Text(text) = &scene.pages[&page_id].nodes[&node_id].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.writing_direction, Some(TextDirection::Vertical));
+
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(&migrated[..4], &HISTORY_LOG_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes([migrated[4], migrated[5]]),
+            HISTORY_LOG_VERSION
+        );
     }
 }

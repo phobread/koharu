@@ -6,6 +6,7 @@ import type { BlobRef } from './blobRef'
 import type { FontPrediction } from './fontPrediction'
 import type { TextDirection } from './textDirection'
 import type { TextStyle } from './textStyle'
+import type { TextStyleRange } from './textStyleRange'
 import type { Transform } from './transform'
 
 /**
@@ -41,7 +42,10 @@ export interface TextDataPatch {
   spriteTransform?: null | Transform
   style?: null | TextStyle
   /** @nullable */
+  styleRanges?: TextStyleRange[] | null
+  /** @nullable */
   text?: string | null
   /** @nullable */
   translation?: string | null
+  writingDirection?: null | TextDirection
 }

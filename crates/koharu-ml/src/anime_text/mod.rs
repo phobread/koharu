@@ -296,7 +296,7 @@ async fn resolve_model_path(
 ) -> Result<PathBuf> {
     runtime
         .downloads()
-        .huggingface_model(HF_REPO, variant.filename())
+        .bundled_model(HF_REPO, variant.filename())
         .await
         .with_context(|| format!("failed to download {} from {}", variant.filename(), HF_REPO))
 }

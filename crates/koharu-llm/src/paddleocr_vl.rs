@@ -95,6 +95,19 @@ pub struct PaddleOcrVlGenerateOptions {
     /// language; a hint in the prompt steers the transcription. `None`
     /// keeps the exact training-time prompt.
     pub language: Option<String>,
+    /// Opt-in token repetition control. One preserves the normal greedy path.
+    #[serde(default = "default_repetition_penalty")]
+    pub repetition_penalty: f32,
+    #[serde(default = "default_repetition_last_n")]
+    pub repetition_last_n: i32,
+}
+
+fn default_repetition_penalty() -> f32 {
+    1.0
+}
+
+fn default_repetition_last_n() -> i32 {
+    512
 }
 
 impl Default for PaddleOcrVlGenerateOptions {
@@ -102,6 +115,8 @@ impl Default for PaddleOcrVlGenerateOptions {
         Self {
             max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
             language: None,
+            repetition_penalty: default_repetition_penalty(),
+            repetition_last_n: default_repetition_last_n(),
         }
     }
 }
@@ -251,6 +266,12 @@ impl PaddleOcrVl {
         options: &PaddleOcrVlGenerateOptions,
     ) -> Result<PaddleOcrVlOutput> {
         let max_new_tokens = options.max_new_tokens;
+        if !options.repetition_penalty.is_finite()
+            || options.repetition_penalty <= 0.0
+            || options.repetition_last_n < 0
+        {
+            bail!("repetition penalty must be finite and positive, with a nonnegative window");
+        }
         let started = Instant::now();
         let original_width = image.width();
         let original_height = image.height();
@@ -296,10 +317,27 @@ impl PaddleOcrVl {
         let prompt_elapsed = prompt_started.elapsed();
 
         let generation_started = Instant::now();
-        // Greedy argmax: OCR wants the most literal transcription, and
-        // degenerate repeat loops are trimmed by the string-level guard
-        // (`repeated_ocr_suffix_start`) below.
-        let mut sampler = LlamaSampler::greedy();
+        // Keep normal decoding unchanged. The optional upstream-style penalty
+        // is seeded with prompt text tokens (not image positions), then learns
+        // generated tokens through accept() below. Both paths keep the guard.
+        let mut sampler = if options.repetition_penalty != 1.0 && options.repetition_last_n > 0 {
+            let mut penalties = LlamaSampler::penalties(
+                options.repetition_last_n,
+                options.repetition_penalty,
+                0.0,
+                0.0,
+            );
+            for index in 0..chunks.len() {
+                if let Some(chunk) = chunks.get(index)
+                    && let Some(tokens) = chunk.text_tokens()
+                {
+                    penalties.accept_many(tokens);
+                }
+            }
+            LlamaSampler::chain_simple([penalties, LlamaSampler::greedy()])
+        } else {
+            LlamaSampler::greedy()
+        };
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut token_ids = Vec::new();
         let mut token_text_ends = Vec::new();
@@ -464,8 +502,8 @@ pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
 async fn download_model_files(runtime: &RuntimeManager) -> Result<ModelFiles> {
     let artifacts = runtime.downloads();
     let (model, mmproj) = tokio::try_join!(
-        artifacts.huggingface_model(HF_REPO, MODEL_FILENAME),
-        artifacts.huggingface_model(HF_REPO, MMPROJ_FILENAME),
+        artifacts.bundled_model(HF_REPO, MODEL_FILENAME),
+        artifacts.bundled_model(HF_REPO, MMPROJ_FILENAME),
     )?;
 
     Ok(ModelFiles { model, mmproj })
@@ -808,6 +846,15 @@ mod tests {
 
         assert_eq!(options.max_new_tokens, DEFAULT_MAX_NEW_TOKENS);
         assert_eq!(options.language, None);
+        assert_eq!(options.repetition_penalty, 1.0);
+    }
+
+    #[test]
+    fn older_generate_options_do_not_enable_repetition_penalties() {
+        let options: PaddleOcrVlGenerateOptions =
+            serde_json::from_str(r#"{"maxNewTokens":256,"language":null}"#).unwrap();
+        assert_eq!(options.repetition_penalty, 1.0);
+        assert_eq!(options.repetition_last_n, 512);
     }
 
     #[test]

@@ -46,6 +46,8 @@ pub enum TextDirection {
 /// original source text. The writing-mode decision prefers this over bbox
 /// aspect ratio for CJK content, so a wide-manga bubble with vertical
 /// Japanese doesn't get flipped to horizontal just because of its shape.
+/// `writing_direction` is a user-selected override and therefore applies to
+/// every script, including Latin text.
 #[derive(Debug, Clone, Default)]
 pub struct RenderBlock {
     pub x: f32,
@@ -54,4 +56,5 @@ pub struct RenderBlock {
     pub height: f32,
     pub text: String,
     pub source_direction: Option<TextDirection>,
+    pub writing_direction: Option<TextDirection>,
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
 use anyhow::{Context, Result, bail};
 use image::{RgbaImage, imageops};
@@ -21,6 +21,16 @@ pub use crate::types::TextShaderEffect;
 pub struct RenderStrokeOptions {
     pub color: [u8; 4],
     pub width_px: f32,
+}
+
+/// Character-level overrides keyed by UTF-8 byte offsets in the laid-out
+/// string. Later overlapping ranges win per property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderStyleRange {
+    pub range: Range<usize>,
+    pub color: Option<[u8; 4]>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -83,6 +93,7 @@ pub struct RenderOptions {
     pub font_size: f32,
     pub effect: TextShaderEffect,
     pub stroke: Option<RenderStrokeOptions>,
+    pub style_ranges: Vec<RenderStyleRange>,
     pub raster: RasterOptions,
 }
 
@@ -96,6 +107,7 @@ impl Default for RenderOptions {
             font_size: 16.0,
             effect: TextShaderEffect::default(),
             stroke: None,
+            style_ranges: Vec::new(),
             raster: RasterOptions::default(),
         }
     }
@@ -110,12 +122,57 @@ impl TinySkiaRenderer {
         Ok(Self)
     }
 
+    /// Additional canvas clearance for synthetic effects, beyond caller-supplied
+    /// stroke padding. Layout bounds describe the unmodified glyph outlines.
+    pub fn effect_padding(&self, layout: &LayoutRun<'_>, opts: &RenderOptions) -> Result<f32> {
+        let mut clearance = 0.0f32;
+        let mut cache = HashMap::new();
+        for glyph in layout.lines.iter().flat_map(|line| &line.glyphs) {
+            let effect = resolve_glyph_style(opts, glyph.cluster as usize).effect;
+            if !effect.bold && !effect.italic {
+                continue;
+            }
+            let Ok(gid) = u16::try_from(glyph.glyph_id) else {
+                continue;
+            };
+            let key = FontGlyphId {
+                font: font_key(glyph.font),
+                glyph: gid,
+            };
+            if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
+                entry.insert(load_glyph_source(
+                    glyph.font,
+                    gid,
+                    opts.font_size,
+                    opts.anti_alias,
+                )?);
+            }
+            let (width, height) = match &cache[&key] {
+                GlyphRenderSource::Outline(data) => (data.bounds.width(), data.bounds.height()),
+                GlyphRenderSource::Bitmap(data) => {
+                    (data.metrics.width as f32, data.metrics.height as f32)
+                }
+            };
+            let slant = if effect.italic {
+                (width.min(height) * 0.22).max(1.0)
+            } else {
+                0.0
+            };
+            // Bold expands by one pixel; reserve another for antialiasing.
+            clearance = clearance.max(slant + if effect.bold { 1.0 } else { 0.0 } + 1.0);
+        }
+        Ok(clearance.ceil())
+    }
+
     pub fn render(
         &self,
         layout: &LayoutRun<'_>,
         writing_mode: WritingMode,
         opts: &RenderOptions,
     ) -> Result<RgbaImage> {
+        let mut padded_opts = opts.clone();
+        padded_opts.padding += self.effect_padding(layout, opts)?;
+        let opts = &padded_opts;
         let width = (layout.width + opts.padding * 2.0).ceil() as u32;
         let height = (layout.height + opts.padding * 2.0).ceil() as u32;
         if width == 0 || height == 0 {
@@ -200,6 +257,34 @@ enum RenderPass {
     Fill,
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedGlyphStyle {
+    color: [u8; 4],
+    effect: TextShaderEffect,
+}
+
+fn resolve_glyph_style(opts: &RenderOptions, cluster: usize) -> ResolvedGlyphStyle {
+    let mut style = ResolvedGlyphStyle {
+        color: opts.color,
+        effect: opts.effect,
+    };
+    for range in &opts.style_ranges {
+        if !range.range.contains(&cluster) {
+            continue;
+        }
+        if let Some(color) = range.color {
+            style.color = color;
+        }
+        if let Some(bold) = range.bold {
+            style.effect.bold = bold;
+        }
+        if let Some(italic) = range.italic {
+            style.effect.italic = italic;
+        }
+    }
+    style
+}
+
 fn render_pass(
     surface: &mut Pixmap,
     cache: &mut HashMap<FontGlyphId, GlyphRenderSource>,
@@ -236,6 +321,7 @@ fn render_line(
     let mut pen_y = 0.0f32;
 
     for glyph in &line.glyphs {
+        let glyph_style = resolve_glyph_style(opts, glyph.cluster as usize);
         let Ok(gid) = u16::try_from(glyph.glyph_id) else {
             pen_x += glyph.x_advance;
             pen_y -= glyph.y_advance;
@@ -268,6 +354,7 @@ fn render_line(
                         baseline_x,
                         baseline_y,
                         opts,
+                        glyph_style,
                         pass,
                         raster_scale,
                     );
@@ -279,6 +366,7 @@ fn render_line(
                         baseline_x,
                         baseline_y,
                         opts,
+                        glyph_style,
                         pass,
                         raster_scale,
                     )?;
@@ -346,10 +434,16 @@ fn draw_outline_glyph(
     baseline_x: f32,
     baseline_y: f32,
     opts: &RenderOptions,
+    glyph_style: ResolvedGlyphStyle,
     pass: RenderPass,
     raster_scale: f32,
 ) {
-    let transform = glyph_transform(glyph.bounds, baseline_x, baseline_y, opts.effect.italic);
+    let transform = glyph_transform(
+        glyph.bounds,
+        baseline_x,
+        baseline_y,
+        glyph_style.effect.italic,
+    );
 
     match pass {
         RenderPass::Stroke => {
@@ -368,8 +462,8 @@ fn draw_outline_glyph(
             }
         }
         RenderPass::Fill => {
-            if opts.effect.bold {
-                let bold_paint = paint_from_rgba(opts.color, opts.anti_alias);
+            if glyph_style.effect.bold {
+                let bold_paint = paint_from_rgba(glyph_style.color, opts.anti_alias);
                 let bold_style = Stroke {
                     width: 2.0 * raster_scale,
                     line_join: LineJoin::Round,
@@ -379,7 +473,7 @@ fn draw_outline_glyph(
                 surface.stroke_path(&glyph.path, &bold_paint, &bold_style, transform, None);
             }
 
-            let fill_paint = paint_from_rgba(opts.color, opts.anti_alias);
+            let fill_paint = paint_from_rgba(glyph_style.color, opts.anti_alias);
             surface.fill_path(&glyph.path, &fill_paint, FillRule::Winding, transform, None);
         }
     }
@@ -391,6 +485,7 @@ fn draw_bitmap_glyph(
     baseline_x: f32,
     baseline_y: f32,
     opts: &RenderOptions,
+    glyph_style: ResolvedGlyphStyle,
     pass: RenderPass,
     raster_scale: f32,
 ) -> Result<()> {
@@ -401,7 +496,7 @@ fn draw_bitmap_glyph(
     let width = glyph.metrics.width as usize;
     let height = glyph.metrics.height as usize;
     let mut fill_alpha = glyph.fill_alpha.clone();
-    if opts.effect.bold {
+    if glyph_style.effect.bold {
         fill_alpha = dilate_alpha(
             &fill_alpha,
             width,
@@ -417,9 +512,9 @@ fn draw_bitmap_glyph(
         glyph.metrics.height as f32,
         x,
         y,
-        opts.effect.italic,
+        glyph_style.effect.italic,
     );
-    let paint = pixmap_paint(opts.effect.italic, opts.anti_alias);
+    let paint = pixmap_paint(glyph_style.effect.italic, opts.anti_alias);
 
     match pass {
         RenderPass::Stroke => {
@@ -449,7 +544,7 @@ fn draw_bitmap_glyph(
                 glyph.metrics.width,
                 glyph.metrics.height,
                 &fill_alpha,
-                opts.color,
+                glyph_style.color,
             ) {
                 surface.draw_pixmap(0, 0, fill_pixmap.as_ref(), &paint, transform, None);
             }
@@ -741,6 +836,155 @@ mod tests {
 
         assert_eq!(higher_scale.dimensions(), default.dimensions());
         assert!(default.pixels().any(|pixel| pixel.0[3] > 0));
+        Ok(())
+    }
+
+    #[test]
+    fn italic_glyphs_do_not_lose_ink_at_surface_edge() -> Result<()> {
+        let font = any_system_font();
+        let font_size = 64.0;
+        let renderer = TinySkiaRenderer::new()?;
+        for mode in [WritingMode::Horizontal, WritingMode::VerticalRl] {
+            let layout = TextLayout::new(&font, Some(font_size))
+                .with_writing_mode(mode)
+                .run("H")?;
+            for character_override in [false, true] {
+                let opts = RenderOptions {
+                    font_size,
+                    effect: TextShaderEffect {
+                        bold: false,
+                        italic: !character_override,
+                    },
+                    style_ranges: if character_override {
+                        vec![RenderStyleRange {
+                            range: 0..1,
+                            color: None,
+                            bold: Some(true),
+                            italic: Some(true),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                };
+                let tight = renderer.render(&layout, mode, &opts)?;
+                let padded = renderer.render(
+                    &layout,
+                    mode,
+                    &RenderOptions {
+                        padding: 32.0,
+                        ..opts
+                    },
+                )?;
+                let ink = |img: &RgbaImage| img.pixels().map(|p| u64::from(p[3])).sum::<u64>();
+                let (tight_ink, padded_ink) = (ink(&tight), ink(&padded));
+                assert!(
+                    tight_ink.abs_diff(padded_ink) < padded_ink / 100,
+                    "tight={tight_ink}, padded={padded_ink}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn character_range_overrides_only_matching_glyph_clusters() {
+        let opts = RenderOptions {
+            color: [0, 0, 0, 255],
+            effect: TextShaderEffect {
+                bold: true,
+                italic: false,
+            },
+            style_ranges: vec![RenderStyleRange {
+                range: 1..4,
+                color: Some([220, 30, 40, 255]),
+                bold: Some(false),
+                italic: Some(true),
+            }],
+            ..Default::default()
+        };
+
+        let inherited = resolve_glyph_style(&opts, 0);
+        assert_eq!(inherited.color, [0, 0, 0, 255]);
+        assert!(inherited.effect.bold);
+        assert!(!inherited.effect.italic);
+
+        let overridden = resolve_glyph_style(&opts, 2);
+        assert_eq!(overridden.color, [220, 30, 40, 255]);
+        assert!(!overridden.effect.bold);
+        assert!(overridden.effect.italic);
+    }
+
+    #[test]
+    fn renderer_paints_selected_character_in_its_own_color() -> Result<()> {
+        let font = any_system_font();
+        let font_size = 32.0;
+        let layout = TextLayout::new(&font, Some(font_size)).run("AB")?;
+        let image = TinySkiaRenderer::new()?.render(
+            &layout,
+            WritingMode::Horizontal,
+            &RenderOptions {
+                font_size,
+                color: [0, 0, 0, 255],
+                style_ranges: vec![RenderStyleRange {
+                    range: 1..2,
+                    color: Some([255, 0, 0, 255]),
+                    bold: None,
+                    italic: None,
+                }],
+                ..Default::default()
+            },
+        )?;
+
+        assert!(
+            image
+                .pixels()
+                .any(|pixel| pixel.0[3] > 0 && pixel.0[0] == 0)
+        );
+        assert!(
+            image
+                .pixels()
+                .any(|pixel| pixel.0[3] > 0 && pixel.0[0] > 200 && pixel.0[1] < 20)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vertical_emphasis_pair_keeps_style_range_on_original_character() -> Result<()> {
+        // Regression for the vertical punctuation/style cluster mismatch:
+        // "!!" collapses into a single "‼" glyph (2 bytes -> 3 bytes), so
+        // without cluster remapping "B" would sit at normalized byte 3 while
+        // the caller's style range (original coordinates) targets byte 2. The
+        // remap keeps clusters in original coordinates, so colouring byte range
+        // 2..3 must paint "B" red and leave the rest of the block black.
+        let font = any_system_font();
+        let font_size = 32.0;
+        let layout = TextLayout::new(&font, Some(font_size))
+            .with_writing_mode(WritingMode::VerticalRl)
+            .run("!!B")?;
+        let image = TinySkiaRenderer::new()?.render(
+            &layout,
+            WritingMode::VerticalRl,
+            &RenderOptions {
+                font_size,
+                color: [0, 0, 0, 255],
+                style_ranges: vec![RenderStyleRange {
+                    range: 2..3, // "B" in ORIGINAL byte coordinates
+                    color: Some([255, 0, 0, 255]),
+                    bold: None,
+                    italic: None,
+                }],
+                ..Default::default()
+            },
+        )?;
+
+        assert!(
+            image.pixels().any(|pixel| pixel.0[3] > 0
+                && pixel.0[0] > 200
+                && pixel.0[1] < 20
+                && pixel.0[2] < 20),
+            "expected the trailing character to be painted red via its original-coordinate style range"
+        );
         Ok(())
     }
 }

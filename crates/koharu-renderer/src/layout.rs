@@ -19,8 +19,6 @@ pub use crate::segment::{LineBreakSuffix, hyphenation_lang_from_tag};
 pub use crate::shape::{PositionedGlyph, ShapedRun, ShapingOptions, TextShaper};
 
 const HYPHENATION_MIN_WORD_LEN: usize = 8;
-const LINE_BREAK_HYPHEN_PENALTY: f32 = 2_000.0;
-const LINE_BREAK_OVERFLOW_MULTIPLIER: f32 = 10_000.0;
 
 /// Writing mode for text layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -226,11 +224,17 @@ impl<'a> TextLayout<'a> {
         {
             line_breaker = line_breaker.with_hyphenation(lang, HYPHENATION_MIN_WORD_LEN);
         }
+        // Vertical mode rewrites adjacent emphasis marks into single combined
+        // glyphs, which changes byte lengths. We keep the offset map so glyph
+        // clusters can be reported back in the caller's ORIGINAL UTF-8
+        // coordinates (see the remap just before returning), leaving downstream
+        // style ranges aligned.
         let normalized_punctuation;
         let text = if self.writing_mode.is_vertical() {
-            normalized_punctuation = normalize_vertical_emphasis_punctuation(text);
-            normalized_punctuation.as_str()
+            normalized_punctuation = Some(normalize_vertical_emphasis_punctuation(text));
+            normalized_punctuation.as_ref().unwrap().text.as_str()
         } else {
+            normalized_punctuation = None;
             text
         };
 
@@ -379,7 +383,7 @@ impl<'a> TextLayout<'a> {
             if !segment.is_mandatory {
                 continue;
             }
-            self.append_balanced_segment_lines(
+            self.append_wrapped_segment_lines(
                 &shaped_segments[paragraph_start..=index],
                 &mut line_offset,
                 segment.next_offset,
@@ -391,7 +395,7 @@ impl<'a> TextLayout<'a> {
             paragraph_start = index + 1;
         }
         if paragraph_start < shaped_segments.len() {
-            self.append_balanced_segment_lines(
+            self.append_wrapped_segment_lines(
                 &shaped_segments[paragraph_start..],
                 &mut line_offset,
                 text.len(),
@@ -526,6 +530,23 @@ impl<'a> TextLayout<'a> {
             }
         }
 
+        // Translate every exposed offset (glyph clusters and per-line ranges)
+        // from the punctuation-normalized string back into the original text's
+        // UTF-8 coordinates. A collapsed emphasis pair maps to its first source
+        // character (the ligature policy). Internal layout consumers
+        // (`ink_bounds`, `push_layout_line`, vertical punctuation centering)
+        // have already run against the normalized offsets, so this final pass
+        // is the only place coordinates change.
+        if let Some(np) = &normalized_punctuation {
+            for line in &mut lines {
+                for glyph in &mut line.glyphs {
+                    glyph.cluster = np.original_cluster(glyph.cluster as usize) as u32;
+                }
+                line.range =
+                    np.original_cluster(line.range.start)..np.original_cluster(line.range.end);
+            }
+        }
+
         Ok(LayoutRun {
             lines,
             width,
@@ -535,7 +556,7 @@ impl<'a> TextLayout<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn append_balanced_segment_lines(
+    fn append_wrapped_segment_lines(
         &self,
         segments: &[ShapedSegment<'a>],
         line_offset: &mut usize,
@@ -572,7 +593,7 @@ impl<'a> TextLayout<'a> {
                         .map_or(0.0, |suffix| suffix.advance),
                 })
                 .collect::<Vec<_>>();
-            optimal_line_breaks(&measures, max_extent)
+            greedy_line_breaks(&measures, max_extent)
         } else {
             vec![segments.len()]
         };
@@ -777,7 +798,14 @@ impl<'a> TextLayout<'a> {
     }
 }
 
-fn optimal_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usize> {
+/// Fill each line with as many complete segments as will fit before wrapping.
+///
+/// Text boxes are direct-manipulation geometry in the editor: widening one
+/// should visibly pull words up into the newly available space. The previous
+/// global badness optimiser deliberately left room on earlier lines to make
+/// all lines similar lengths, which made wrapping appear disconnected from
+/// the box width.
+fn greedy_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usize> {
     let len = segments.len();
     if len == 0 {
         return Vec::new();
@@ -786,63 +814,38 @@ fn optimal_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<us
         return vec![len];
     }
 
-    let mut dp = vec![f32::INFINITY; len + 1];
-    let mut prev = vec![None; len + 1];
-    dp[0] = 0.0;
-
-    for start in 0..len {
-        if !dp[start].is_finite() {
-            continue;
-        }
+    let mut breaks = Vec::new();
+    let mut start = 0;
+    while start < len {
         let mut advance = 0.0f32;
-        for end in start + 1..=len {
-            advance += segments[end - 1].advance;
-            let suffix_advance = if end < len {
-                segments[end - 1].break_suffix_advance
+        let mut end = start;
+        let mut last_fitting_end = None;
+        while end < len {
+            advance += segments[end].advance;
+            let candidate_end = end + 1;
+            let suffix_advance = if candidate_end < len {
+                segments[end].break_suffix_advance
             } else {
                 0.0
             };
             let line_advance = advance + suffix_advance;
-            let is_single_segment = end == start + 1;
-            if line_advance > max_extent && !is_single_segment {
+            if line_advance <= max_extent {
+                last_fitting_end = Some(candidate_end);
+            }
+            end = candidate_end;
+            // Raw advances only grow. Once they exceed the line there can be
+            // no later fitting boundary, even if a hyphen suffix disappears.
+            if advance > max_extent {
                 break;
             }
-
-            let mut cost = dp[start] + line_break_badness(line_advance, max_extent);
-            if end < len && suffix_advance > 0.0 {
-                cost += LINE_BREAK_HYPHEN_PENALTY;
-            }
-
-            if cost < dp[end] {
-                dp[end] = cost;
-                prev[end] = Some(start);
-            }
         }
+        // A single unbreakable segment may overflow rather than being
+        // dropped or causing an empty line.
+        let end = last_fitting_end.unwrap_or(start + 1);
+        breaks.push(end);
+        start = end;
     }
-
-    if !dp[len].is_finite() {
-        return vec![len];
-    }
-
-    let mut breaks = Vec::new();
-    let mut index = len;
-    while index > 0 {
-        breaks.push(index);
-        let Some(previous) = prev[index] else {
-            return vec![len];
-        };
-        index = previous;
-    }
-    breaks.reverse();
     breaks
-}
-
-fn line_break_badness(line_advance: f32, max_extent: f32) -> f32 {
-    if line_advance <= max_extent {
-        (max_extent - line_advance).powi(3)
-    } else {
-        (line_advance - max_extent).powi(3) * LINE_BREAK_OVERFLOW_MULTIPLIER
-    }
 }
 
 fn centered_x_offset(x_min: f32, x_max: f32) -> f32 {
@@ -872,50 +875,100 @@ fn emphasis_pair_symbol(left: EmphasisMark, right: EmphasisMark) -> char {
     }
 }
 
-fn normalize_vertical_emphasis_punctuation(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
+/// Result of collapsing adjacent vertical emphasis marks into combined glyphs.
+///
+/// The rewrite changes byte lengths (e.g. `！！`→`‼` shrinks, `!!`→`‼` grows),
+/// so `normalized_to_original` records the original byte offset that each byte
+/// of `text` came from. Collapsed pairs map their whole span to the first
+/// source character (ligature policy), which lets glyph clusters be reported in
+/// the caller's original UTF-8 coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedPunctuation {
+    text: String,
+    /// Length `text.len() + 1`; the final entry is the original input length.
+    normalized_to_original: Vec<usize>,
+}
+
+impl NormalizedPunctuation {
+    /// Map a byte offset in the normalized string back to the original text.
+    /// Offsets past the end clamp to the original length.
+    fn original_cluster(&self, normalized: usize) -> usize {
+        self.normalized_to_original
+            .get(normalized)
+            .copied()
+            .unwrap_or_else(|| self.normalized_to_original.last().copied().unwrap_or(0))
+    }
+}
+
+/// Append `ch` to `out` and record `orig` for each of its bytes in `map`.
+fn push_mapped(out: &mut String, map: &mut Vec<usize>, ch: char, orig: usize) {
+    let before = out.len();
+    out.push(ch);
+    for _ in before..out.len() {
+        map.push(orig);
+    }
+}
+
+fn normalize_vertical_emphasis_punctuation(text: &str) -> NormalizedPunctuation {
+    let src: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = String::with_capacity(text.len());
+    let mut map: Vec<usize> = Vec::with_capacity(text.len() + 1);
     let mut i = 0usize;
 
-    while i < chars.len() {
-        let Some(kind) = emphasis_mark_kind(chars[i]) else {
-            out.push(chars[i]);
+    while i < src.len() {
+        let (orig, ch) = src[i];
+        let Some(kind) = emphasis_mark_kind(ch) else {
+            push_mapped(&mut out, &mut map, ch, orig);
             i += 1;
             continue;
         };
 
-        if i + 1 >= chars.len() {
-            out.push(chars[i]);
+        if i + 1 >= src.len() {
+            push_mapped(&mut out, &mut map, ch, orig);
             i += 1;
             continue;
         }
 
-        let Some(next_kind) = emphasis_mark_kind(chars[i + 1]) else {
-            out.push(chars[i]);
+        let Some(next_kind) = emphasis_mark_kind(src[i + 1].1) else {
+            push_mapped(&mut out, &mut map, ch, orig);
             i += 1;
             continue;
         };
 
         if kind == next_kind {
-            out.push(emphasis_pair_symbol(kind, next_kind));
+            push_mapped(
+                &mut out,
+                &mut map,
+                emphasis_pair_symbol(kind, next_kind),
+                orig,
+            );
             i += 2;
             continue;
         }
 
-        if i + 2 < chars.len()
-            && let Some(lookahead_kind) = emphasis_mark_kind(chars[i + 2])
+        if i + 2 < src.len()
+            && let Some(lookahead_kind) = emphasis_mark_kind(src[i + 2].1)
             && next_kind == lookahead_kind
         {
-            out.push(chars[i]);
+            push_mapped(&mut out, &mut map, ch, orig);
             i += 1;
             continue;
         }
 
-        out.push(emphasis_pair_symbol(kind, next_kind));
+        push_mapped(
+            &mut out,
+            &mut map,
+            emphasis_pair_symbol(kind, next_kind),
+            orig,
+        );
         i += 2;
     }
 
-    out
+    map.push(text.len());
+    NormalizedPunctuation {
+        text: out,
+        normalized_to_original: map,
+    }
 }
 
 fn is_fullwidth_punctuation(ch: char) -> bool {
@@ -1041,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn optimal_line_breaks_balance_ragged_lines() {
+    fn greedy_line_breaks_fill_available_width_before_wrapping() {
         let segments = vec![
             LineBreakMeasure {
                 advance: 30.0,
@@ -1050,7 +1103,7 @@ mod tests {
             7
         ];
 
-        assert_eq!(optimal_line_breaks(&segments, 100.0), vec![2, 4, 7]);
+        assert_eq!(greedy_line_breaks(&segments, 100.0), vec![3, 6, 7]);
     }
 
     #[test]
@@ -1273,17 +1326,77 @@ mod tests {
 
     #[test]
     fn normalize_vertical_emphasis_punctuation_collapses_pairs() {
-        assert_eq!(normalize_vertical_emphasis_punctuation("！！"), "‼");
-        assert_eq!(normalize_vertical_emphasis_punctuation("!!"), "‼");
-        assert_eq!(normalize_vertical_emphasis_punctuation("!!?"), "‼?");
-        assert_eq!(normalize_vertical_emphasis_punctuation("?!!"), "?‼");
-        assert_eq!(normalize_vertical_emphasis_punctuation("!?!"), "⁉!");
-        assert_eq!(normalize_vertical_emphasis_punctuation("！？"), "⁉");
-        assert_eq!(normalize_vertical_emphasis_punctuation("？！"), "⁈");
+        assert_eq!(normalize_vertical_emphasis_punctuation("！！").text, "‼");
+        assert_eq!(normalize_vertical_emphasis_punctuation("!!").text, "‼");
+        assert_eq!(normalize_vertical_emphasis_punctuation("!!?").text, "‼?");
+        assert_eq!(normalize_vertical_emphasis_punctuation("?!!").text, "?‼");
+        assert_eq!(normalize_vertical_emphasis_punctuation("!?!").text, "⁉!");
+        assert_eq!(normalize_vertical_emphasis_punctuation("！？").text, "⁉");
+        assert_eq!(normalize_vertical_emphasis_punctuation("？！").text, "⁈");
         assert_eq!(
-            normalize_vertical_emphasis_punctuation("Hello!?!"),
+            normalize_vertical_emphasis_punctuation("Hello!?!").text,
             "Hello⁉!"
         );
+    }
+
+    #[test]
+    fn normalize_maps_shrinking_fullwidth_pair_to_original_offsets() {
+        // Fullwidth "！！" (3 bytes each) collapses into "‼" (3 bytes): the two
+        // 3-byte marks become one, shrinking the string. The trailing "あ"
+        // (original offset 6) must map back from its normalized offset 3.
+        let n = normalize_vertical_emphasis_punctuation("！！あ");
+        assert_eq!(n.text, "‼あ");
+        assert_eq!(n.normalized_to_original, vec![0, 0, 0, 6, 6, 6, 9]);
+        assert_eq!(n.original_cluster(0), 0);
+        assert_eq!(n.original_cluster(3), 6);
+    }
+
+    #[test]
+    fn normalize_maps_expanding_ascii_pair_to_original_offsets() {
+        // ASCII "!!" (2 bytes) grows into "‼" (3 bytes): the trailing "A" sits
+        // at normalized offset 3 but must map back to its original offset 2.
+        let n = normalize_vertical_emphasis_punctuation("!!A");
+        assert_eq!(n.text, "‼A");
+        assert_eq!(n.normalized_to_original, vec![0, 0, 0, 2, 3]);
+        assert_eq!(n.original_cluster(3), 2);
+    }
+
+    #[test]
+    fn normalize_maps_multiple_pairs_to_original_offsets() {
+        // Two collapses in a row, then a trailing "X".
+        let n = normalize_vertical_emphasis_punctuation("!!??X");
+        assert_eq!(n.text, "‼⁇X");
+        assert_eq!(n.normalized_to_original, vec![0, 0, 0, 2, 2, 2, 4, 5]);
+        assert_eq!(n.original_cluster(6), 4);
+    }
+
+    #[test]
+    fn vertical_layout_reports_glyph_clusters_in_original_coordinates() -> anyhow::Result<()> {
+        // "!!A": the "!!" pair collapses to a single glyph, so "A" would sit at
+        // post-normalization offset 3. The layout must report "A" at its
+        // ORIGINAL byte offset 2 so caller style ranges stay aligned.
+        let font = any_system_font();
+        let layout = TextLayout::new(&font, Some(24.0))
+            .with_writing_mode(WritingMode::VerticalRl)
+            .run("!!A")?;
+        let clusters: Vec<u32> = layout
+            .lines
+            .iter()
+            .flat_map(|line| line.glyphs.iter().map(|g| g.cluster))
+            .collect();
+        assert!(
+            clusters.contains(&0),
+            "expected the collapsed pair at original offset 0, got {clusters:?}"
+        );
+        assert!(
+            clusters.contains(&2),
+            "expected 'A' at original byte offset 2, got {clusters:?}"
+        );
+        assert!(
+            !clusters.contains(&3),
+            "no glyph should remain at the post-normalization offset 3, got {clusters:?}"
+        );
+        Ok(())
     }
 
     #[test]

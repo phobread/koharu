@@ -54,7 +54,7 @@ impl FontDetector {
         let dtype = loading::model_dtype(&device);
         let downloads = runtime.downloads();
         let weights_path = downloads
-            .huggingface_model(HF_REPO, "yuzumarker-font-detection.safetensors")
+            .bundled_model(HF_REPO, "yuzumarker-font-detection.safetensors")
             .await?;
         let model = loading::load_mmaped_safetensors_path_with_dtype(
             &weights_path,
@@ -202,7 +202,7 @@ impl FontLabels {
     pub async fn load(runtime: &RuntimeManager) -> Result<Self> {
         let path = runtime
             .downloads()
-            .huggingface_model(HF_REPO, "font-labels-ex.json")
+            .bundled_model(HF_REPO, "font-labels-ex.json")
             .await?;
         Self::from_path(&path)
     }

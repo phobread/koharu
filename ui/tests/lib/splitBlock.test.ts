@@ -12,6 +12,22 @@ import {
 } from '@/lib/splitBlock'
 
 describe('splitTextValue', () => {
+  it('puts the first vertical fragment on the right for both wide and tall boxes', () => {
+    for (const [width, height] of [
+      [200, 80],
+      [80, 200],
+    ]) {
+      const split = splitTextBlock(
+        { x: 0, y: 0, width, height, rotationDeg: 0 },
+        { translation: 'A B' },
+        'vertical',
+      )
+      expect(split.a.translation).toBe('A')
+      expect(split.a.transform.x).toBe(width / 2)
+      expect(split.b.transform.x).toBe(0)
+      expect(split.axis).toBe('leftRight')
+    }
+  })
   it('splits multi-line text by line at the midpoint', () => {
     expect(splitTextValue('Line one\nLine two')).toEqual(['Line one', 'Line two'])
     expect(splitTextValue('a\nb\nc')).toEqual(['a\nb', 'c'])
@@ -33,6 +49,11 @@ describe('splitTextValue', () => {
     expect(splitTextValue('')).toEqual(['', ''])
     expect(splitTextValue(null)).toEqual(['', ''])
     expect(splitTextValue(undefined)).toEqual(['', ''])
+  })
+
+  it('preserves original whitespace within each retained half', () => {
+    expect(splitTextValue('  one  two\n three  four  ')).toEqual(['one  two', 'three  four'])
+    expect(splitTextValue('one  two  three  four')).toEqual(['one  two', 'three  four'])
   })
 })
 
@@ -95,6 +116,10 @@ describe('splitTextBlock', () => {
 })
 
 describe('splitTextValueAt', () => {
+  it('rejects a caret inside an emoji surrogate pair', () => {
+    expect(splitTextValueAt('a🙂b', 2)).toBeNull()
+    expect(splitTextValueAt('a🙂b', 3)).toEqual(['a🙂', 'b'])
+  })
   it('splits at the offset and trims whitespace around the cut', () => {
     expect(splitTextValueAt('Hello there world', 6)).toEqual(['Hello', 'there world'])
     expect(splitTextValueAt('one  two', 4)).toEqual(['one', 'two'])
@@ -110,6 +135,10 @@ describe('splitTextValueAt', () => {
 })
 
 describe('splitTextValueNear', () => {
+  it('keeps non-BMP characters intact in automatic counterpart splits', () => {
+    expect(splitTextValueNear('🙂🙂', 0.75)).toEqual(['🙂', '🙂'])
+    expect(splitTextValueNear('🙂', 0.5)).toEqual(['🙂', ''])
+  })
   it('prefers the line boundary closest to the ratio', () => {
     expect(splitTextValueNear('a\nb\nc\nd', 0.25)).toEqual(['a', 'b\nc\nd'])
     expect(splitTextValueNear('a\nb\nc\nd', 0.75)).toEqual(['a\nb\nc', 'd'])

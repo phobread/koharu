@@ -40,8 +40,9 @@ impl Engine for Model {
             None => None,
         };
 
-        // Bubble-interior mask (optional): grows latin layout boxes so text
-        // wraps inside the available bubble space.
+        // Bubble-interior mask (optional): identifies the relevant interior
+        // for automatic foreground/background contrast sampling. Text layout
+        // itself always follows the visible node rectangle.
         let bubble = match find_mask_node(ctx.scene, ctx.page, MaskRole::Bubble) {
             Some((_, blob)) => Some(ctx.blobs.load_image(&blob)?),
             None => None,
@@ -52,18 +53,20 @@ impl Engine for Model {
         let inputs: Vec<RenderBlockInput> = nodes
             .iter()
             .filter_map(|(id, transform, t)| {
-                let translation = t.translation.as_ref()?.trim();
-                if translation.is_empty() {
+                let translation = t.translation.as_ref()?;
+                if translation.trim().is_empty() {
                     return None;
                 }
                 Some(RenderBlockInput {
                     node_id: *id,
                     transform: **transform,
-                    translation: translation.to_string(),
+                    translation: translation.clone(),
                     style: t.style.clone(),
+                    style_ranges: t.style_ranges.clone(),
                     font_prediction: t.font_prediction.clone(),
                     source_direction: t.source_direction,
                     rendered_direction: t.rendered_direction,
+                    writing_direction: t.writing_direction,
                     lock_layout_box: t.lock_layout_box,
                 })
             })

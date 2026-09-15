@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { TextStyle } from '@/lib/api/schemas'
-import { DEFAULT_TEXT_COLOR, effectiveTextColor, mergeTextStyle } from '@/lib/textStyle'
+import {
+  clearFontSizeForBoxResize,
+  DEFAULT_TEXT_COLOR,
+  effectiveTextColor,
+  mergeTextStyle,
+} from '@/lib/textStyle'
 
 const style: TextStyle = {
   fontFamilies: ['Arial'],
@@ -69,5 +74,22 @@ describe('mergeTextStyle', () => {
     expect(next.color).toBeNull()
     expect(next.fontSize).toBe(18)
     expect(next.stroke).toBeNull()
+  })
+})
+
+describe('clearFontSizeForBoxResize', () => {
+  it('returns box resizing to auto-fit without discarding other styles', () => {
+    const next = clearFontSizeForBoxResize(style)
+    expect(next?.fontSize).toBeNull()
+    expect(next?.fontFamilies).toEqual(['Arial'])
+    expect(next?.color).toEqual([1, 2, 3, 255])
+    expect(next?.effect).toEqual(style.effect)
+    expect(next?.stroke).toEqual(style.stroke)
+    expect(next?.textAlign).toBe('left')
+  })
+
+  it('does not materialise a style patch for an already automatic size', () => {
+    expect(clearFontSizeForBoxResize(null)).toBeUndefined()
+    expect(clearFontSizeForBoxResize({ ...style, fontSize: null })).toBeUndefined()
   })
 })

@@ -4,9 +4,10 @@ import type { Page } from '@/lib/api/schemas'
 import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 
-/** Extra pixels cleared around a block — segment masks bleed a little past
- * the detector box. */
-const CLEAR_MARGIN_PX = 4
+/** Extra pixels cleared around a block. FLUX expands a detected text region by
+ * up to 12 px before compositing; four more pixels cover rounding and mask
+ * rasterisation so uninpaint restores every pixel the original run touched. */
+const CLEAR_MARGIN_PX = 16
 
 type Rect = { x0: number; y0: number; x1: number; y1: number }
 
@@ -110,7 +111,7 @@ export async function uninpaintBlocks(page: Page, nodeIds: string[], segmentPng:
   cctx.fillStyle = '#000'
   for (const t of transforms) fillRotatedRect(cctx, t, CLEAR_MARGIN_PX)
   cctx.globalCompositeOperation = 'destination-out'
-  for (const t of keep) fillRotatedRect(cctx, t, 0)
+  for (const t of keep) fillRotatedRect(cctx, t, CLEAR_MARGIN_PX)
   ctx.drawImage(clearLayer, 0, 0)
 
   const png = await new Promise<Blob>((resolve, reject) => {
@@ -141,7 +142,11 @@ export async function uninpaintBlocks(page: Page, nodeIds: string[], segmentPng:
   // Empty string, not null: a JSON `"translation": null` deserialises to the
   // patch's outer None on the backend and is silently dropped.
   for (const id of clearIds) {
-    await applyOp(ops.updateNode(page.id, id, { data: { text: { translation: '' } } as never }))
+    await applyOp(
+      ops.updateNode(page.id, id, {
+        data: { text: { translation: '', styleRanges: [] } } as never,
+      }),
+    )
   }
 
   await invalidateScene()

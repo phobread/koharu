@@ -15,6 +15,7 @@ use reqwest::header::{CONTENT_LENGTH, RANGE};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
+use crate::model_pins::{self, ModelFile, ModelPin};
 use crate::runtime::{RuntimeHttpClient, RuntimeHttpConfig};
 
 /// 10 MiB per ranged GET — same size hf-hub's `.high()` mode uses. Short enough
@@ -70,11 +71,41 @@ impl Downloads {
     /// on our retry-configured client so a stalled chunk is retried by the
     /// middleware instead of hanging the future.
     pub async fn huggingface_model(&self, repo: &str, filename: &str) -> Result<PathBuf> {
-        let cache_repo = self
-            .huggingface_cache
-            .repo(Repo::new(repo.to_string(), RepoType::Model));
+        self.download_huggingface(repo, filename, None).await
+    }
 
-        if let Some(path) = cache_repo.get(filename) {
+    /// Resolve a bundled image-processing model at its audited immutable revision.
+    /// Does not consult or update `refs/main` and never falls back to another revision.
+    pub async fn bundled_model(&self, repo: &str, filename: &str) -> Result<PathBuf> {
+        let (pin, file) = model_pins::get(repo, filename)?;
+        self.download_huggingface(repo, filename, Some((pin, file)))
+            .await
+    }
+
+    /// Read-only presence check shared by package registration and actual loading.
+    pub fn cached_bundled_model(&self, repo: &str, filename: &str) -> Result<Option<PathBuf>> {
+        let (pin, file) = model_pins::get(repo, filename)?;
+        let cache = self.huggingface_cache.repo(pinned_repo(pin));
+        cached_pinned_file(&cache, pin, file)
+    }
+
+    async fn download_huggingface(
+        &self,
+        repo: &str,
+        filename: &str,
+        pinned: Option<(&ModelPin, &ModelFile)>,
+    ) -> Result<PathBuf> {
+        let repository = pinned.map_or_else(
+            || Repo::new(repo.to_string(), RepoType::Model),
+            |(pin, _)| pinned_repo(pin),
+        );
+        let cache_repo = self.huggingface_cache.repo(repository.clone());
+
+        let cached = match pinned {
+            Some((pin, file)) => cached_pinned_file(&cache_repo, pin, file)?,
+            None => cache_repo.get(filename),
+        };
+        if let Some(path) = cached {
             return Ok(path);
         }
 
@@ -83,13 +114,27 @@ impl Downloads {
             .with_user_agent("koharu", env!("CARGO_PKG_VERSION"))
             .build()
             .context("failed to build HF Hub API")?;
-        let repo_handle = api.model(repo.to_string());
+        let repo_handle = api.repo(repository);
         let url = repo_handle.url(filename);
+        let label = pinned.map_or_else(
+            || format!("{repo}/{filename}"),
+            |(pin, _)| format!("{repo}@{}/{filename}", pin.revision),
+        );
 
         let metadata: Metadata = tokio::time::timeout(HF_METADATA_TIMEOUT, api.metadata(&url))
             .await
-            .map_err(|_| anyhow::anyhow!("HF metadata request timed out for `{repo}/{filename}`"))?
-            .with_context(|| format!("failed to fetch HF metadata for `{repo}/{filename}`"))?;
+            .map_err(|_| anyhow::anyhow!("HF metadata request timed out for `{label}`"))?
+            .with_context(|| format!("failed to fetch HF metadata for `{label}`"))?;
+
+        if let Some((pin, file)) = pinned {
+            validate_pinned_metadata(
+                pin,
+                file,
+                metadata.commit_hash(),
+                metadata.etag(),
+                metadata.size() as u64,
+            )?;
+        }
 
         let blob_path = cache_repo.blob_path(metadata.etag());
         if let Some(parent) = blob_path.parent() {
@@ -105,9 +150,7 @@ impl Downloads {
                 .await
             {
                 reporter.fail(&error);
-                return Err(error.context(format!(
-                    "failed to download HF model file `{repo}/{filename}`"
-                )));
+                return Err(error.context(format!("failed to download HF model file `{label}`")));
             }
             reporter.finish();
         }
@@ -123,9 +166,14 @@ impl Downloads {
             #[cfg(target_family = "unix")]
             std::os::unix::fs::symlink(&blob_path, &pointer_path).ok();
         }
-        cache_repo
-            .create_ref(metadata.commit_hash())
-            .context("failed to create HF cache ref")?;
+        // Pinned cache lookup goes straight to snapshots/<commit> or its known
+        // content-addressed blob. No ref is required, even on Windows without
+        // symlink privileges. Preserve the legacy branch ref for custom models.
+        if pinned.is_none() {
+            cache_repo
+                .create_ref(metadata.commit_hash())
+                .context("failed to create HF cache ref")?;
+        }
 
         Ok(if pointer_path.exists() {
             pointer_path
@@ -358,6 +406,65 @@ impl TransferReporter {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn pinned_repo(pin: &ModelPin) -> Repo {
+    Repo::with_revision(
+        pin.repo.to_string(),
+        RepoType::Model,
+        pin.revision.to_string(),
+    )
+}
+
+fn cached_pinned_file(
+    cache: &hf_hub::CacheRepo,
+    pin: &ModelPin,
+    file: &ModelFile,
+) -> Result<Option<PathBuf>> {
+    // hf-hub 0.5's get() requires refs/<revision>, even for a full commit hash.
+    // Existing Windows installs may also have blobs with no snapshot symlinks.
+    for path in [
+        cache.pointer_path(pin.revision).join(file.filename),
+        cache.blob_path(file.oid),
+    ] {
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_file() && metadata.len() == file.size,
+                    "cached model `{}/{}@{}` has the wrong size; expected {} bytes at `{}`",
+                    pin.repo,
+                    file.filename,
+                    pin.revision,
+                    file.size,
+                    path.display()
+                );
+                return Ok(Some(path));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot read model cache `{}`", path.display()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn validate_pinned_metadata(
+    pin: &ModelPin,
+    file: &ModelFile,
+    commit: &str,
+    etag: &str,
+    size: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        commit == pin.revision && etag == file.oid && size == file.size,
+        "HF metadata does not match pinned model `{}/{}@{}`; refusing a different artifact",
+        pin.repo,
+        file.filename,
+        pin.revision
+    );
+    Ok(())
+}
+
 fn part_path(destination: &Path) -> Result<PathBuf> {
     let file_name = destination.file_name().ok_or_else(|| {
         anyhow::anyhow!(
@@ -373,6 +480,147 @@ mod tests {
     use std::path::Path;
 
     use super::part_path;
+
+    use super::*;
+
+    static TEST_FILE: ModelFile = ModelFile {
+        filename: "model.bin",
+        oid: "1111111111111111111111111111111111111111",
+        size: 4,
+    };
+    static TEST_PIN: ModelPin = ModelPin {
+        repo: "test/model",
+        revision: "2222222222222222222222222222222222222222",
+        files: &[],
+    };
+
+    fn test_downloads(temp: &tempfile::TempDir) -> Downloads {
+        Downloads::new(
+            temp.path().join("downloads"),
+            temp.path().join("hf"),
+            &RuntimeHttpConfig::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pinned_cache_works_without_refs_or_snapshot_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = test_downloads(&temp);
+        let cache = downloads.huggingface_cache.repo(pinned_repo(&TEST_PIN));
+        let blob = cache.blob_path(TEST_FILE.oid);
+        std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        std::fs::write(&blob, b"tiny").unwrap();
+        for _ in 0..2 {
+            let path = downloads
+                .download_huggingface(
+                    TEST_PIN.repo,
+                    TEST_FILE.filename,
+                    Some((&TEST_PIN, &TEST_FILE)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(path, blob);
+            assert_eq!(std::fs::read(path).unwrap(), b"tiny");
+        }
+        assert!(!temp.path().join("hf/models--test--model/refs").exists());
+    }
+
+    #[test]
+    fn pinned_snapshot_ignores_a_moving_main_ref() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = test_downloads(&temp);
+        let cache = downloads.huggingface_cache.repo(pinned_repo(&TEST_PIN));
+        let old_snapshot = cache
+            .pointer_path(TEST_PIN.revision)
+            .join(TEST_FILE.filename);
+        std::fs::create_dir_all(old_snapshot.parent().unwrap()).unwrap();
+        std::fs::write(&old_snapshot, b"old!").unwrap();
+        let main = downloads.huggingface_cache.model(TEST_PIN.repo.into());
+        main.create_ref("3333333333333333333333333333333333333333")
+            .unwrap();
+        let new_snapshot = main
+            .pointer_path("3333333333333333333333333333333333333333")
+            .join(TEST_FILE.filename);
+        std::fs::create_dir_all(new_snapshot.parent().unwrap()).unwrap();
+        std::fs::write(new_snapshot, b"new!").unwrap();
+        assert_eq!(
+            cached_pinned_file(&cache, &TEST_PIN, &TEST_FILE).unwrap(),
+            Some(old_snapshot.clone())
+        );
+        std::fs::remove_file(old_snapshot).unwrap();
+        assert!(
+            cached_pinned_file(&cache, &TEST_PIN, &TEST_FILE)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_repository_keeps_its_existing_branch_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = test_downloads(&temp);
+        let cache = downloads.huggingface_cache.model("custom/model".into());
+        cache.create_ref("custom-version").unwrap();
+        let file = cache.pointer_path("custom-version").join("custom.gguf");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"custom").unwrap();
+        assert_eq!(
+            downloads
+                .huggingface_model("custom/model", "custom.gguf")
+                .await
+                .unwrap(),
+            file
+        );
+    }
+
+    #[test]
+    fn wrong_size_and_wrong_remote_revision_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = test_downloads(&temp);
+        let cache = downloads.huggingface_cache.repo(pinned_repo(&TEST_PIN));
+        let blob = cache.blob_path(TEST_FILE.oid);
+        std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        std::fs::write(&blob, b"partial").unwrap();
+        assert!(
+            cached_pinned_file(&cache, &TEST_PIN, &TEST_FILE)
+                .unwrap_err()
+                .to_string()
+                .contains("wrong size")
+        );
+        validate_pinned_metadata(&TEST_PIN, &TEST_FILE, TEST_PIN.revision, TEST_FILE.oid, 4)
+            .unwrap();
+        for (revision, oid, size) in [
+            ("main", TEST_FILE.oid, 4),
+            (TEST_PIN.revision, "different", 4),
+            (TEST_PIN.revision, TEST_FILE.oid, 5),
+        ] {
+            assert!(validate_pinned_metadata(&TEST_PIN, &TEST_FILE, revision, oid, size).is_err());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires public HF network access; downloads only a 470-byte config into a temporary cache"]
+    async fn downloads_small_pinned_asset_and_reuses_it() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let downloads = test_downloads(&temp);
+        let repo = "ogkalu/comic-text-and-bubble-detector";
+        let filename = "preprocessor_config.json";
+        let first = downloads.bundled_model(repo, filename).await?;
+        let bytes = std::fs::read(&first)?;
+        assert_eq!(bytes.len(), 470);
+        assert!(String::from_utf8(bytes.clone())?.contains("size"));
+        let second = downloads.bundled_model(repo, filename).await?;
+        assert_eq!(first, second);
+        assert_eq!(bytes, std::fs::read(second)?);
+        assert!(
+            !temp
+                .path()
+                .join("hf/models--ogkalu--comic-text-and-bubble-detector/refs/main")
+                .exists()
+        );
+        Ok(())
+    }
 
     #[test]
     fn partial_download_path_appends_suffix() {

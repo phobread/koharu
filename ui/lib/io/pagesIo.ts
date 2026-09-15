@@ -3,7 +3,7 @@
 import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import type { SceneSnapshot } from '@/lib/api/schemas'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
-import { saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
+import { defaultRenderedExportDirectory, saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
 import { exportProject, uploadKhrArchive, uploadPages, uploadPagesByPaths } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -97,7 +97,9 @@ export async function exportCurrentProjectAs(
       await saveBlobToDirectory(blob, defaultName, opts.outputDirectory)
       return
     }
-    await saveBlob(blob, defaultName)
+    const defaultDirectory =
+      format === 'rendered' ? await defaultRenderedExportDirectory(base) : undefined
+    await saveBlob(blob, defaultName, { defaultDirectory })
   } catch (err) {
     // Surface the failure to the user instead of swallowing it. Previously this
     // only `console.error`'d and rethrew into a `void` caller, so a failed

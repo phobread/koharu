@@ -25,11 +25,7 @@ import {
 } from '@/lib/rotatedBox'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
-import { mergeTextStyle } from '@/lib/textStyle'
-
-/** Explicit font sizes committed by a corner-drag scale stay in sane bounds. */
-const MIN_SCALED_FONT_PX = 4
-const MAX_SCALED_FONT_PX = 300
+import { clearFontSizeForBoxResize } from '@/lib/textStyle'
 
 type TextBlockLayerProps = {
   showSprites?: boolean
@@ -101,25 +97,18 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
   const peekNode = showOriginalUnderEdit ? editingNode : null
   const { data: originalSrc } = useBlobImage((page && findImageBlob(page, 'source')) ?? undefined)
 
-  const updateTransform = async (id: string, t: Transform, scaleFactor?: number) => {
+  const updateTransform = async (id: string, t: Transform, resized = false) => {
     if (!page) return
     const node = page.nodes[id]
-    // Corner drags scale the text with the box: multiply the block's current
-    // size (explicit override, else the last auto-fit result) and persist it
-    // as an explicit override so the re-render honours the new size.
-    let scaledStyle
-    if (scaleFactor && node && isTextNode(node)) {
-      const data = node.kind.text
-      const base = data.style?.fontSize ?? data.renderedFontSizePx
-      if (base) {
-        const next = Math.min(Math.max(base * scaleFactor, MIN_SCALED_FONT_PX), MAX_SCALED_FONT_PX)
-        scaledStyle = mergeTextStyle(data.style, {
-          fontSize: Math.round(next * 10) / 10,
-        })
-      }
+    // Resizing makes the rectangle authoritative again. Clear a per-block
+    // size override so every edge and corner re-runs auto-fit against the new
+    // dimensions; keep all of the block's other explicit styling intact.
+    let resizedStyle
+    if (resized && node && isTextNode(node)) {
+      resizedStyle = clearFontSizeForBoxResize(node.kind.text.style)
     }
     const patch: NodeDataPatch = {
-      text: scaledStyle ? { lockLayoutBox: true, style: scaledStyle } : { lockLayoutBox: true },
+      text: resizedStyle ? { lockLayoutBox: true, style: resizedStyle } : { lockLayoutBox: true },
     }
     await applyOp(ops.updateNode(page.id, id, { transform: t, data: patch }))
     queueAutoRender(page.id)
@@ -173,7 +162,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
             // Tapping a box always brings its quick editor back, even after ✕.
             setQuickEditorHiddenFor((prev) => (prev === id ? null : prev))
           }}
-          onCommit={(t, scaleFactor) => void updateTransform(n.id, t, scaleFactor)}
+          onCommit={(t, resized) => void updateTransform(n.id, t, resized)}
           onScalePreview={(factor) =>
             setSpritePreview(factor === null ? null : { id: n.id, factor })
           }
@@ -206,7 +195,7 @@ type TextBlockItemProps = {
   selected: boolean
   interactive: boolean
   onSelect: (id: string, additive: boolean) => void
-  onCommit: (transform: Transform, scaleFactor?: number) => void
+  onCommit: (transform: Transform, resized?: boolean) => void
   onScalePreview: (factor: number | null) => void
 }
 
@@ -250,7 +239,7 @@ function TextBlockItem({
     el.style.height = `${h}px`
   }
 
-  const commitBox = (b: Box, scaleFactor?: number) => {
+  const commitBox = (b: Box, resized = false) => {
     onCommit(
       {
         x: Math.round(b.x / scale),
@@ -259,7 +248,7 @@ function TextBlockItem({
         height: Math.max(4, Math.round(b.height / scale)),
         rotationDeg: deg,
       },
-      scaleFactor,
+      resized,
     )
   }
 
@@ -328,10 +317,9 @@ function TextBlockItem({
       const edge = edgeRef.current
       const isCorner = !!edge && (edge.left || edge.right) && (edge.top || edge.bottom)
       if (isResizeRef.current && edge && isCorner) {
-        // Corner drag scales the whole block Canva-style: uniform factor
-        // (aspect locked), opposite corner anchored on screen, text size
-        // follows on commit. The dominant drag axis (in the box's local
-        // frame, so slanted blocks feel right) drives the factor.
+        // Corner drag scales the rectangle uniformly with the opposite
+        // corner anchored. The preview follows the geometry; on commit the
+        // renderer performs a fresh fit inside the resulting box.
         const minFactor = Math.max((4 * scale) / start.width, (4 * scale) / start.height)
         const factor = cornerScaleFactor(start, edge, mx, my, deg, minFactor)
         const b = scaleRotatedBox(start, edge, factor, deg)
@@ -341,7 +329,7 @@ function TextBlockItem({
           isResizeRef.current = false
           edgeRef.current = null
           onScalePreview(null)
-          commitBox(b, factor)
+          commitBox(b, true)
         }
       } else if (isResizeRef.current && edge) {
         const b = resizeRotatedBox(start, edge, mx, my, deg, 4 * scale)
@@ -349,7 +337,7 @@ function TextBlockItem({
         if (last) {
           isResizeRef.current = false
           edgeRef.current = null
-          commitBox(b)
+          commitBox(b, true)
         }
       } else {
         setBox(start.x + mx, start.y + my, start.width, start.height)
@@ -607,7 +595,7 @@ function ResizeHandles({ onEdgePointerDown }: { onEdgePointerDown: (edge: Resize
             }}
           >
             {/* Visible dot so the resize affordance is discoverable: corners
-                scale the whole block, edges stretch/reflow. */}
+                scale the box uniformly; every handle re-fits the text. */}
             {isCorner && (
               <div className='h-2 w-2 rounded-sm border border-primary bg-background shadow-sm' />
             )}

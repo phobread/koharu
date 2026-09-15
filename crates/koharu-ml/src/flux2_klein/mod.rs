@@ -5,12 +5,19 @@ mod scheduler;
 mod transformer;
 mod vae;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Tensor};
-use image::{DynamicImage, GenericImageView, GrayImage, Luma, RgbImage};
-use imageproc::region_labelling::{Connectivity, connected_components};
+use image::{DynamicImage, GenericImageView, GrayImage, Luma, RgbImage, RgbaImage};
+use imageproc::{
+    distance_transform::Norm,
+    morphology::dilate,
+    region_labelling::{Connectivity, connected_components},
+};
 use koharu_runtime::RuntimeManager;
 use tracing::instrument;
 
@@ -33,6 +40,14 @@ const FLUX2_GGUF: &str = "flux-2-klein-4b-Q4_K_M.gguf";
 const VAE_REPO: &str = "black-forest-labs/FLUX.2-small-decoder";
 const VAE_FILE: &str = "diffusion_pytorch_model.safetensors";
 const INPAINT_CROP_CONTEXT: u32 = 64;
+/// Sample generated/background colour immediately outside the tight erase
+/// mask. Sampling inside the mask sees the original lettering and can tint the
+/// fill; feathering inside it blends that lettering back into the edge.
+const COLOR_MATCH_RING_RADIUS: u8 = 2;
+const MAX_COLOR_MATCH_OFFSET: i16 = 64;
+const MAX_COLOR_MATCH_SAMPLE_DELTA: i16 = 96;
+const MAX_COLOR_MATCH_MEDIAN_DEVIATION: i16 = 24;
+const MIN_COLOR_MATCH_SAMPLES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RawBounds {
@@ -119,11 +134,11 @@ impl Flux2Klein {
         let paths = Flux2KleinPaths {
             transformer_gguf: runtime
                 .downloads()
-                .huggingface_model(FLUX2_REPO, FLUX2_GGUF)
+                .bundled_model(FLUX2_REPO, FLUX2_GGUF)
                 .await?,
             vae_safetensors: runtime
                 .downloads()
-                .huggingface_model(VAE_REPO, VAE_FILE)
+                .bundled_model(VAE_REPO, VAE_FILE)
                 .await?,
         };
         Self::load_from_paths(paths)
@@ -313,18 +328,39 @@ impl Flux2Klein {
         reference_image: Option<&DynamicImage>,
         options: &Flux2InpaintOptions,
     ) -> Result<DynamicImage> {
-        if image.dimensions() != mask.dimensions() {
+        self.inpaint_with_reference_and_composite_mask(image, mask, mask, reference_image, options)
+    }
+
+    /// Generate with a broad mask while compositing through a tighter one.
+    ///
+    /// FLUX benefits from regenerating the whole detected text region, but
+    /// pasting that entire region back produces a flat, discoloured rectangle.
+    /// A glyph-level composite mask keeps the generated cleanup only where the
+    /// original lettering actually needs replacing.
+    #[instrument(level = "debug", skip_all)]
+    pub fn inpaint_with_reference_and_composite_mask(
+        &self,
+        image: &DynamicImage,
+        generation_mask: &DynamicImage,
+        composite_mask: &DynamicImage,
+        reference_image: Option<&DynamicImage>,
+        options: &Flux2InpaintOptions,
+    ) -> Result<DynamicImage> {
+        if image.dimensions() != generation_mask.dimensions()
+            || image.dimensions() != composite_mask.dimensions()
+        {
             bail!(
-                "image/mask dimensions mismatch: image is {:?}, mask is {:?}",
+                "image/mask dimensions mismatch: image is {:?}, generation mask is {:?}, composite mask is {:?}",
                 image.dimensions(),
-                mask.dimensions()
+                generation_mask.dimensions(),
+                composite_mask.dimensions()
             );
         }
         if options.strength <= 0.0 {
             return Ok(image.clone());
         }
 
-        let gray_mask = mask.to_luma8();
+        let gray_mask = generation_mask.to_luma8();
         let plan = plan_inpaint_crops(
             &gray_mask,
             image.width(),
@@ -335,15 +371,46 @@ impl Flux2Klein {
             return Ok(image.clone());
         }
 
+        tracing::info!(
+            crop_count = plan.len(),
+            crop_pixels = plan
+                .iter()
+                .map(|bounds| u64::from(bounds.width) * u64::from(bounds.height))
+                .sum::<u64>(),
+            steps = options.num_inference_steps,
+            strength = options.strength,
+            "planned Flux2 inpaint crops"
+        );
+
         let mut running_output = image.clone();
-        for bounds in plan {
+        for (crop_index, bounds) in plan.into_iter().enumerate() {
             let image_crop =
                 running_output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let generated =
-                self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
+            let generation_mask_crop =
+                generation_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let composite_mask_crop =
+                composite_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let generation_started = Instant::now();
+            let generated = self.inpaint_full_frame(
+                &image_crop,
+                &generation_mask_crop,
+                reference_image,
+                options,
+            )?;
+            let generation_ms = generation_started.elapsed().as_millis();
+            let composite_started = Instant::now();
             running_output =
-                composite_inpaint_crop(&running_output, &generated, &mask_crop, bounds)?;
+                composite_inpaint_crop(&running_output, &generated, &composite_mask_crop, bounds)?;
+            tracing::info!(
+                crop_index,
+                x = bounds.x,
+                y = bounds.y,
+                width = bounds.width,
+                height = bounds.height,
+                generation_ms,
+                composite_ms = composite_started.elapsed().as_millis(),
+                "completed Flux2 inpaint crop"
+            );
         }
         Ok(running_output)
     }
@@ -535,6 +602,7 @@ fn vae_dtype(device: &Device) -> DType {
 }
 
 fn release_cuda_temporary_memory(device: &Device) -> Result<()> {
+    let started = Instant::now();
     device.synchronize()?;
 
     #[cfg(feature = "cuda")]
@@ -554,6 +622,10 @@ fn release_cuda_temporary_memory(device: &Device) -> Result<()> {
         }
     }
 
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "released Flux2 CUDA temporary memory"
+    );
     Ok(())
 }
 
@@ -703,6 +775,7 @@ fn composite_inpaint_crop(
     let mut output = original.to_rgba8();
     let generated = generated_crop.to_rgba8();
     let mask = mask_crop.to_luma8();
+    let color_offsets = boundary_colour_offset_field(&output, &generated, &mask, bounds);
     for y in 0..bounds.height {
         for x in 0..bounds.width {
             let alpha = mask.get_pixel(x, y).0[0] as f32 / 255.0;
@@ -711,9 +784,12 @@ fn composite_inpaint_crop(
             }
             let generated_pixel = generated.get_pixel(x, y).0;
             let output_pixel = output.get_pixel_mut(bounds.x + x, bounds.y + y);
+            let color_offset = color_offsets[(y * bounds.width + x) as usize];
             for (channel, generated_channel) in generated_pixel.iter().enumerate().take(3) {
+                let matched_channel =
+                    (f32::from(*generated_channel) + color_offset[channel]).clamp(0.0, 255.0);
                 output_pixel.0[channel] = (output_pixel.0[channel] as f32 * (1.0 - alpha)
-                    + *generated_channel as f32 * alpha)
+                    + matched_channel * alpha)
                     .round()
                     .clamp(0.0, 255.0) as u8;
             }
@@ -727,6 +803,285 @@ fn composite_inpaint_crop(
             DynamicImage::ImageRgba8(output).to_rgb8(),
         ))
     }
+}
+
+/// Estimate FLUX's low-frequency RGB bias from the narrow ring just outside
+/// the pixels that will be pasted, then fit a smooth, robust affine offset through the erase mask.
+/// Local drawing edges are not colour bias and must not become directional
+/// streaks inside the reconstructed background.
+fn boundary_colour_offset_field(
+    original: &RgbaImage,
+    generated: &RgbaImage,
+    mask: &GrayImage,
+    bounds: CropBounds,
+) -> Vec<[f32; 3]> {
+    let binary = GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        Luma([if mask.get_pixel(x, y).0[0] > 0 {
+            255
+        } else {
+            0
+        }])
+    });
+    let dilated = dilate(&binary, Norm::LInf, COLOR_MATCH_RING_RADIUS);
+    let mut samples = [Vec::new(), Vec::new(), Vec::new()];
+    let mut ring_samples = Vec::new();
+
+    for y in 0..bounds.height {
+        for x in 0..bounds.width {
+            if binary.get_pixel(x, y).0[0] > 0 || dilated.get_pixel(x, y).0[0] == 0 {
+                continue;
+            }
+            let original_pixel = original.get_pixel(bounds.x + x, bounds.y + y).0;
+            let generated_pixel = generated.get_pixel(x, y).0;
+            let delta = [
+                i16::from(original_pixel[0]) - i16::from(generated_pixel[0]),
+                i16::from(original_pixel[1]) - i16::from(generated_pixel[1]),
+                i16::from(original_pixel[2]) - i16::from(generated_pixel[2]),
+            ];
+            if delta
+                .iter()
+                .any(|value| value.abs() > MAX_COLOR_MATCH_SAMPLE_DELTA)
+            {
+                continue;
+            }
+            for channel in 0..3 {
+                samples[channel].push(delta[channel]);
+            }
+            ring_samples.push((x, y, delta));
+        }
+    }
+
+    let fallback: [f32; 3] =
+        std::array::from_fn(|channel| f32::from(robust_colour_offset(&mut samples[channel])));
+    let pixel_count = (bounds.width * bounds.height) as usize;
+    if ring_samples.len() < MIN_COLOR_MATCH_SAMPLES {
+        return vec![fallback; pixel_count];
+    }
+
+    // A colour bias varies smoothly. Drawing edges in the sample ring must
+    // not be projected along individual rows/columns into the erased text.
+    // Fit one robust affine field instead, rejecting local texture outliers.
+    let observations: Vec<([f64; 3], [f64; 3])> = ring_samples
+        .iter()
+        .map(|&(x, y, delta)| {
+            (
+                [
+                    1.0,
+                    normalized_coordinate(x, bounds.width),
+                    normalized_coordinate(y, bounds.height),
+                ],
+                delta.map(f64::from),
+            )
+        })
+        .collect();
+    let Some(coefficients) = fit_colour_plane(&observations) else {
+        return vec![fallback; pixel_count];
+    };
+    let field = (0..pixel_count)
+        .map(|index| {
+            let x = index as u32 % bounds.width;
+            let y = index as u32 / bounds.width;
+            let basis = [
+                1.0,
+                normalized_coordinate(x, bounds.width),
+                normalized_coordinate(y, bounds.height),
+            ];
+            std::array::from_fn(|channel| {
+                (0..3)
+                    .map(|i| basis[i] * coefficients[i][channel])
+                    .sum::<f64>()
+                    .clamp(
+                        -f64::from(MAX_COLOR_MATCH_OFFSET),
+                        f64::from(MAX_COLOR_MATCH_OFFSET),
+                    ) as f32
+            })
+        })
+        .collect();
+    refine_local_colour_offsets(field, &ring_samples, bounds)
+}
+
+/// Match gradual, non-linear background changes that a single plane cannot
+/// describe. Median samples on an eight-pixel grid reject isolated edges;
+/// residuals far from the robust trend are excluded as structural changes.
+/// Harmonic interpolation spreads the remaining bias smoothly in two
+/// dimensions. The bounded coarse-grid solve avoids full-resolution diffusion
+/// and bilinear sampling avoids the old row/column discontinuities.
+fn refine_local_colour_offsets(
+    mut field: Vec<[f32; 3]>,
+    samples: &[(u32, u32, [i16; 3])],
+    bounds: CropBounds,
+) -> Vec<[f32; 3]> {
+    const STEP: u32 = 8;
+    let width = bounds.width.div_ceil(STEP) as usize;
+    let height = bounds.height.div_ceil(STEP) as usize;
+    let mut cells: Vec<Vec<[f32; 3]>> = vec![Vec::new(); width * height];
+    for &(x, y, delta) in samples {
+        let trend = field[(y * bounds.width + x) as usize];
+        let residual = std::array::from_fn(|c| f32::from(delta[c]) - trend[c]);
+        if residual.iter().all(|d| d.abs() <= 24.0) {
+            cells[(y / STEP) as usize * width + (x / STEP) as usize].push(residual);
+        }
+    }
+    let mut anchor = vec![false; width * height];
+    let mut values = vec![[0.0f32; 3]; width * height];
+    for (i, cell) in cells.iter_mut().enumerate() {
+        if cell.len() < 4 {
+            continue;
+        }
+        anchor[i] = true;
+        values[i] = std::array::from_fn(|c| {
+            cell.sort_unstable_by(|a, b| a[c].total_cmp(&b[c]));
+            cell[cell.len() / 2][c]
+        });
+    }
+    for _ in 0..160 {
+        let mut change = 0.0f32;
+        for parity in 0..2 {
+            for y in 0..height {
+                for x in 0..width {
+                    let i = y * width + x;
+                    if anchor[i] || (x + y) % 2 != parity {
+                        continue;
+                    }
+                    let neighbours = [
+                        y * width + x.saturating_sub(1),
+                        y * width + (x + 1).min(width - 1),
+                        y.saturating_sub(1) * width + x,
+                        (y + 1).min(height - 1) * width + x,
+                    ];
+                    let next: [f32; 3] = std::array::from_fn(|c| {
+                        neighbours.iter().map(|&j| values[j][c]).sum::<f32>() * 0.25
+                    });
+                    for c in 0..3 {
+                        change = change.max((values[i][c] - next[c]).abs());
+                    }
+                    values[i] = next;
+                }
+            }
+        }
+        if change < 0.02 {
+            break;
+        }
+    }
+    for y in 0..bounds.height {
+        for x in 0..bounds.width {
+            let gx = (x as f32 / STEP as f32 - 0.5).max(0.0);
+            let gy = (y as f32 / STEP as f32 - 0.5).max(0.0);
+            let x0 = (gx.floor() as usize).min(width - 1);
+            let y0 = (gy.floor() as usize).min(height - 1);
+            let x1 = (x0 + 1).min(width - 1);
+            let y1 = (y0 + 1).min(height - 1);
+            let tx = gx - gx.floor();
+            let ty = gy - gy.floor();
+            let p = &mut field[(y * bounds.width + x) as usize];
+            for c in 0..3 {
+                let a = values[y0 * width + x0][c] * (1.0 - tx) + values[y0 * width + x1][c] * tx;
+                let b = values[y1 * width + x0][c] * (1.0 - tx) + values[y1 * width + x1][c] * tx;
+                p[c] = (p[c] + a * (1.0 - ty) + b * ty).clamp(-64.0, 64.0);
+            }
+        }
+    }
+    field
+}
+
+fn normalized_coordinate(value: u32, size: u32) -> f64 {
+    2.0 * f64::from(value) / f64::from(size.saturating_sub(1).max(1)) - 1.0
+}
+
+/// Least squares with repeated residual trimming. A gradient is retained;
+/// isolated line art is rejected. Highly inconsistent samples indicate that
+/// this is structural reconstruction rather than a colour bias: leave the
+/// generated colours alone in that case.
+fn fit_colour_plane(observations: &[([f64; 3], [f64; 3])]) -> Option<[[f64; 3]; 3]> {
+    let mut keep = vec![true; observations.len()];
+    let mut coefficients = [[0.0; 3]; 3];
+    for iteration in 0..5 {
+        let mut matrix = [[0.0; 6]; 3];
+        let mut count = 0;
+        for ((basis, delta), accepted) in observations.iter().zip(&keep) {
+            if !accepted {
+                continue;
+            }
+            count += 1;
+            for row in 0..3 {
+                for col in 0..3 {
+                    matrix[row][col] += basis[row] * basis[col];
+                    matrix[row][col + 3] += basis[row] * delta[col];
+                }
+            }
+        }
+        if count < MIN_COLOR_MATCH_SAMPLES {
+            return None;
+        }
+        // Pivoted elimination, shared by all three colour channels.
+        for col in 0..3 {
+            let pivot =
+                (col..3).max_by(|&a, &b| matrix[a][col].abs().total_cmp(&matrix[b][col].abs()))?;
+            if matrix[pivot][col].abs() < 1e-8 {
+                return None;
+            }
+            matrix.swap(col, pivot);
+            let scale = matrix[col][col];
+            for j in col..6 {
+                matrix[col][j] /= scale;
+            }
+            for row in 0..3 {
+                if row == col {
+                    continue;
+                }
+                let factor = matrix[row][col];
+                for j in col..6 {
+                    matrix[row][j] -= factor * matrix[col][j];
+                }
+            }
+        }
+        coefficients =
+            std::array::from_fn(|row| std::array::from_fn(|channel| matrix[row][channel + 3]));
+        let residuals: Vec<f64> = observations
+            .iter()
+            .map(|(basis, delta)| {
+                (0..3)
+                    .map(|channel| {
+                        let predicted: f64 =
+                            (0..3).map(|i| basis[i] * coefficients[i][channel]).sum();
+                        (delta[channel] - predicted).abs()
+                    })
+                    .fold(0.0, f64::max)
+            })
+            .collect();
+        let mut ordered = residuals.clone();
+        ordered.sort_unstable_by(f64::total_cmp);
+        let median = ordered[ordered.len() / 2];
+        if iteration == 4 {
+            if median > 12.0 || count * 5 < observations.len() * 3 {
+                return Some([[0.0; 3]; 3]);
+            }
+        } else {
+            let cutoff = (median * 4.0).clamp(3.0, 20.0);
+            keep = residuals
+                .iter()
+                .map(|&residual| residual <= cutoff)
+                .collect();
+        }
+    }
+    Some(coefficients)
+}
+
+fn robust_colour_offset(samples: &mut [i16]) -> i16 {
+    if samples.len() < MIN_COLOR_MATCH_SAMPLES {
+        return 0;
+    }
+    samples.sort_unstable();
+    let median = samples[samples.len() / 2];
+    let mut deviations = samples
+        .iter()
+        .map(|sample| (*sample - median).abs())
+        .collect::<Vec<_>>();
+    deviations.sort_unstable();
+    if deviations[deviations.len() / 2] > MAX_COLOR_MATCH_MEDIAN_DEVIATION {
+        return 0;
+    }
+    median.clamp(-MAX_COLOR_MATCH_OFFSET, MAX_COLOR_MATCH_OFFSET)
 }
 
 fn start_index_for_strength(num_steps: usize, strength: f64) -> usize {
@@ -756,6 +1111,63 @@ mod tests {
     use image::Rgb;
 
     use super::*;
+
+    /// Opt-in GPU audit on copied PNG fixtures. Retains raw generated crops
+    /// so compositor comparisons can use exactly the same model output.
+    #[test]
+    #[ignore = "requires copied PNG fixtures and explicit local Flux2 model paths"]
+    fn retained_inpaint_crops() -> Result<()> {
+        let dir = PathBuf::from(std::env::var("KOHARU_INPAINT_QA")?);
+        let model = Flux2Klein::load_from_paths(Flux2KleinPaths {
+            transformer_gguf: PathBuf::from(std::env::var("KOHARU_FLUX_TRANSFORMER")?),
+            vae_safetensors: PathBuf::from(std::env::var("KOHARU_FLUX_VAE")?),
+        })?;
+        let options = Flux2InpaintOptions {
+            num_inference_steps: 2,
+            ..Default::default()
+        };
+        for tag in ["011", "013"] {
+            let source = image::open(dir.join(format!("{tag}-source.png")))?;
+            let generation = image::open(dir.join(format!("{tag}-generation.png")))?;
+            let composite = image::open(dir.join(format!("{tag}-composite.png")))?;
+            let plan = plan_inpaint_crops(
+                &generation.to_luma8(),
+                source.width(),
+                source.height(),
+                options.mask_padding,
+            );
+            let mut output = source.clone();
+            let mut bounds_json = Vec::new();
+            for (index, bounds) in plan.into_iter().enumerate() {
+                let crop = output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+                let gen_mask = generation.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+                let paste_mask =
+                    composite.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+                let generated = model.inpaint_full_frame(&crop, &gen_mask, None, &options)?;
+                let name = format!("{tag}-crop-{index}");
+                crop.save(dir.join(format!("{name}-source.png")))?;
+                generated.save(dir.join(format!("{name}-generated.png")))?;
+                paste_mask.save(dir.join(format!("{name}-paste.png")))?;
+                output = composite_inpaint_crop(&output, &generated, &paste_mask, bounds)?;
+                bounds_json.push(serde_json::json!({"index": index, "x": bounds.x, "y": bounds.y, "width": bounds.width, "height": bounds.height}));
+                println!("saved {name} raw output");
+            }
+            output.save(dir.join(format!("{tag}-fixed.png")))?;
+            std::fs::write(
+                dir.join(format!("{tag}-crops.json")),
+                serde_json::to_vec_pretty(&bounds_json)?,
+            )?;
+            let original = source.to_rgba8();
+            let result = output.to_rgba8();
+            let mask = composite.to_luma8();
+            for (x, y, pixel) in original.enumerate_pixels() {
+                if mask.get_pixel(x, y)[0] == 0 {
+                    assert_eq!(pixel, result.get_pixel(x, y));
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn crop(x: u32, y: u32, width: u32, height: u32) -> CropBounds {
         CropBounds {
@@ -993,5 +1405,135 @@ mod tests {
             };
             assert_eq!(*pixel, expected);
         }
+    }
+
+    #[test]
+    fn composite_matches_generated_bias_from_outside_mask_without_edge_feather() {
+        let mut base = RgbImage::from_pixel(24, 24, Rgb([100, 110, 120]));
+        let generated = RgbImage::from_pixel(24, 24, Rgb([120, 130, 140]));
+        let mut mask = GrayImage::new(24, 24);
+        for y in 6..18 {
+            for x in 6..18 {
+                // Simulate bright source lettering under the erase mask. It
+                // must not participate in colour matching or survive at edge.
+                base.put_pixel(x, y, Rgb([240, 240, 240]));
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+
+        let output = composite_inpaint_crop(
+            &DynamicImage::ImageRgb8(base),
+            &DynamicImage::ImageRgb8(generated),
+            &DynamicImage::ImageLuma8(mask),
+            crop(0, 0, 24, 24),
+        )
+        .unwrap()
+        .to_rgb8();
+
+        assert_eq!(*output.get_pixel(6, 12), Rgb([100, 110, 120]));
+        assert_eq!(*output.get_pixel(12, 12), Rgb([100, 110, 120]));
+        assert_eq!(*output.get_pixel(5, 12), Rgb([100, 110, 120]));
+    }
+
+    #[test]
+    fn composite_does_not_project_boundary_art_into_stripes() {
+        let mut base = RgbImage::from_pixel(128, 128, Rgb([128; 3]));
+        let generated = base.clone();
+        let mut mask = GrayImage::new(128, 128);
+        for y in 32..96 {
+            for x in 32..96 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        // A small detail just outside the mask used to produce a stripe
+        // reaching its centre (136 instead of the correct flat 128).
+        for y in 45..49 {
+            for x in 30..32 {
+                base.put_pixel(x, y, Rgb([168; 3]));
+            }
+        }
+        let output = composite_inpaint_crop(
+            &DynamicImage::ImageRgb8(base.clone()),
+            &DynamicImage::ImageRgb8(generated),
+            &DynamicImage::ImageLuma8(mask.clone()),
+            crop(0, 0, 128, 128),
+        )
+        .unwrap()
+        .to_rgb8();
+        for (x, y, pixel) in output.enumerate_pixels() {
+            if mask.get_pixel(x, y)[0] == 0 {
+                assert_eq!(pixel, base.get_pixel(x, y));
+            } else {
+                assert!(
+                    (i16::from(pixel[0]) - 128).abs() <= 1,
+                    "({x},{y}): {pixel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn composite_matches_curved_background_bias_without_patch_edges() -> Result<()> {
+        let background = |y: u32| (128.0 + 12.0 * (y as f32 / 20.0).sin()).round() as u8;
+        let original =
+            DynamicImage::ImageRgb8(RgbImage::from_fn(96, 96, |_, y| Rgb([background(y); 3])));
+        let generated = DynamicImage::ImageRgb8(RgbImage::from_pixel(96, 96, Rgb([128; 3])));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(96, 96, |x, y| {
+            Luma([if (40..56).contains(&x) && (8..88).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        }));
+        let output =
+            composite_inpaint_crop(&original, &generated, &mask, crop(0, 0, 96, 96))?.to_rgb8();
+        for y in [24, 40, 72] {
+            for x in [40, 48, 55] {
+                assert!(
+                    (i16::from(output.get_pixel(x, y)[0]) - i16::from(background(y))).abs() <= 2
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn composite_tracks_background_gradient_across_mask() {
+        let mut base = RgbImage::new(48, 32);
+        let mut generated = RgbImage::new(48, 32);
+        let mut mask = GrayImage::new(48, 32);
+        for y in 0..32 {
+            for x in 0..48 {
+                let background = 55 + x * 3;
+                base.put_pixel(x, y, Rgb([background as u8; 3]));
+                generated.put_pixel(x, y, Rgb([135; 3]));
+                if (10..38).contains(&x) && (8..24).contains(&y) {
+                    // The source pixels under the mask stand in for lettering;
+                    // the expected clean background still follows the gradient.
+                    base.put_pixel(x, y, Rgb([245; 3]));
+                    mask.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+
+        let output = composite_inpaint_crop(
+            &DynamicImage::ImageRgb8(base),
+            &DynamicImage::ImageRgb8(generated),
+            &DynamicImage::ImageLuma8(mask),
+            crop(0, 0, 48, 32),
+        )
+        .unwrap()
+        .to_rgb8();
+
+        for x in [10, 16, 24, 32, 37] {
+            let expected = (55 + x * 3) as i16;
+            let actual = i16::from(output.get_pixel(x, 16).0[0]);
+            assert!(
+                (actual - expected).abs() <= 4,
+                "x={x}: expected {expected}, got {actual}"
+            );
+        }
+        assert_eq!(*output.get_pixel(9, 16), Rgb([82; 3]));
+        assert_eq!(*output.get_pixel(38, 16), Rgb([169; 3]));
     }
 }

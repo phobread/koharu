@@ -438,8 +438,9 @@ pub struct PutMaskResponse {
 
 /// Upsert the `Mask { role }` node on a page with the raw image bytes in
 /// the body. Emits `Op::UpdateNode` if a mask of that role exists, else
-/// `Op::AddNode`. Used by the repair-brush / segment-edit flow; the
-/// follow-up localized inpaint is a separate `POST /pipelines` call.
+/// `Op::AddNode`. Used by the repair-brush / segment-edit flow; when the
+/// optional pipeline is supplied, the mask update and localized inpaint are
+/// committed atomically.
 #[utoipa::path(
     put,
     path = "/pages/{id}/masks/{role}",
@@ -464,13 +465,13 @@ async fn put_mask(
         return Err(ApiError::bad_request("empty body"));
     }
     // Validate it actually decodes so we don't persist garbage.
-    image::load_from_memory(&body)
+    let new_mask = image::load_from_memory(&body)
         .map_err(|e| ApiError::bad_request(format!("decode mask: {e}")))?;
 
     let blob = session.blobs.put_bytes(&body).map_err(ApiError::internal)?;
 
     // Find existing mask node of this role, or plan an AddNode.
-    let (mut mask_op, node_id) = {
+    let (mut mask_op, node_id, previous_blob) = {
         let scene = session.scene.read();
         let existing = scene
             .page(page_id)
@@ -478,11 +479,11 @@ async fn put_mask(
             .nodes
             .iter()
             .find_map(|(id, node)| match &node.kind {
-                NodeKind::Mask(m) if m.role == role => Some(*id),
+                NodeKind::Mask(m) if m.role == role => Some((*id, m.blob.clone())),
                 _ => None,
             });
         match existing {
-            Some(id) => {
+            Some((id, previous_blob)) => {
                 let op = Op::UpdateNode {
                     page: page_id,
                     id,
@@ -495,7 +496,7 @@ async fn put_mask(
                     },
                     prev: koharu_core::NodePatch::default(),
                 };
-                (op, id)
+                (op, id, Some(previous_blob))
             }
             None => {
                 let node_id = NodeId::new();
@@ -516,6 +517,7 @@ async fn put_mask(
                         at,
                     },
                     node_id,
+                    None,
                 )
             }
         }
@@ -538,6 +540,20 @@ async fn put_mask(
             width: params.width.unwrap_or(0.0) as u32,
             height: params.height.unwrap_or(0.0) as u32,
         };
+        // A white repair-brush stroke adds mask pixels and should build on the
+        // existing cleaned image. Restoring its whole bounding rectangle from
+        // Source creates a visible rectangular seam. Black eraser/un-inpaint
+        // strokes remove mask pixels and do need the source restored there.
+        let restore_source_region = match previous_blob.as_ref() {
+            Some(previous_blob) => {
+                let previous_mask = session
+                    .blobs
+                    .load_image(previous_blob)
+                    .map_err(ApiError::internal)?;
+                mask_removes_pixels(&previous_mask, &new_mask, &region)
+            }
+            None => false,
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let (flux2_strength, flux2_steps) = {
             let config = app.config.load();
@@ -545,6 +561,7 @@ async fn put_mask(
         };
         let options = PipelineRunOptions {
             region: Some(region),
+            restore_source_region: Some(restore_source_region),
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             ..Default::default()
@@ -589,6 +606,27 @@ async fn put_mask(
         node: node_id,
         blob,
     }))
+}
+
+fn mask_removes_pixels(
+    previous: &image::DynamicImage,
+    next: &image::DynamicImage,
+    r: &Region,
+) -> bool {
+    let previous = previous.to_luma8();
+    let next = next.to_luma8();
+    if previous.dimensions() != next.dimensions() {
+        return true;
+    }
+
+    let (w, h) = previous.dimensions();
+    let x0 = r.x.min(w);
+    let y0 = r.y.min(h);
+    let x1 = r.x.saturating_add(r.width).min(w);
+    let y1 = r.y.saturating_add(r.height).min(h);
+    (y0..y1).any(|y| {
+        (x0..x1).any(|x| previous.get_pixel(x, y).0[0] > 0 && next.get_pixel(x, y).0[0] == 0)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -690,4 +728,59 @@ async fn reorder_text_nodes(
     }
 
     Ok(axum::http::StatusCode::OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, GrayImage, Luma};
+
+    use super::*;
+
+    fn region() -> Region {
+        Region {
+            x: 2,
+            y: 2,
+            width: 4,
+            height: 4,
+        }
+    }
+
+    #[test]
+    fn repair_mask_addition_keeps_existing_cleaned_background() {
+        let previous = GrayImage::new(8, 8);
+        let mut next = previous.clone();
+        next.put_pixel(3, 3, Luma([255]));
+
+        assert!(!mask_removes_pixels(
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(next),
+            &region(),
+        ));
+    }
+
+    #[test]
+    fn erased_mask_pixel_requests_source_restore() {
+        let mut previous = GrayImage::new(8, 8);
+        previous.put_pixel(3, 3, Luma([255]));
+        let next = GrayImage::new(8, 8);
+
+        assert!(mask_removes_pixels(
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(next),
+            &region(),
+        ));
+    }
+
+    #[test]
+    fn mask_change_outside_patch_does_not_restore_patch() {
+        let mut previous = GrayImage::new(8, 8);
+        previous.put_pixel(0, 0, Luma([255]));
+        let next = GrayImage::new(8, 8);
+
+        assert!(!mask_removes_pixels(
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(next),
+            &region(),
+        ));
+    }
 }

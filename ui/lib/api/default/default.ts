@@ -23,6 +23,7 @@ import type {
   AddImageLayerResponse,
   AppConfig,
   AppEvent,
+  ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
   CodexImageGenerationOptions,
@@ -2650,8 +2651,9 @@ export const getPutMaskUrl = (id: PageId, role: MaskRole, params?: PutMaskParams
 /**
  * @summary Upsert the `Mask { role }` node on a page with the raw image bytes in
 the body. Emits `Op::UpdateNode` if a mask of that role exists, else
-`Op::AddNode`. Used by the repair-brush / segment-edit flow; the
-follow-up localized inpaint is a separate `POST /pipelines` call.
+`Op::AddNode`. Used by the repair-brush / segment-edit flow; when the
+optional pipeline is supplied, the mask update and localized inpaint are
+committed atomically.
  */
 export const putMask = async (
   id: PageId,
@@ -2708,8 +2710,9 @@ export type PutMaskMutationError = unknown
 /**
  * @summary Upsert the `Mask { role }` node on a page with the raw image bytes in
 the body. Emits `Op::UpdateNode` if a mask of that role exists, else
-`Op::AddNode`. Used by the repair-brush / segment-edit flow; the
-follow-up localized inpaint is a separate `POST /pipelines` call.
+`Op::AddNode`. Used by the repair-brush / segment-edit flow; when the
+optional pipeline is supplied, the mask update and localized inpaint are
+committed atomically.
  */
 export const usePutMask = <TError = unknown, TContext = unknown>(
   options?: {
@@ -3699,4 +3702,64 @@ export function useGetSceneJson<TData = Awaited<ReturnType<typeof getSceneJson>>
   }
 
   return withQueryKey(query, queryOptions.queryKey)
+}
+
+export const getClearProjectCacheUrl = () => {
+  return `/api/v1/storage/project-cache/clear`
+}
+
+export const clearProjectCache = async (
+  options?: RequestInit,
+): Promise<ClearProjectCacheResponse> => {
+  return fetchApi<ClearProjectCacheResponse>(getClearProjectCacheUrl(), {
+    ...options,
+    method: 'POST',
+  })
+}
+
+export const getClearProjectCacheMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof clearProjectCache>>,
+    TError,
+    void,
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<Awaited<ReturnType<typeof clearProjectCache>>, TError, void, TContext> => {
+  const mutationKey = ['clearProjectCache']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<Awaited<ReturnType<typeof clearProjectCache>>, void> = () => {
+    return clearProjectCache(requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type ClearProjectCacheMutationResult = NonNullable<
+  Awaited<ReturnType<typeof clearProjectCache>>
+>
+
+export type ClearProjectCacheMutationError = unknown
+
+export const useClearProjectCache = <TError = unknown, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof clearProjectCache>>,
+      TError,
+      void,
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<Awaited<ReturnType<typeof clearProjectCache>>, TError, void, TContext> => {
+  return useMutation(getClearProjectCacheMutationOptions(options), queryClient)
 }

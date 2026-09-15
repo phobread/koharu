@@ -50,21 +50,29 @@ pub struct PromptRenderer {
 pub const BLOCK_TAG_INSTRUCTIONS: &str = "The input uses numbered tags like [1], [2], etc. to mark each text block. Translate only the text after each tag. Keep every tag exactly unchanged, including numbers and order. Output the same tags followed by the translated text. Do not merge, split, or reorder blocks.";
 
 pub fn system_prompt(target_language: Language) -> String {
-    format!(
-        "You are a professional manga translator. Translate manga dialogue into natural {} that fits inside speech bubbles. Preserve character voice, emotional tone, relationship nuance, emphasis, and sound effects naturally. Keep the wording concise. Do not add notes, explanations, or romanization. {BLOCK_TAG_INSTRUCTIONS}",
-        target_language
-    )
+    system_prompt_with_custom(target_language, None)
 }
 
 pub fn system_prompt_with_custom(target_language: Language, custom_prompt: Option<&str>) -> String {
+    system_prompt_with_output_instructions(target_language, custom_prompt, BLOCK_TAG_INSTRUCTIONS)
+}
+
+pub(crate) fn system_prompt_with_output_instructions(
+    target_language: Language,
+    custom_prompt: Option<&str>,
+    output_instructions: &str,
+) -> String {
     let Some(custom) = custom_prompt
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
     else {
-        return system_prompt(target_language);
+        return format!(
+            "You are a professional manga translator. Translate manga dialogue into natural {} that fits inside speech bubbles. Preserve character voice, emotional tone, relationship nuance, emphasis, and sound effects naturally. Keep the wording concise. Do not add notes, explanations, or romanization. {output_instructions}",
+            target_language
+        );
     };
     format!(
-        "You are a professional manga translator. Translate manga dialogue into natural {} that fits inside speech bubbles. Preserve character voice, emotional tone, relationship nuance, emphasis, and sound effects naturally. Keep the wording concise. Do not add notes, explanations, or romanization. Apply these additional instructions while still translating into {}: {} {BLOCK_TAG_INSTRUCTIONS}",
+        "You are a professional manga translator. Translate manga dialogue into natural {} that fits inside speech bubbles. Preserve character voice, emotional tone, relationship nuance, emphasis, and sound effects naturally. Keep the wording concise. Do not add notes, explanations, or romanization. Apply these additional instructions while still translating into {}: {} {output_instructions}",
         target_language, target_language, custom
     )
 }

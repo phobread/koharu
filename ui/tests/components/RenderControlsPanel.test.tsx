@@ -142,6 +142,48 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(usePreferencesStore.getState().defaultFont).toBe('Custom')
   })
 
+  it('forces vertical writing for the selected text block', async () => {
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    await userEvent.click(await screen.findByTestId('render-writing-vertical'))
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
+    const op = (sceneActions.applyOp as any).mock.calls[0][0]
+    expect(op.updateNode.id).toBe('t1')
+    expect(op.updateNode.patch.data.text.writingDirection).toBe('vertical')
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledWith('p1')
+  })
+
+  it('clears the writing override when Auto is selected', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(
+          sceneWithTextNodes([
+            {
+              id: 't1',
+              kind: {
+                text: {
+                  style: { fontFamilies: ['Arial'] },
+                  writingDirection: 'vertical',
+                },
+              },
+            },
+          ]),
+        ),
+      ),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    await userEvent.click(await screen.findByTestId('render-writing-auto'))
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
+    const op = (sceneActions.applyOp as any).mock.calls[0][0]
+    expect(op.updateNode.patch.data.text.writingDirection).toBeNull()
+  })
+
   it('shows auto when a selected block has no manual font size override', async () => {
     server.use(
       http.get('/api/v1/scene.json', () =>

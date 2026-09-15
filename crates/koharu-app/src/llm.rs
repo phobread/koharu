@@ -199,8 +199,9 @@ impl Model {
 
     /// Translate a batch of source strings. Each source becomes a tagged
     /// `[N]...` block; the response is parsed back into per-block
-    /// translations. Output length matches input length (possibly with empty
-    /// strings for missing blocks).
+    /// translations. OpenRouter uses validated JSON keyed by block ID instead.
+    /// Legacy output length matches input length (possibly with empty strings
+    /// for missing blocks).
     pub async fn translate_texts(
         &self,
         sources: &[String],
@@ -222,6 +223,17 @@ impl Model {
                 llm.generate(&body, &opts, target_language, custom_system_prompt)
             }
             State::ReadyProvider { target, provider } => {
+                if let Some(translations) = provider
+                    .translate_structured(
+                        sources,
+                        target_language,
+                        &target.model_id,
+                        custom_system_prompt,
+                    )
+                    .await?
+                {
+                    return Ok(translations);
+                }
                 provider
                     .translate(
                         &body,
@@ -535,4 +547,140 @@ fn strip_wrapping_quotes(text: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Explicit opt-in: two billable OpenRouter requests. Only copied project
+    /// metadata is opened. The output directory must be new for each run.
+    #[tokio::test]
+    #[ignore]
+    async fn openrouter_disposable_translation_comparison() -> Result<()> {
+        use anyhow::Context;
+        use koharu_core::{NodeDataPatch, NodeKind, NodePatch, Op, TextDataPatch};
+        use koharu_llm::providers::openai_compatible::OpenAiCompatibleProvider;
+        use koharu_runtime::ComputePolicy;
+        use std::{fs, time::Instant};
+
+        let source = camino::Utf8PathBuf::from(std::env::var("KOHARU_TRANSLATION_PROJECT")?);
+        let output = camino::Utf8PathBuf::from(std::env::var("KOHARU_TRANSLATION_OUTPUT")?);
+        anyhow::ensure!(
+            !output.exists(),
+            "comparison output must be a new directory"
+        );
+        fs::create_dir_all(&output)?;
+        let project = output.join("comparison.khrproj");
+        fs::create_dir(&project)?;
+        let mut originals = Vec::new();
+        for name in ["scene.bin", "history.log", "project.toml"] {
+            let bytes = fs::read(source.join(name))?;
+            fs::write(project.join(name), &bytes)?;
+            originals.push((name, bytes));
+        }
+        let session = crate::ProjectSession::open(&project)?;
+        let scene = session.scene_snapshot();
+        let page = scene
+            .pages
+            .values()
+            .find(|page| page.name == "001.jpg")
+            .context("comparison requires M page 001.jpg")?;
+        let targets: Vec<_> = page
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                if let NodeKind::Text(text) = &node.kind {
+                    text.text
+                        .as_ref()
+                        .filter(|source| !source.trim().is_empty())
+                        .map(|source| (*id, source.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let sources: Vec<_> = targets.iter().map(|(_, text)| text.clone()).collect();
+        anyhow::ensure!(
+            !sources.is_empty() && sources.len() <= 20,
+            "expected a small translation sample"
+        );
+        let custom = fs::read_to_string(std::env::var("KOHARU_TRANSLATION_PROMPT")?)?;
+        let key = koharu_secrets::SecretStore::new("koharu")
+            .get("llm_provider_api_key_openai-compatible")?
+            .context("saved OpenRouter key unavailable")?;
+        let runtime = RuntimeManager::new(output.join("runtime-data"), ComputePolicy::CpuOnly)?;
+        let provider = OpenAiCompatibleProvider {
+            http_client: runtime.http_client(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            api_key: Some(key),
+            temperature: None,
+            max_tokens: None,
+        };
+        let model = "anthropic/claude-opus-4.6";
+        let started = Instant::now();
+        let legacy_raw = provider
+            .translate(
+                &format_sources(&sources),
+                Language::English,
+                model,
+                Some(&custom),
+            )
+            .await?;
+        let legacy_seconds = started.elapsed().as_secs_f64();
+        fs::write(output.join("legacy.txt"), &legacy_raw)?;
+        let legacy = strip_thinking_block(&legacy_raw);
+        let legacy = parse_tagged_blocks(legacy, sources.len())?
+            .unwrap_or_else(|| split_legacy_lines(legacy, sources.len()));
+        let started = Instant::now();
+        let structured = provider
+            .translate_structured(&sources, Language::English, model, Some(&custom))
+            .await?
+            .context("OpenRouter did not opt into structured translation")?;
+        let structured_seconds = started.elapsed().as_secs_f64();
+        anyhow::ensure!(structured.len() == targets.len(), "wrong result count");
+        for ((id, _), translation) in targets.iter().zip(&structured) {
+            session.apply(Op::UpdateNode {
+                page: page.id,
+                id: *id,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(TextDataPatch {
+                        translation: Some(Some(translation.clone())),
+                        style_ranges: Some(Vec::new()),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatch::default(),
+            })?;
+        }
+        let expected = session.scene_snapshot();
+        drop(session);
+        let reopened = crate::ProjectSession::open(&project)?;
+        assert_eq!(
+            postcard::to_allocvec(&expected)?,
+            postcard::to_allocvec(&reopened.scene_snapshot())?
+        );
+        for (name, bytes) in originals {
+            assert_eq!(fs::read(source.join(name))?, bytes, "source {name} changed");
+        }
+        fs::write(
+            output.join("comparison.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "model": model, "target_language": "en-US", "custom_prompt": custom,
+                "temperature": null, "max_tokens": null,
+                "note": "Same source, model, translation guidance and generation settings; tagged versus JSON response instructions differ. Single-run observations, not a speed or quality benchmark.",
+                "legacy_seconds": legacy_seconds, "structured_seconds": structured_seconds,
+                "sources": sources, "node_ids": targets.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+                "legacy": legacy, "structured": structured, "copy_reopened": true, "source_metadata_unchanged": true
+            }))?,
+        )?;
+        println!(
+            "Compared {} blocks; legacy {:.2}s; structured {:.2}s. Evidence: {output}",
+            targets.len(),
+            legacy_seconds,
+            structured_seconds
+        );
+        Ok(())
+    }
 }

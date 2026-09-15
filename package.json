@@ -3,6 +3,7 @@
     "ui/"
   ],
   "scripts": {
+    "claude:worker": "bun run scripts/claude-worker.ts",
     "dev": "bun run scripts/dev.ts tauri dev -- --profile=release-with-debug",
     "build": "bun run scripts/dev.ts tauri build --no-bundle",
     "cargo": "bun run scripts/dev.ts cargo",

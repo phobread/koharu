@@ -261,7 +261,12 @@ fn text_to_psd(
         rotation_deg: text.rotation_deg,
         font_prediction: text.font_prediction.as_ref().map(convert_prediction),
         source_direction: text.source_direction.map(convert_dir),
-        rendered_direction: text.rendered_direction.map(convert_dir),
+        // A manual writing-axis choice is authoritative even if the queued
+        // sprite re-render has not written its resulting direction back yet.
+        rendered_direction: text
+            .writing_direction
+            .or(text.rendered_direction)
+            .map(convert_dir),
         detected_font_size_px: text.detected_font_size_px,
         font_index,
     }

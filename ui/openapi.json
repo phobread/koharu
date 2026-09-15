@@ -663,7 +663,7 @@
     },
     "/pages/{id}/masks/{role}": {
       "put": {
-        "summary": "Upsert the `Mask { role }` node on a page with the raw image bytes in\nthe body. Emits `Op::UpdateNode` if a mask of that role exists, else\n`Op::AddNode`. Used by the repair-brush / segment-edit flow; the\nfollow-up localized inpaint is a separate `POST /pipelines` call.",
+        "summary": "Upsert the `Mask { role }` node on a page with the raw image bytes in\nthe body. Emits `Op::UpdateNode` if a mask of that role exists, else\n`Op::AddNode`. Used by the repair-brush / segment-edit flow; when the\noptional pipeline is supplied, the mask update and localized inpaint are\ncommitted atomically.",
         "operationId": "put_mask",
         "parameters": [
           {
@@ -1013,6 +1013,23 @@
           }
         }
       }
+    },
+    "/storage/project-cache/clear": {
+      "post": {
+        "operationId": "clear_project_cache",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClearProjectCacheResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1255,6 +1272,27 @@
       "BlobRef": {
         "type": "string",
         "description": "Hex-encoded blake3 hash of an immutable blob."
+      },
+      "ClearProjectCacheResponse": {
+        "type": "object",
+        "required": ["bytesFreed", "filesRemoved", "filesSkipped"],
+        "properties": {
+          "bytesFreed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "filesRemoved": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "filesSkipped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "CodexAuthAttemptStatus": {
         "type": "string",
@@ -3306,11 +3344,29 @@
               }
             ]
           },
+          "styleRanges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TextStyleRange"
+            },
+            "description": "Character-level overrides for the rendered translation. Appended for\nscene format v7; older layouts are frozen in `session.rs::compat`."
+          },
           "text": {
             "type": ["string", "null"]
           },
           "translation": {
             "type": ["string", "null"]
+          },
+          "writingDirection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextDirection",
+                "description": "Explicit writing-axis override for this block. `None` keeps the\nrenderer's automatic source-script/detector behaviour. Appended for\nscene format v8; older layouts are frozen in `session.rs::compat`."
+              }
+            ]
           }
         }
       },
@@ -3424,11 +3480,27 @@
               }
             ]
           },
+          "styleRanges": {
+            "type": ["array", "null"],
+            "items": {
+              "$ref": "#/components/schemas/TextStyleRange"
+            }
+          },
           "text": {
             "type": ["string", "null"]
           },
           "translation": {
             "type": ["string", "null"]
+          },
+          "writingDirection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TextDirection"
+              }
+            ]
           }
         }
       },
@@ -3452,6 +3524,26 @@
               "format": "int32",
               "minimum": 0
             }
+          }
+        }
+      },
+      "TextRangeStyle": {
+        "type": "object",
+        "description": "Character-level overrides for a slice of translated text. Each optional\nfield inherits the block's [`TextStyle`] when absent; explicit booleans let\na range turn bold/italic off even when the whole block enables it.",
+        "properties": {
+          "bold": {
+            "type": ["boolean", "null"]
+          },
+          "color": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "italic": {
+            "type": ["boolean", "null"]
           }
         }
       },
@@ -3550,6 +3642,26 @@
                 "$ref": "#/components/schemas/TextAlign"
               }
             ]
+          }
+        }
+      },
+      "TextStyleRange": {
+        "type": "object",
+        "description": "A half-open UTF-8 byte range (`start..end`) in `TextData::translation`.\nRanges may overlap; later entries win per property. Producers should keep\nthem sorted, non-empty, and on character boundaries.",
+        "required": ["start", "end", "style"],
+        "properties": {
+          "end": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "style": {
+            "$ref": "#/components/schemas/TextRangeStyle"
           }
         }
       },

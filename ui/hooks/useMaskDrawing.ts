@@ -6,7 +6,7 @@ import { useCanvasDrawing, type CanvasDims } from '@/hooks/useCanvasDrawing'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import { getConfig } from '@/lib/api/default/default'
 import type { Page } from '@/lib/api/schemas'
-import { invalidateScene } from '@/lib/io/scene'
+import { invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import type { ToolMode } from '@/lib/types'
@@ -88,6 +88,7 @@ export function useMaskDrawing({
     },
     onFinalizeFullCanvas: async (fullPng, region) => {
       if (!page) return
+      const pageId = page.id
 
       // Chain the request to prevent concurrent ML runs and race conditions
       inpaintQueueRef.current = inpaintQueueRef.current.then(async () => {
@@ -103,13 +104,17 @@ export function useMaskDrawing({
             height: region.height.toString(),
           })
 
-          const res = await fetch(`/api/v1/pages/${page.id}/masks/segment?${params}`, {
+          const res = await fetch(`/api/v1/pages/${pageId}/masks/segment?${params}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'image/png' },
             body: fullPng as unknown as BodyInit,
           })
           if (!res.ok) throw new Error(`mask PUT failed: ${res.status}`)
           await invalidateScene()
+          // The localized inpainter updates only Image { Inpainted }.
+          // Refresh Image { Rendered } as well so Translated never displays
+          // the stale pre-repair background.
+          queueAutoRender(pageId)
           useEditorUiStore.getState().setShowInpaintedImage(true)
         } catch (e) {
           useEditorUiStore.getState().showError(String(e))

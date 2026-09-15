@@ -22,6 +22,7 @@ import type {
   AddImageLayerResponse,
   AppConfig,
   AppEvent,
+  ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
   CodexDeviceLoginStatus,
@@ -1058,6 +1059,27 @@ export const getGetSceneJsonResponseMock = (
                     ]),
                     undefined,
                   ]),
+                  styleRanges: faker.helpers.arrayElement([
+                    Array.from(
+                      { length: faker.number.int({ min: 1, max: 10 }) },
+                      (_, i) => i + 1,
+                    ).map(() => ({
+                      end: faker.number.int({ min: 0 }),
+                      start: faker.number.int({ min: 0 }),
+                      style: {
+                        bold: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+                        color: faker.helpers.arrayElement([
+                          Array.from(
+                            { length: faker.number.int({ min: 1, max: 10 }) },
+                            (_, i) => i + 1,
+                          ).map(() => faker.number.int({ min: 0 })),
+                          undefined,
+                        ]),
+                        italic: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+                      },
+                    })),
+                    undefined,
+                  ]),
                   text: faker.helpers.arrayElement([
                     faker.helpers.arrayElement([
                       faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1069,6 +1091,13 @@ export const getGetSceneJsonResponseMock = (
                     faker.helpers.arrayElement([
                       faker.string.alpha({ length: { min: 10, max: 20 } }),
                       null,
+                    ]),
+                    undefined,
+                  ]),
+                  writingDirection: faker.helpers.arrayElement([
+                    faker.helpers.arrayElement([
+                      null,
+                      faker.helpers.arrayElement(Object.values(TextDirection)),
                     ]),
                     undefined,
                   ]),
@@ -1118,5 +1147,14 @@ export const getGetSceneJsonResponseMock = (
       updatedAt: faker.date.past().toISOString().slice(0, 19) + 'Z',
     },
   },
+  ...overrideResponse,
+})
+
+export const getClearProjectCacheResponseMock = (
+  overrideResponse: Partial<Extract<ClearProjectCacheResponse, object>> = {},
+): ClearProjectCacheResponse => ({
+  bytesFreed: faker.number.int({ min: 0 }),
+  filesRemoved: faker.number.int({ min: 0 }),
+  filesSkipped: faker.number.int({ min: 0 }),
   ...overrideResponse,
 })

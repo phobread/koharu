@@ -1,13 +1,16 @@
 //! Flux.2 Klein inpainter. Uses the CTD segment mask to build a looser
 //! text-region mask, then runs Flux.2 inpainting on the resulting crop.
 
+use std::time::Instant;
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage, Luma};
 use koharu_core::{ImageRole, MaskRole, Op, Region};
 use koharu_ml::flux2_klein::{Flux2InpaintOptions, Flux2Klein};
 use koharu_ml::inpainting::{
-    UndetectedBlockFallback, mask::expand_mask_to_bubble_region_for_inpainting,
+    UndetectedBlockFallback,
+    mask::{expand_mask_for_inpainting, expand_mask_to_bubble_region_for_inpainting},
 };
 
 use crate::pipeline::artifacts::Artifact;
@@ -34,8 +37,12 @@ impl Engine for Model {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
                     Some((_, blob)) => {
                         let inpainted = ctx.blobs.load_image(&blob)?;
-                        let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-                        restore_region_from_source(&inpainted, &source, &r)
+                        if ctx.options.restore_source_region.unwrap_or(true) {
+                            let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
+                            restore_region_from_source(&inpainted, &source, &r)
+                        } else {
+                            inpainted
+                        }
                     }
                     None => load_source_image(ctx.scene, ctx.page, ctx.blobs)?,
                 };
@@ -58,26 +65,48 @@ impl Engine for Model {
         } else {
             UndetectedBlockFallback::FillBubble
         };
-        let expanded = expand_mask_to_bubble_region_for_inpainting(
+        let generation_mask = expand_mask_to_bubble_region_for_inpainting(
             &mask,
             &bubble_mask,
             &text_blocks,
             fallback,
         );
-        let mask = match ctx.options.region {
-            Some(r) => DynamicImage::ImageLuma8(clip_gray_mask_to_region(&expanded, &r)),
-            None => DynamicImage::ImageLuma8(expanded),
+        // Give FLUX the broad block-shaped context it needs to generate a
+        // clean fill, but paste through the tighter glyph mask. Using the
+        // broad mask for both stages leaves a flat, discoloured rectangle.
+        let composite_mask =
+            expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks, fallback);
+        let (generation_mask, composite_mask) = match ctx.options.region {
+            Some(r) => (
+                DynamicImage::ImageLuma8(clip_gray_mask_to_region(&generation_mask, &r)),
+                DynamicImage::ImageLuma8(clip_gray_mask_to_region(&composite_mask, &r)),
+            ),
+            None => (
+                DynamicImage::ImageLuma8(generation_mask),
+                DynamicImage::ImageLuma8(composite_mask),
+            ),
         };
         let options = Flux2InpaintOptions {
             num_inference_steps: ctx.options.flux2_steps.unwrap_or(4).clamp(1, 20) as usize,
             strength: ctx.options.flux2_strength.unwrap_or(1.0).clamp(0.05, 1.0),
             ..Default::default()
         };
-        let result = self
-            .0
-            .inpaint_with_reference(&image, &mask, None, &options)?;
+        let result = self.0.inpaint_with_reference_and_composite_mask(
+            &image,
+            &generation_mask,
+            &composite_mask,
+            None,
+            &options,
+        )?;
         let (w, h) = image_dimensions(&result);
+        let store_started = Instant::now();
         let blob = ctx.blobs.put_webp(&result)?;
+        tracing::info!(
+            elapsed_ms = store_started.elapsed().as_millis(),
+            width = w,
+            height = h,
+            "stored Flux2 inpainted image"
+        );
         Ok(vec![upsert_image_blob(
             ctx.scene,
             ctx.page,

@@ -18,7 +18,7 @@ import { useSelectionStore } from '@/lib/stores/selectionStore'
 const THUMBNAIL_DPR =
   typeof window !== 'undefined' ? Math.min(Math.ceil(window.devicePixelRatio || 1), 3) : 2
 
-const ROW_HEIGHT = 230
+const ROW_HEIGHT = 82
 const OVERSCAN = 5
 
 export function Navigator() {
@@ -197,6 +197,9 @@ export function Navigator() {
                 <PagePreview
                   index={virtualRow.index}
                   pageId={page.id}
+                  label={page.name}
+                  dimensions={`${page.width} × ${page.height}`}
+                  blockCount={Object.values(page.nodes).filter((n) => 'text' in n.kind).length}
                   selected={selectedPageIds.has(page.id)}
                   active={page.id === pageId}
                   onSelect={handleSelect}
@@ -218,6 +221,9 @@ export function Navigator() {
 type PagePreviewProps = {
   index: number
   pageId: string
+  label: string
+  dimensions: string
+  blockCount: number
   selected: boolean
   active: boolean
   onSelect: (id: string, e: React.MouseEvent | React.KeyboardEvent) => void
@@ -229,6 +235,9 @@ type PagePreviewProps = {
 const PagePreview = memo(function PagePreview({
   index,
   pageId,
+  label,
+  dimensions,
+  blockCount,
   selected,
   active,
   onSelect,
@@ -257,9 +266,10 @@ const PagePreview = memo(function PagePreview({
       data-page-index={index}
       data-selected={selected}
       data-active={active}
-      className='group relative flex h-full w-full cursor-pointer flex-col gap-0.5 rounded border border-transparent bg-card p-1.5 text-left shadow-sm transition select-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-hidden data-[active=true]:border-primary data-[selected=true]:bg-accent/60'
+      aria-label={`Page ${index + 1}: ${label}`}
+      className='group relative grid h-full w-full cursor-pointer grid-cols-[48px_minmax(0,1fr)] items-center gap-2.5 rounded-xl border border-transparent p-1.5 text-left transition select-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-hidden data-[active=true]:border-primary/30 data-[selected=true]:bg-primary/10'
     >
-      <div className='relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded bg-muted/20'>
+      <div className='relative flex h-16 w-12 items-center justify-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
         {src ? (
           <img
             src={src}
@@ -288,8 +298,10 @@ const PagePreview = memo(function PagePreview({
           </Button>
         )}
       </div>
-      <div className='flex shrink-0 items-center text-xs text-muted-foreground'>
-        <div className='mx-auto font-semibold text-foreground'>{index + 1}</div>
+      <div className='min-w-0 text-xs'>
+        <div className='truncate font-medium'>{label}</div>
+        <div className='mt-1 text-[10px] text-muted-foreground'>{blockCount} text blocks</div>
+        <div className='mt-1 text-[10px] text-muted-foreground tabular-nums'>{dimensions}</div>
       </div>
     </div>
   )

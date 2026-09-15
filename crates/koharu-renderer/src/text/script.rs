@@ -9,6 +9,12 @@ pub fn writing_mode_for_block(block: &RenderBlock) -> WritingMode {
     if block.text.is_empty() {
         return WritingMode::Horizontal;
     }
+    if let Some(direction) = block.writing_direction {
+        return match direction {
+            TextDirection::Horizontal => WritingMode::Horizontal,
+            TextDirection::Vertical => WritingMode::VerticalRl,
+        };
+    }
     // Non-CJK text always lays out horizontally regardless of bubble shape —
     // an English translation in a tall manga bubble still reads left-to-right.
     if !is_cjk_text(&block.text) {
@@ -276,6 +282,31 @@ mod tests {
             ..Default::default()
         };
 
+        assert_eq!(writing_mode_for_block(&block), WritingMode::Horizontal);
+    }
+
+    #[test]
+    fn writing_mode_honors_vertical_override_for_latin_text() {
+        let block = RenderBlock {
+            width: 200.0,
+            height: 80.0,
+            text: "VERTICAL".into(),
+            writing_direction: Some(crate::types::TextDirection::Vertical),
+            ..Default::default()
+        };
+        assert_eq!(writing_mode_for_block(&block), WritingMode::VerticalRl);
+    }
+
+    #[test]
+    fn writing_mode_honors_horizontal_override_for_tall_cjk_text() {
+        let block = RenderBlock {
+            width: 60.0,
+            height: 240.0,
+            text: "縦書き".into(),
+            source_direction: Some(crate::types::TextDirection::Vertical),
+            writing_direction: Some(crate::types::TextDirection::Horizontal),
+            ..Default::default()
+        };
         assert_eq!(writing_mode_for_block(&block), WritingMode::Horizontal);
     }
 

@@ -135,9 +135,7 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
     [update, isInstalling],
   )
 
-  useEffect(() => {
-    void checkForUpdates(true)
-  }, [checkForUpdates])
+  // This personal fork is maintained locally; do not check upstream at startup.
 
   // Stable wrappers so `updater.checkForUpdates` / `updater.installUpdate`
   // keep the same identity across provider re-renders. Without this,

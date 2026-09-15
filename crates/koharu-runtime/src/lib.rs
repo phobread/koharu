@@ -2,8 +2,10 @@ mod archive;
 mod cuda;
 pub mod downloads;
 mod install;
+mod korean_ocr;
 mod llama;
 mod loader;
+mod model_pins;
 pub mod packages;
 mod runtime;
 mod zluda;
@@ -14,6 +16,7 @@ pub use cuda::{
 };
 pub use hf_hub;
 pub use inventory;
+pub use korean_ocr::KoreanOcrAssets;
 pub use loader::{load_library_by_name, load_library_by_path};
 pub use packages::{PackageCatalog as Catalog, PackageFuture, PackageKind, PackageRegistration};
 pub use runtime::{

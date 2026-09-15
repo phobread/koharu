@@ -7,6 +7,7 @@ import {
   createProject,
   deleteCurrentProject,
   getConfig,
+  getSceneJson,
   getExportCurrentProjectUrl,
   getGetConfigQueryKey,
   getGetCurrentLlmQueryKey,
@@ -29,6 +30,7 @@ import type {
   ProjectSummary,
   ReadingOrder,
   SceneSnapshot,
+  Scene,
 } from '@/lib/api/schemas'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
@@ -62,11 +64,34 @@ const enqueueHistoryMutation = (run: () => Promise<void>): Promise<void> => {
   return next
 }
 
+/** Pipelines must see queued box deletions and edits before taking a scene snapshot. */
+export async function awaitPendingSceneEdits(): Promise<void> {
+  let pending: Promise<void>
+  do {
+    pending = historyMutationQueue
+    await pending
+  } while (pending !== historyMutationQueue)
+}
+
 export async function applyOp(op: Op): Promise<void> {
   await enqueueHistoryMutation(async () => {
     await applyCommand(op)
     await invalidateScene()
   })
+}
+
+/** Build a dependent edit only after earlier typing/formatting saves finish. */
+export async function applyOpFromScene(build: (scene: Scene) => Op | null): Promise<boolean> {
+  let applied = false
+  await enqueueHistoryMutation(async () => {
+    const { scene } = await getSceneJson()
+    const op = build(scene)
+    if (!op) return
+    await applyCommand(op)
+    await invalidateScene()
+    applied = true
+  })
+  return applied
 }
 
 export async function undoOp(): Promise<void> {

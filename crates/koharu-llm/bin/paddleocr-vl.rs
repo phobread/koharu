@@ -74,6 +74,7 @@ impl Cli {
         PaddleOcrVlGenerateOptions {
             max_new_tokens: self.max_new_tokens,
             language: None,
+            ..PaddleOcrVlGenerateOptions::default()
         }
     }
 }

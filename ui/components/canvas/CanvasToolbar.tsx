@@ -33,6 +33,7 @@ import {
   useGetCurrentLlm,
 } from '@/lib/api/default/default'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
+import { awaitPendingSceneEdits } from '@/lib/io/scene'
 import {
   flattenCatalogModels,
   llmTargetKey,
@@ -51,7 +52,7 @@ import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
 
 export function CanvasToolbar() {
   return (
-    <div className='flex items-center gap-2 border-b border-border/60 bg-card px-3 py-2 text-xs text-foreground'>
+    <div className='flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 text-xs text-foreground'>
       <WorkflowButtons />
       <div className='flex-1' />
       <LlmStatusPopover />
@@ -98,6 +99,7 @@ function WorkflowButtons() {
     pick: (p: NonNullable<Awaited<ReturnType<typeof getConfig>>['pipeline']>) => string[],
   ) => {
     if (!pageId) return
+    await awaitPendingSceneEdits()
     const cfg = await getConfig()
     if (!cfg.pipeline) return
     const steps = pick(cfg.pipeline).filter((s): s is string => !!s)
@@ -138,7 +140,7 @@ function WorkflowButtons() {
   const isRendering = currentStep === 'render'
 
   return (
-    <div className='flex items-center gap-0.5'>
+    <div className='flex flex-wrap items-center gap-0.5'>
       <Button
         variant='ghost'
         size='xs'

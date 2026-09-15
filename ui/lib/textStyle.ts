@@ -64,3 +64,12 @@ export const mergeTextStyle = (
   textAlign: 'textAlign' in updates ? (updates.textAlign ?? null) : (current?.textAlign ?? null),
   gradient: 'gradient' in updates ? (updates.gradient ?? null) : (current?.gradient ?? null),
 })
+
+/**
+ * Reshaping a text box returns its size to auto-fit while preserving every
+ * other explicit style choice. `undefined` means no style patch is needed.
+ */
+export const clearFontSizeForBoxResize = (
+  current: TextStyle | null | undefined,
+): TextStyle | undefined =>
+  current?.fontSize == null ? undefined : mergeTextStyle(current, { fontSize: null })

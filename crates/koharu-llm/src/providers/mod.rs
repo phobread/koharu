@@ -22,6 +22,7 @@ pub mod gemini;
 pub mod google_translate;
 pub mod openai;
 pub mod openai_compatible;
+mod structured_translation;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderModelDescriptor {
@@ -97,6 +98,18 @@ pub async fn ensure_provider_success(
 }
 
 pub trait AnyProvider: Send + Sync {
+    /// A provider may opt into validated structured translation. `None` means
+    /// unsupported; errors must propagate rather than retrying as loose text.
+    fn translate_structured<'a>(
+        &'a self,
+        _sources: &'a [String],
+        _target_language: Language,
+        _model: &'a str,
+        _custom_system_prompt: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Vec<String>>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn translate<'a>(
         &'a self,
         source: &'a str,

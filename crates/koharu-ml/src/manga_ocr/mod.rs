@@ -45,14 +45,12 @@ impl MangaOcr {
         let device = device(cpu)?;
         let dtype = loading::model_dtype(&device);
         let hf = runtime.downloads();
-        let config_path = hf.huggingface_model(HF_REPO, "config.json").await?;
+        let config_path = hf.bundled_model(HF_REPO, "config.json").await?;
         let preprocessor_path = hf
-            .huggingface_model(HF_REPO, "preprocessor_config.json")
+            .bundled_model(HF_REPO, "preprocessor_config.json")
             .await?;
-        let vocab_path = hf.huggingface_model(HF_REPO, "vocab.txt").await?;
-        let special_tokens_path = hf
-            .huggingface_model(HF_REPO, "special_tokens_map.json")
-            .await?;
+        let vocab_path = hf.bundled_model(HF_REPO, "vocab.txt").await?;
+        let special_tokens_path = hf.bundled_model(HF_REPO, "special_tokens_map.json").await?;
 
         let config: VisionEncoderDecoderConfig =
             loading::read_json(&config_path).context("failed to parse model config")?;
@@ -60,7 +58,7 @@ impl MangaOcr {
             .context("failed to parse preprocessor config")?;
         let tokenizer = load_tokenizer(None, &vocab_path, &special_tokens_path)?;
         let model_device = device.clone();
-        let weights = hf.huggingface_model(HF_REPO, "model.safetensors").await?;
+        let weights = hf.bundled_model(HF_REPO, "model.safetensors").await?;
         let model = loading::load_mmaped_safetensors_path_with_dtype(
             &weights,
             &device,

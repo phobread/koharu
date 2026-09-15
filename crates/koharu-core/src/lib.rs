@@ -39,5 +39,6 @@ pub use scene::{
     ProjectMeta, ProjectStyle, Scene, TextData, Transform,
 };
 pub use style::{
-    GradientDirection, TextAlign, TextFillGradient, TextShaderEffect, TextStrokeStyle, TextStyle,
+    GradientDirection, TextAlign, TextFillGradient, TextRangeStyle, TextShaderEffect,
+    TextStrokeStyle, TextStyle, TextStyleRange,
 };

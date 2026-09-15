@@ -28,8 +28,14 @@ import type { JobSummary } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
-import { pickSaveDirectory } from '@/lib/io/saveBlob'
-import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
+import { defaultRenderedExportDirectory, pickSaveDirectory } from '@/lib/io/saveBlob'
+import {
+  awaitPendingSceneEdits,
+  closeProject,
+  redoOp,
+  selectAllTextNodesOnCurrentPage,
+  undoOp,
+} from '@/lib/io/scene'
 import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
@@ -129,9 +135,13 @@ export function MenuBar() {
   const [settingsTab, setSettingsTab] = useState<TabId>('appearance')
   const [processExporting, setProcessExporting] = useState(false)
   const hasPage = useSelectionStore((s) => s.pageId !== null)
-  const hasScene = useScene().scene !== null
+  const { scene } = useScene()
+  const hasScene = scene !== null
   const shortcuts = usePreferencesStore((state) => state.shortcuts)
   const customPipeline = usePreferencesStore((state) => state.customPipeline)
+  const isProcessing = useJobsStore((state) =>
+    Object.values(state.jobs).some((job) => job.status === 'running'),
+  )
   const ocrLanguage = usePreferencesStore((state) => state.ocrLanguage)
   const setOcrLanguage = usePreferencesStore((state) => state.setOcrLanguage)
   const setCustomPipeline = usePreferencesStore((state) => state.setCustomPipeline)
@@ -148,6 +158,7 @@ export function MenuBar() {
   }
 
   const runPipeline = async (opts: { pageId?: string }) => {
+    await awaitPendingSceneEdits()
     const cfg = await getConfig()
     if (!cfg.pipeline) return
     const p = cfg.pipeline
@@ -179,7 +190,10 @@ export function MenuBar() {
     setProcessExporting(true)
     try {
       const desktop = isTauri()
-      const outputDirectory = desktop ? await pickSaveDirectory() : undefined
+      const defaultDirectory = desktop
+        ? await defaultRenderedExportDirectory(scene?.project.name)
+        : undefined
+      const outputDirectory = desktop ? await pickSaveDirectory(defaultDirectory) : undefined
       if (desktop && !outputDirectory) return
 
       const started = await runPipeline({})
@@ -199,12 +213,32 @@ export function MenuBar() {
   }
 
   const runInpaint = async (pageId: string) => {
+    await awaitPendingSceneEdits()
     const cfg = await getConfig()
     if (!cfg.pipeline?.inpainter) return
     await startPipeline({ steps: [cfg.pipeline.inpainter], pages: [pageId] })
   }
 
+  const rebuildMasksAndInpaint = async (pageId?: string) => {
+    try {
+      await awaitPendingSceneEdits()
+      const cfg = await getConfig()
+      const p = cfg.pipeline
+      if (!p?.segmenter || !p.inpainter) return
+      await startPipeline({
+        steps: [p.segmenter, p.bubble_segmenter, p.inpainter, p.renderer].filter(
+          (s): s is string => !!s,
+        ),
+        pages: pageId ? [pageId] : undefined,
+        ...renderDefaultsForPipeline(),
+      })
+    } catch (err) {
+      useEditorUiStore.getState().showError(String(err))
+    }
+  }
+
   const runCustomPipeline = async (opts: { pageId?: string }) => {
+    await awaitPendingSceneEdits()
     const cfg = await getConfig()
     if (!cfg.pipeline) return
     const p = cfg.pipeline
@@ -413,14 +447,6 @@ export function MenuBar() {
               {t('menu.processCurrent')}
             </MenubarItem>
             <MenubarItem
-              data-testid='menu-process-rerender'
-              className='text-[13px]'
-              disabled={!hasPage}
-              onSelect={() => void runInpaint(requirePageId())}
-            >
-              {t('menu.redoInpaintRender')}
-            </MenubarItem>
-            <MenubarItem
               data-testid='menu-process-all'
               className='text-[13px]'
               disabled={!hasScene}
@@ -439,25 +465,74 @@ export function MenuBar() {
                 : t('menu.processAllAndExportRendered', 'Process all images + export rendered...')}
             </MenubarItem>
             <MenubarSeparator />
-            <MenubarItem
-              className='text-[13px]'
-              disabled={!hasPage || !hasSelectedSteps}
-              onSelect={() => void runCustomPipeline({ pageId: requirePageId() })}
-            >
-              {t('menu.runCustomCurrent')}
-            </MenubarItem>
-            <MenubarItem
-              className='text-[13px]'
-              disabled={!hasScene || !hasSelectedSteps}
-              onSelect={() => void runCustomPipeline({})}
-            >
-              {t('menu.runCustomAll')}
-            </MenubarItem>
+            <MenubarSub>
+              <MenubarSubTrigger
+                data-testid='menu-inpainting'
+                className='text-[13px]'
+                disabled={!hasScene}
+              >
+                {t('menu.inpainting', 'Inpainting')}
+              </MenubarSubTrigger>
+              <MenubarSubContent className='min-w-48'>
+                <MenubarItem
+                  data-testid='menu-process-rerender'
+                  className='text-[13px]'
+                  disabled={!hasPage}
+                  onSelect={() => void runInpaint(requirePageId())}
+                >
+                  {t('menu.redoInpaintRender')}
+                </MenubarItem>
+                <MenubarSub>
+                  <MenubarSubTrigger
+                    data-testid='menu-rebuild-masks'
+                    disabled={!hasScene || isProcessing}
+                    title={t('menu.rebuildMasksHint')}
+                    className='text-[13px]'
+                  >
+                    {t('menu.rebuildMasks')}
+                  </MenubarSubTrigger>
+                  <MenubarSubContent>
+                    <MenubarItem
+                      data-testid='menu-rebuild-mask-current'
+                      disabled={!hasPage || isProcessing}
+                      onSelect={() => void rebuildMasksAndInpaint(requirePageId())}
+                    >
+                      {t('menu.currentImage')}
+                    </MenubarItem>
+                    <MenubarItem
+                      data-testid='menu-rebuild-mask-all'
+                      disabled={!hasScene || isProcessing}
+                      onSelect={() => void rebuildMasksAndInpaint()}
+                    >
+                      {t('menu.allImages')}
+                    </MenubarItem>
+                    <p className='max-w-64 px-2 py-1.5 text-xs text-muted-foreground'>
+                      {t('menu.rebuildMasksHint')}
+                    </p>
+                  </MenubarSubContent>
+                </MenubarSub>
+              </MenubarSubContent>
+            </MenubarSub>
             <MenubarSub>
               <MenubarSubTrigger className='text-[13px]'>
                 {t('menu.customPipeline')}
               </MenubarSubTrigger>
               <MenubarSubContent className='min-w-48'>
+                <MenubarItem
+                  className='text-[13px]'
+                  disabled={!hasPage || !hasSelectedSteps}
+                  onSelect={() => void runCustomPipeline({ pageId: requirePageId() })}
+                >
+                  {t('menu.runCustomCurrent')}
+                </MenubarItem>
+                <MenubarItem
+                  className='text-[13px]'
+                  disabled={!hasScene || !hasSelectedSteps}
+                  onSelect={() => void runCustomPipeline({})}
+                >
+                  {t('menu.runCustomAll')}
+                </MenubarItem>
+                <MenubarSeparator />
                 <MenubarCheckboxItem
                   className='text-[13px]'
                   checked={customPipeline.detect}

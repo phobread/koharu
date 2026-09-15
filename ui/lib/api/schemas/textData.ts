@@ -6,6 +6,7 @@ import type { BlobRef } from './blobRef'
 import type { FontPrediction } from './fontPrediction'
 import type { TextDirection } from './textDirection'
 import type { TextStyle } from './textStyle'
+import type { TextStyleRange } from './textStyleRange'
 import type { Transform } from './transform'
 
 export interface TextData {
@@ -41,8 +42,14 @@ export interface TextData {
   sprite?: null | BlobRef
   spriteTransform?: null | Transform
   style?: null | TextStyle
+  /**
+   * Character-level overrides for the rendered translation. Appended for
+   * scene format v7; older layouts are frozen in `session.rs::compat`.
+   */
+  styleRanges?: TextStyleRange[]
   /** @nullable */
   text?: string | null
   /** @nullable */
   translation?: string | null
+  writingDirection?: null | TextDirection
 }

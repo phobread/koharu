@@ -41,7 +41,7 @@ impl Lama {
         let device = device(cpu)?;
         let weights_path = runtime
             .downloads()
-            .huggingface_model(HF_REPO, "lama-manga.safetensors")
+            .bundled_model(HF_REPO, "lama-manga.safetensors")
             .await?;
         let model = loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
             model::Lama::load(&vb)

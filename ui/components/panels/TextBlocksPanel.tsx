@@ -12,6 +12,7 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
+import { RichTextDraftTextarea } from '@/components/ui/rich-text-draft-textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
@@ -22,22 +23,18 @@ import {
 } from '@/components/ui/select'
 import { SplittableDraftTextarea } from '@/components/ui/splittable-draft-textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import {
-  isTextNode,
-  useCurrentPage,
-  useTextNodes,
-  type TextNodeEntry,
-} from '@/hooks/useCurrentPage'
+import { useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
 import { getConfig, startPipeline, useGetCurrentLlm } from '@/lib/api/default/default'
 import type { TextDataPatch } from '@/lib/api/schemas'
 import { applyOp, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
-import { applyBlockSplit } from '@/lib/io/splitNode'
+import { splitBlock } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
-import { splitTextBlockAt, type SplitField } from '@/lib/splitBlock'
+import type { SplitField } from '@/lib/splitBlock'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+import { effectiveTextColor } from '@/lib/textStyle'
 
 export function TextBlocksPanel() {
   const { t } = useTranslation()
@@ -95,19 +92,7 @@ export function TextBlocksPanel() {
   // The cut follows the text flow: horizontal text stacks the halves,
   // vertical (RTL-column) text puts the first half on the right.
   const splitNodeAt = async (nodeId: string, field: SplitField, offset: number) => {
-    const node = page.nodes[nodeId]
-    if (!node || !isTextNode(node) || !node.transform) return
-    const data = node.kind.text
-    const direction =
-      (field === 'text' ? data.sourceDirection : data.renderedDirection) ?? 'horizontal'
-    const split = splitTextBlockAt(
-      node.transform,
-      { text: data.text, translation: data.translation },
-      { field, offset },
-      direction,
-    )
-    if (!split) return
-    await applyBlockSplit(page, nodeId, split)
+    await splitBlock(page.id, nodeId, { field, offset })
   }
 
   const generate = async (nodeId: string) => {
@@ -375,12 +360,15 @@ function BlockCard({
                   </Tooltip>
                 </div>
               </div>
-              <SplittableDraftTextarea
+              <RichTextDraftTextarea
                 data-testid={`textblock-translation-${index}`}
                 value={data.translation ?? ''}
+                styleRanges={data.styleRanges ?? []}
+                inheritedColor={effectiveTextColor(data.style, data.renderedTextColor)}
+                inheritedEffect={data.style?.effect}
                 placeholder={t('textBlocks.addTranslationPlaceholder')}
                 rows={2}
-                onValueChange={(value) => onPatch({ translation: value })}
+                onPatch={onPatch}
                 className='min-h-0 resize-none px-1.5 py-1 text-xs'
                 splitLabel={t('textBlocks.splitAtCursor')}
                 onSplit={(offset) => onSplitAt('translation', offset)}

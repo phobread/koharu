@@ -9,6 +9,7 @@ import { saveBlob } from '@/lib/io/saveBlob'
 import { queryClient } from '@/lib/queryClient'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 import { renderWithQuery } from '../helpers'
 import { server } from '../msw/server'
@@ -48,6 +49,34 @@ beforeEach(() => {
 })
 
 describe('MenuBar', () => {
+  it('rebuilds masks using kept boxes without rerunning detection, OCR, or translation', async () => {
+    const pipeline = {
+      detector: 'detect',
+      segmenter: 'segment',
+      inpainter: 'inpaint',
+      renderer: 'render',
+    }
+    const requests: Array<Record<string, unknown>> = []
+    server.use(
+      http.get('/api/v1/config', () => HttpResponse.json({ pipeline })),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        requests.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ operationId: 'repair' })
+      }),
+    )
+    useSelectionStore.setState({ pageId: 'kept-page' })
+    renderWithQuery(<MenuBar />)
+    await userEvent.click(screen.getByTestId('menu-process-trigger'))
+    await userEvent.hover(await screen.findByTestId('menu-inpainting'))
+    await userEvent.hover(await screen.findByTestId('menu-rebuild-masks'))
+    await userEvent.click(await screen.findByTestId('menu-rebuild-mask-current'))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toMatchObject({
+      steps: ['segment', 'inpaint', 'render'],
+      pages: ['kept-page'],
+    })
+  })
+
   it('renders File / View / Process / Help triggers', async () => {
     renderWithQuery(<MenuBar />)
     expect(screen.getByTestId('menu-file-trigger')).toBeInTheDocument()

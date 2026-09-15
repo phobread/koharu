@@ -1,0 +1,170 @@
+{
+  "project": {
+    "name": "Historical compatibility fixture",
+    "createdAt": "2026-07-01T00:00:00Z",
+    "updatedAt": "2026-07-02T00:00:00Z",
+    "style": {
+      "defaultFont": "Fixture Sans"
+    }
+  },
+  "pages": {
+    "00000000-0000-0000-0000-000000000001": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Mixed nodes",
+      "width": 800,
+      "height": 600,
+      "nodes": {
+        "00000000-0000-0000-0000-000000000002": {
+          "id": "00000000-0000-0000-0000-000000000002",
+          "transform": {
+            "x": 1.0,
+            "y": 2.0,
+            "width": 800.0,
+            "height": 600.0,
+            "rotationDeg": 12.0
+          },
+          "visible": true,
+          "kind": {
+            "image": {
+              "role": "source",
+              "blob": "fixture-source",
+              "opacity": 0.75,
+              "naturalWidth": 800,
+              "naturalHeight": 600,
+              "name": "source.png"
+            }
+          }
+        },
+        "00000000-0000-0000-0000-000000000003": {
+          "id": "00000000-0000-0000-0000-000000000003",
+          "transform": {
+            "x": 10.0,
+            "y": 20.0,
+            "width": 200.0,
+            "height": 100.0,
+            "rotationDeg": -15.0
+          },
+          "visible": true,
+          "kind": {
+            "text": {
+              "confidence": 0.875,
+              "sourceLang": "ko",
+              "sourceDirection": "vertical",
+              "renderedDirection": "horizontal",
+              "linePolygons": [
+                [
+                  [
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    3.0,
+                    4.0
+                  ],
+                  [
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0
+                  ]
+                ]
+              ],
+              "rotationDeg": 7.0,
+              "detectedFontSizePx": 18.0,
+              "detector": "fixture-detector",
+              "text": "한글",
+              "translation": "Hello 猫🙂",
+              "style": {
+                "fontFamilies": [
+                  "Fixture Serif"
+                ],
+                "fontSize": 22.0,
+                "color": [
+                  12,
+                  34,
+                  56,
+                  255
+                ],
+                "effect": {
+                  "italic": true,
+                  "bold": true
+                },
+                "stroke": {
+                  "enabled": true,
+                  "color": [
+                    210,
+                    211,
+                    212,
+                    255
+                  ],
+                  "widthPx": 2.0
+                },
+                "textAlign": "center"
+              },
+              "fontPrediction": {
+                "topFonts": [
+                  {
+                    "index": 2,
+                    "score": 0.75
+                  }
+                ],
+                "namedFonts": [
+                  {
+                    "index": 2,
+                    "name": "Fixture Serif",
+                    "language": "ko",
+                    "probability": 0.75,
+                    "serif": true
+                  }
+                ],
+                "direction": "vertical",
+                "textColor": [
+                  40,
+                  41,
+                  42
+                ],
+                "strokeColor": [
+                  210,
+                  211,
+                  212
+                ],
+                "fontSizePx": 18.0,
+                "strokeWidthPx": 2.0,
+                "lineHeight": 1.25,
+                "angleDeg": 7.0
+              },
+              "sprite": "fixture-sprite",
+              "spriteTransform": {
+                "x": 11.0,
+                "y": 21.0,
+                "width": 201.0,
+                "height": 101.0,
+                "rotationDeg": -14.0
+              },
+              "lockLayoutBox": true
+            }
+          }
+        },
+        "00000000-0000-0000-0000-000000000004": {
+          "id": "00000000-0000-0000-0000-000000000004",
+          "transform": {
+            "x": 0.0,
+            "y": 0.0,
+            "width": 800.0,
+            "height": 600.0,
+            "rotationDeg": 0.0
+          },
+          "visible": false,
+          "kind": {
+            "mask": {
+              "role": "bubble",
+              "blob": "fixture-mask"
+            }
+          }
+        }
+      }
+    }
+  }
+}

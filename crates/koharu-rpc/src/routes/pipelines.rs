@@ -112,6 +112,7 @@ async fn start_pipeline(
             default_font: req.default_font,
             text_node_ids: req.text_node_ids,
             region: req.region,
+            restore_source_region: None,
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             reading_order: req.reading_order,

@@ -82,15 +82,13 @@ impl ComicTextDetector {
         let dtype = loading::model_dtype(&device);
         let downloads = runtime.downloads();
         let yolo_path = downloads
-            .huggingface_model(HF_REPO, "yolo-v5.safetensors")
+            .bundled_model(HF_REPO, "yolo-v5.safetensors")
             .await?;
         let yolo =
             loading::load_mmaped_safetensors_path_with_dtype(&yolo_path, &device, dtype, |vb| {
                 yolo_v5::YoloV5::load(vb, 2, 3)
             })?;
-        let unet_path = downloads
-            .huggingface_model(HF_REPO, "unet.safetensors")
-            .await?;
+        let unet_path = downloads.bundled_model(HF_REPO, "unet.safetensors").await?;
         let unet = loading::load_mmaped_safetensors_path_with_dtype(
             &unet_path,
             &device,
@@ -99,7 +97,7 @@ impl ComicTextDetector {
         )?;
         let dbnet = if load_dbnet {
             let dbnet_path = downloads
-                .huggingface_model(HF_REPO, "dbnet.safetensors")
+                .bundled_model(HF_REPO, "dbnet.safetensors")
                 .await?;
             Some(loading::load_mmaped_safetensors_path_with_dtype(
                 &dbnet_path,
@@ -413,13 +411,11 @@ fn morph_close(mask: &Tensor, radius: usize) -> anyhow::Result<Tensor> {
 pub async fn prefetch(runtime: &RuntimeManager) -> anyhow::Result<()> {
     let downloads = runtime.downloads();
     downloads
-        .huggingface_model(HF_REPO, "yolo-v5.safetensors")
+        .bundled_model(HF_REPO, "yolo-v5.safetensors")
         .await?;
+    downloads.bundled_model(HF_REPO, "unet.safetensors").await?;
     downloads
-        .huggingface_model(HF_REPO, "unet.safetensors")
-        .await?;
-    downloads
-        .huggingface_model(HF_REPO, "dbnet.safetensors")
+        .bundled_model(HF_REPO, "dbnet.safetensors")
         .await?;
     Ok(())
 }
@@ -427,10 +423,8 @@ pub async fn prefetch(runtime: &RuntimeManager) -> anyhow::Result<()> {
 pub async fn prefetch_segmentation(runtime: &RuntimeManager) -> anyhow::Result<()> {
     let downloads = runtime.downloads();
     downloads
-        .huggingface_model(HF_REPO, "yolo-v5.safetensors")
+        .bundled_model(HF_REPO, "yolo-v5.safetensors")
         .await?;
-    downloads
-        .huggingface_model(HF_REPO, "unet.safetensors")
-        .await?;
+    downloads.bundled_model(HF_REPO, "unet.safetensors").await?;
     Ok(())
 }

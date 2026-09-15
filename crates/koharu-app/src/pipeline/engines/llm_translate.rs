@@ -30,6 +30,10 @@ impl Engine for Model {
             )
             .await?;
 
+        anyhow::ensure!(
+            translations.len() == targets.len(),
+            "translation block count mismatch"
+        );
         let mut ops = Vec::with_capacity(targets.len());
         for ((node_id, _), translation) in targets.into_iter().zip(translations) {
             ops.push(Op::UpdateNode {
@@ -38,6 +42,9 @@ impl Engine for Model {
                 patch: NodePatch {
                     data: Some(NodeDataPatch::Text(TextDataPatch {
                         translation: Some(Some(translation)),
+                        // A generated replacement is unrelated to the old
+                        // character offsets, so discard range formatting.
+                        style_ranges: Some(Vec::new()),
                         ..Default::default()
                     })),
                     transform: None,

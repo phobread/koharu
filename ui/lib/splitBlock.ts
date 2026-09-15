@@ -7,6 +7,8 @@ export type BlockSplitPart = {
   transform: Transform
   text: string | null
   translation: string | null
+  /** UTF-16 slice of the original translation retained by this half. */
+  translationSpan: { start: number; end: number }
 }
 
 export type BlockSplit = {
@@ -24,37 +26,59 @@ export type SplitField = 'text' | 'translation'
 
 const SENTENCE_RE = /[^.!?。！？]+[.!?。！？]*/g
 
+type TextSlice = { value: string; start: number; end: number }
+
+function trimmedSlice(value: string, start: number, end: number): TextSlice {
+  const raw = value.slice(start, end)
+  const trimmed = raw.trim()
+  const trimmedStart = start + raw.length - raw.trimStart().length
+  return { value: trimmed, start: trimmedStart, end: trimmedStart + trimmed.length }
+}
+
+function slicesAt(value: string, offset: number): [TextSlice, TextSlice] {
+  return [trimmedSlice(value, 0, offset), trimmedSlice(value, offset, value.length)]
+}
+
+function naturalSlices(value: string, ratio?: number): [TextSlice, TextSlice] {
+  const groups = [/[^\r\n]+/g, ...(ratio === undefined ? [SENTENCE_RE] : []), /\S+/g]
+  // Keep the original characters/spacing inside each half. Rebuilding from
+  // words or lines would detach character formatting from its byte offsets.
+  for (const pattern of groups) {
+    const matches = [...value.matchAll(pattern)].filter((match) => match[0].trim())
+    if (matches.length < 2) continue
+    const cut =
+      ratio === undefined
+        ? Math.ceil(matches.length / 2)
+        : Math.min(Math.max(Math.round(matches.length * ratio), 1), matches.length - 1)
+    return slicesAt(value, matches[cut].index)
+  }
+  if (ratio !== undefined) {
+    const trimmed = trimmedSlice(value, 0, value.length)
+    const chars = [...trimmed.value]
+    if (chars.length > 1) {
+      const cut = Math.min(Math.max(Math.round(chars.length * ratio), 1), chars.length - 1)
+      return slicesAt(value, trimmed.start + chars.slice(0, cut).join('').length)
+    }
+  }
+  return slicesAt(value, value.length)
+}
+
+function validCaret(value: string, offset: number): boolean {
+  if (!Number.isInteger(offset) || offset < 0 || offset > value.length) return false
+  // A UTF-16 offset between a surrogate pair is not a character boundary.
+  const previous = value.charCodeAt(offset - 1)
+  const next = value.charCodeAt(offset)
+  return !(previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff)
+}
+
 /**
  * Divide text into two halves: by line if it's multi-line, else by sentence,
  * else by word at the midpoint, else everything lands in the first half. The
  * first half (`a`) maps to the top (tall box) or left (wide box).
  */
 export function splitTextValue(value: string | null | undefined): [string, string] {
-  const v = (value ?? '').trim()
-  if (!v) return ['', '']
-
-  const lines = v
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  if (lines.length >= 2) {
-    const mid = Math.ceil(lines.length / 2)
-    return [lines.slice(0, mid).join('\n'), lines.slice(mid).join('\n')]
-  }
-
-  const sentences = (v.match(SENTENCE_RE) ?? []).map((s) => s.trim()).filter(Boolean)
-  if (sentences.length >= 2) {
-    const mid = Math.ceil(sentences.length / 2)
-    return [sentences.slice(0, mid).join(' '), sentences.slice(mid).join(' ')]
-  }
-
-  const words = v.split(/\s+/).filter(Boolean)
-  if (words.length >= 2) {
-    const mid = Math.ceil(words.length / 2)
-    return [words.slice(0, mid).join(' '), words.slice(mid).join(' ')]
-  }
-
-  return [v, '']
+  const [a, b] = naturalSlices(value ?? '')
+  return [a.value, b.value]
 }
 
 /**
@@ -67,10 +91,10 @@ export function splitTextValueAt(
   offset: number,
 ): [string, string] | null {
   const v = value ?? ''
-  const a = v.slice(0, offset).trim()
-  const b = v.slice(offset).trim()
-  if (!a || !b) return null
-  return [a, b]
+  if (!validCaret(v, offset)) return null
+  const [a, b] = slicesAt(v, offset)
+  if (!a.value || !b.value) return null
+  return [a.value, b.value]
 }
 
 /**
@@ -82,28 +106,8 @@ export function splitTextValueNear(
   value: string | null | undefined,
   ratio: number,
 ): [string, string] {
-  const v = (value ?? '').trim()
-  if (!v) return ['', '']
-  const r = Math.min(Math.max(ratio, 0), 1)
-
-  const lines = v
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  if (lines.length >= 2) {
-    const cut = Math.min(Math.max(Math.round(lines.length * r), 1), lines.length - 1)
-    return [lines.slice(0, cut).join('\n'), lines.slice(cut).join('\n')]
-  }
-
-  const words = v.split(/\s+/).filter(Boolean)
-  if (words.length >= 2) {
-    const cut = Math.min(Math.max(Math.round(words.length * r), 1), words.length - 1)
-    return [words.slice(0, cut).join(' '), words.slice(cut).join(' ')]
-  }
-
-  const cut = Math.min(Math.max(Math.round(v.length * r), 1), v.length - 1)
-  const at = splitTextValueAt(v, cut)
-  return at ?? [v, '']
+  const [a, b] = naturalSlices(value ?? '', Math.min(Math.max(ratio, 0), 1))
+  return [a.value, b.value]
 }
 
 /** Keep both halves usable: neither side smaller than 20% of the box. */
@@ -139,15 +143,16 @@ export function splitTextBlockAt(
   direction: TextDirection,
 ): BlockSplit | null {
   const primary = data[cut.field] ?? ''
-  const parts = splitTextValueAt(primary, cut.offset)
-  if (!parts) return null
+  if (!validCaret(primary, cut.offset)) return null
+  const parts = slicesAt(primary, cut.offset)
+  if (!parts[0].value || !parts[1].value) return null
 
   const ratio = Math.min(
     Math.max(cut.offset / Math.max(primary.length, 1), MIN_SPLIT_RATIO),
     1 - MIN_SPLIT_RATIO,
   )
   const otherField: SplitField = cut.field === 'text' ? 'translation' : 'text'
-  const otherParts = splitTextValueNear(data[otherField], cut.offset / Math.max(primary.length, 1))
+  const otherParts = naturalSlices(data[otherField] ?? '', cut.offset / Math.max(primary.length, 1))
 
   let aT: Transform
   let bT: Transform
@@ -166,10 +171,18 @@ export function splitTextBlockAt(
 
   const [aPrimary, bPrimary] = parts
   const [aOther, bOther] = otherParts
-  const texts = (primary: string, other: string) =>
+  const texts = (primary: TextSlice, other: TextSlice) =>
     cut.field === 'text'
-      ? { text: primary || null, translation: other || null }
-      : { text: other || null, translation: primary || null }
+      ? {
+          text: primary.value || null,
+          translation: other.value || null,
+          translationSpan: { start: other.start, end: other.end },
+        }
+      : {
+          text: other.value || null,
+          translation: primary.value || null,
+          translationSpan: { start: primary.start, end: primary.end },
+        }
 
   return {
     axis: direction === 'vertical' ? 'leftRight' : 'topBottom',
@@ -274,17 +287,25 @@ export function mergeTextBlocks(
  * tall → top/bottom), dividing the source + translation text between them. The
  * two halves tile the original box exactly (no gap/overlap) at any rotation.
  */
-export function splitTextBlock(transform: Transform, data: SplitInput): BlockSplit {
-  const leftRight = transform.width >= transform.height
+export function splitTextBlock(
+  transform: Transform,
+  data: SplitInput,
+  direction?: TextDirection,
+): BlockSplit {
+  const leftRight = direction === 'vertical' || transform.width >= transform.height
   const [aText, bText] = splitTextValue(data.text)
-  const [aTranslation, bTranslation] = splitTextValue(data.translation)
+  const [aTranslation, bTranslation] = naturalSlices(data.translation ?? '')
 
   let aT: Transform
   let bT: Transform
   if (leftRight) {
     const halfW = transform.width / 2
-    aT = { ...transform, width: halfW }
-    bT = { ...transform, x: transform.x + halfW, width: transform.width - halfW }
+    aT = { ...transform, x: transform.x + (direction === 'vertical' ? halfW : 0), width: halfW }
+    bT = {
+      ...transform,
+      x: transform.x + (direction === 'vertical' ? 0 : halfW),
+      width: transform.width - halfW,
+    }
   } else {
     const halfH = transform.height / 2
     aT = { ...transform, height: halfH }
@@ -295,7 +316,17 @@ export function splitTextBlock(transform: Transform, data: SplitInput): BlockSpl
 
   return {
     axis: leftRight ? 'leftRight' : 'topBottom',
-    a: { transform: aT, text: aText || null, translation: aTranslation || null },
-    b: { transform: bT, text: bText || null, translation: bTranslation || null },
+    a: {
+      transform: aT,
+      text: aText || null,
+      translation: aTranslation.value || null,
+      translationSpan: { start: aTranslation.start, end: aTranslation.end },
+    },
+    b: {
+      transform: bT,
+      text: bText || null,
+      translation: bTranslation.value || null,
+      translationSpan: { start: bTranslation.start, end: bTranslation.end },
+    },
   }
 }

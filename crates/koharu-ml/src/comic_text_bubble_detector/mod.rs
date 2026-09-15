@@ -54,12 +54,12 @@ impl ComicTextBubbleDetector {
         let device = device(cpu)?;
         let dtype = loading::model_dtype(&device);
         let downloads = runtime.downloads();
-        let config_path = downloads.huggingface_model(HF_REPO, "config.json").await?;
+        let config_path = downloads.bundled_model(HF_REPO, "config.json").await?;
         let preprocessor_path = downloads
-            .huggingface_model(HF_REPO, "preprocessor_config.json")
+            .bundled_model(HF_REPO, "preprocessor_config.json")
             .await?;
         let weights_path = downloads
-            .huggingface_model(HF_REPO, "model.safetensors")
+            .bundled_model(HF_REPO, "model.safetensors")
             .await?;
 
         let config = loading::read_json::<RTDetrV2Config>(&config_path)

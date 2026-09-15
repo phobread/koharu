@@ -66,11 +66,11 @@ async fn qwen_paths(runtime: &RuntimeManager, cli: &Cli) -> Result<(PathBuf, Pat
         (None, None) => {
             let qwen_path = runtime
                 .downloads()
-                .huggingface_model(QWEN_REPO, QWEN_GGUF)
+                .bundled_model(QWEN_REPO, QWEN_GGUF)
                 .await?;
             let tokenizer_path = runtime
                 .downloads()
-                .huggingface_model(QWEN_TOKENIZER_REPO, QWEN_TOKENIZER)
+                .bundled_model(QWEN_TOKENIZER_REPO, QWEN_TOKENIZER)
                 .await?;
             Ok((qwen_path, tokenizer_path))
         }

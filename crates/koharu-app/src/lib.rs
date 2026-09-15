@@ -18,6 +18,7 @@ pub mod pipeline;
 pub mod projects;
 pub mod renderer;
 pub mod session;
+pub mod text_erase;
 pub mod utils;
 
 pub use ai::AiManager;

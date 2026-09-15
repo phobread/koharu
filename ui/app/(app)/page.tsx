@@ -21,7 +21,7 @@ import { useGetMeta } from '@/lib/api/default/default'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 
-const LAYOUT_ID = 'koharu-main-layout-v3'
+const LAYOUT_ID = 'koharu-main-layout-v4'
 
 export default function Page() {
   const hasProject = useScene().scene !== null
@@ -63,7 +63,7 @@ export default function Page() {
   }
 
   return (
-    <div className='flex min-h-0 flex-1 flex-col'>
+    <div className='flex min-h-0 flex-1 flex-col bg-[var(--surface-sidebar)]'>
       <ActivityBubble />
       <Group
         orientation='horizontal'
@@ -75,9 +75,9 @@ export default function Page() {
         <Panel
           panelRef={leftPanelRef}
           id='left'
-          defaultSize={160}
-          minSize={160}
-          maxSize={250}
+          defaultSize={220}
+          minSize={190}
+          maxSize={300}
           collapsible
           collapsedSize={0}
           onResize={(size) => {
@@ -96,16 +96,16 @@ export default function Page() {
             !showNavigator && 'hidden',
           )}
         />
-        <Panel id='center' minSize={480}>
+        <Panel id='center' minSize={320}>
           <AppErrorBoundary>
-            <div className='flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+            <div className='relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-2xl border border-border/40 shadow-[var(--shadow-content)]'>
               <Workspace />
               <StatusBar />
             </div>
           </AppErrorBoundary>
         </Panel>
         <Separator className='w-px bg-border transition-colors hover:bg-border' />
-        <Panel id='right' defaultSize={280} minSize={280} maxSize={400}>
+        <Panel id='right' defaultSize={340} minSize={300} maxSize={460}>
           <AppErrorBoundary>
             <Panels />
           </AppErrorBoundary>

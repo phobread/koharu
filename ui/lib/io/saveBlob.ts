@@ -17,10 +17,54 @@
 
 import { isTauri } from '@/lib/backend'
 
-export async function pickSaveDirectory(): Promise<string | undefined> {
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+
+/** Make a project name safe as one cross-platform directory component. */
+export function sanitiseExportDirectoryName(name: string | undefined | null): string {
+  const withoutControlCharacters = Array.from(name ?? '', (char) =>
+    char.charCodeAt(0) < 0x20 ? '_' : char,
+  ).join('')
+  const cleaned = withoutControlCharacters
+    .trim()
+    .replace(/[<>:"/\\|?*]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+  const safe = cleaned || 'Untitled'
+  return WINDOWS_RESERVED_NAME.test(safe) ? `_${safe}` : safe
+}
+
+/**
+ * Resolve and create the user-facing default for rendered images.
+ * `pictureDir()` uses the OS known folder, so redirected/OneDrive Pictures
+ * directories work without guessing from `%USERPROFILE%`.
+ */
+export async function defaultRenderedExportDirectory(
+  projectName: string | undefined | null,
+): Promise<string | undefined> {
+  if (!isTauri()) return undefined
+  try {
+    const { join, pictureDir } = await import('@tauri-apps/api/path')
+    const { mkdir } = await import('@tauri-apps/plugin-fs')
+    const folder = await join(
+      await pictureDir(),
+      'Koharu',
+      sanitiseExportDirectoryName(projectName),
+      'Rendered',
+    )
+    await mkdir(folder, { recursive: true })
+    return folder
+  } catch (err) {
+    // Saving should still work if the OS cannot resolve/create Pictures.
+    // The native dialog will fall back to its normal last-used directory.
+    console.warn('Could not prepare the default rendered export directory:', err)
+    return undefined
+  }
+}
+
+export async function pickSaveDirectory(defaultPath?: string): Promise<string | undefined> {
   if (!isTauri()) return undefined
   const { open } = await import('@tauri-apps/plugin-dialog')
-  const folder = await open({ directory: true, multiple: false })
+  const folder = await open({ directory: true, multiple: false, defaultPath })
   return typeof folder === 'string' ? folder : undefined
 }
 
@@ -65,7 +109,11 @@ export async function saveBlobToDirectory(
   return true
 }
 
-export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean> {
+export async function saveBlob(
+  blob: Blob,
+  defaultName: string,
+  options: { defaultDirectory?: string } = {},
+): Promise<boolean> {
   // Zip detection must come from the actual content type — a single-file
   // export (PNG/PSD/khr) whose filename happens to end in `.zip` would
   // otherwise be fed to `unzipSync` and throw.
@@ -76,11 +124,15 @@ export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean
     const { writeFile } = await import('@tauri-apps/plugin-fs')
 
     if (isZip) {
-      const folder = await pickSaveDirectory()
+      const folder = await pickSaveDirectory(options.defaultDirectory)
       return folder ? saveBlobToDirectory(blob, defaultName, folder) : false
     }
 
-    const path = await save({ defaultPath: defaultName })
+    const safeName = defaultName.replace(/[\\/]+/g, '_') || 'koharu-export'
+    const defaultPath = options.defaultDirectory
+      ? await (await import('@tauri-apps/api/path')).join(options.defaultDirectory, safeName)
+      : safeName
+    const path = await save({ defaultPath })
     if (!path || typeof path !== 'string') return false
     await writeFile(path, new Uint8Array(await blob.arrayBuffer()))
     return true

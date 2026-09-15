@@ -18,6 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -68,6 +69,11 @@ pub struct PipelineRunOptions {
     /// composite onto the existing `Image { Inpainted }` (fallback Source)
     /// and process just that one block. Other engines ignore it.
     pub region: Option<Region>,
+    /// Whether a regional inpaint should first restore its bounding rectangle
+    /// from the source image. Mask erasure/un-inpaint needs this; repair-brush
+    /// additions must keep the existing cleaned background or the rectangle
+    /// itself becomes visible. `None` preserves the legacy restore behavior.
+    pub restore_source_region: Option<bool>,
     /// Flux.2 Klein tuning. `None` leaves the engine's built-in default in effect.
     pub flux2_strength: Option<f64>,
     pub flux2_steps: Option<u32>,
@@ -143,9 +149,15 @@ impl Registry {
             return Ok(engine);
         }
         let info = Self::find(id)?;
+        let started = Instant::now();
         let loaded = async { (info.load)(runtime, cpu).await }
             .instrument(tracing::info_span!("engine_load", engine = id))
             .await?;
+        tracing::info!(
+            engine = id,
+            elapsed_ms = started.elapsed().as_millis(),
+            "engine loaded"
+        );
         let engine: Arc<dyn Engine> = Arc::from(loaded);
         self.engines.write().insert(info.id, engine.clone());
         Ok(engine)

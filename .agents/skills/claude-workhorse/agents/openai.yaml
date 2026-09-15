@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Workhorse"
+  short_description: "Delegate bounded project work to Claude"
+  default_prompt: "Use $claude-workhorse to delegate a bounded implementation task to Claude and verify its result."

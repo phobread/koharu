@@ -287,11 +287,11 @@ pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
 async fn resolve_model_paths(runtime: &RuntimeManager) -> Result<(PathBuf, PathBuf)> {
     let downloads = runtime.downloads();
     let config = downloads
-        .huggingface_model(HF_REPO, CONFIG_FILENAME)
+        .bundled_model(HF_REPO, CONFIG_FILENAME)
         .await
         .with_context(|| format!("failed to download {CONFIG_FILENAME} from {HF_REPO}"))?;
     let weights = downloads
-        .huggingface_model(HF_REPO, SAFETENSORS_FILENAME)
+        .bundled_model(HF_REPO, SAFETENSORS_FILENAME)
         .await
         .with_context(|| format!("failed to download {SAFETENSORS_FILENAME} from {HF_REPO}"))?;
     Ok((config, weights))
