@@ -10,27 +10,33 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
 
 use crate::AppState;
 use crate::api;
+use crate::guard::RequestGuard;
 
 /// Function that maps a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Wrap `router(app)` with CORS + mount MCP at `/mcp`.
-pub fn router_for(app: AppState) -> Router {
-    let base = api::router(app.clone()).layer(CorsLayer::very_permissive());
-    crate::mcp::mount(base, app)
+/// `router(app)` + MCP at `/mcp`, behind the request guard (see
+/// [`crate::guard`]).
+/// No CORS layer: the UI is served same-origin, so browsers must not be able
+/// to call the API from other sites.
+pub fn router_for(app: AppState, guard: RequestGuard) -> Router {
+    crate::mcp::mount(api::router(app.clone()), app).layer(middleware::from_fn_with_state(
+        guard,
+        crate::guard::middleware,
+    ))
 }
 
 /// Same as `router_for` but installs `resolver` as a fallback, serving
 /// embedded frontend assets for unmatched GET requests.
-pub fn router_with_assets(app: AppState, resolver: AssetResolver) -> Router {
-    router_for(app).fallback(move |req: Request<Body>| {
+pub fn router_with_assets(app: AppState, guard: RequestGuard, resolver: AssetResolver) -> Router {
+    router_for(app, guard).fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
     })
@@ -54,7 +60,8 @@ async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
 
 /// Serve HTTP on an already-bound listener. Tauri-friendly.
 pub async fn serve_with_listener(listener: TcpListener, app: AppState) -> Result<()> {
-    axum::serve(listener, router_for(app)).await?;
+    let guard = RequestGuard::for_bind_addr(listener.local_addr()?.ip());
+    axum::serve(listener, router_for(app, guard)).await?;
     Ok(())
 }
 
@@ -65,6 +72,7 @@ pub async fn serve_with_listener_and_assets(
     app: AppState,
     resolver: AssetResolver,
 ) -> Result<()> {
-    axum::serve(listener, router_with_assets(app, resolver)).await?;
+    let guard = RequestGuard::for_bind_addr(listener.local_addr()?.ip());
+    axum::serve(listener, router_with_assets(app, guard, resolver)).await?;
     Ok(())
 }
