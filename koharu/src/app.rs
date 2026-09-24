@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures::future::BoxFuture;
 use koharu_app::{App, AppConfig, config as app_config};
-use koharu_rpc::{BootstrapManager, server};
+use koharu_rpc::{BootstrapManager, Bootstrapper, server};
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
@@ -14,11 +15,11 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cli::Cli;
 
-async fn bootstrap_app(
+async fn build_app(
     state: Arc<BootstrapManager>,
     config: AppConfig,
     cpu_only: bool,
-) -> Result<()> {
+) -> Result<Arc<App>> {
     let runtime = state.runtime();
     runtime
         .prepare()
@@ -34,10 +35,15 @@ async fn bootstrap_app(
     )?);
     koharu_llm::suppress_native_logs();
     app.spawn_llm_forwarder();
-    state
-        .set_app(app)
-        .map_err(|_| anyhow::anyhow!("app already initialized"))?;
-    Ok(())
+    Ok(app)
+}
+
+/// `build_app` as a retryable [`Bootstrapper`] for the GUI, where a failed
+/// startup is shown with a retry button instead of ending the process.
+fn bootstrapper(config: AppConfig, cpu_only: bool) -> Bootstrapper {
+    Arc::new(move |state| -> BoxFuture<'static, Result<Arc<App>>> {
+        Box::pin(build_app(state, config.clone(), cpu_only))
+    })
 }
 
 pub async fn run() -> Result<()> {
@@ -124,7 +130,11 @@ pub async fn run() -> Result<()> {
 
     if cli.headless {
         tracing::info!(port, "headless: open http://127.0.0.1:{port}/ in a browser");
-        bootstrap_app(state, config, cli.cpu).await?;
+        // Fail fast so supervisors (Docker restart policies, systemd) retry.
+        let app = build_app(state.clone(), config, cli.cpu).await?;
+        state
+            .set_app(app)
+            .map_err(|_| anyhow::anyhow!("app already initialized"))?;
         tokio::signal::ctrl_c().await?;
         return Ok(());
     }
@@ -137,9 +147,7 @@ pub async fn run() -> Result<()> {
         .plugin(tauri_plugin_process::init())
         .setup(move |handle| {
             tauri::async_runtime::spawn(async move {
-                bootstrap_app(state, config, cli.cpu)
-                    .await
-                    .expect("failed to bootstrap app");
+                state.start(bootstrapper(config, cli.cpu));
             });
 
             let cfg = handle.config();

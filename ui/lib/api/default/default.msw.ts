@@ -8,6 +8,7 @@ import { HttpResponse, delay, http } from 'msw'
 import type { RequestHandlerOptions } from 'msw'
 
 import {
+  BootstrapState,
   CodexAuthAttemptStatus,
   FontSource,
   ImageRole,
@@ -24,6 +25,7 @@ import type {
   AddImageLayerResponse,
   AppConfig,
   AppEvent,
+  BootstrapStatus,
   CodexAuthStatus,
   CodexDeviceLogin,
   CodexDeviceLoginStatus,
@@ -111,6 +113,28 @@ export const getStartCodexImageGenerationResponseMock = (
 
 export const getGetBlobResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
+
+export const getGetBootstrapResponseMock = (
+  overrideResponse: Partial<Extract<BootstrapStatus, object>> = {},
+): BootstrapStatus => ({
+  error: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.string.alpha({ length: { min: 10, max: 20 } }), null]),
+    undefined,
+  ]),
+  state: faker.helpers.arrayElement(Object.values(BootstrapState)),
+  ...overrideResponse,
+})
+
+export const getRetryBootstrapResponseMock = (
+  overrideResponse: Partial<Extract<BootstrapStatus, object>> = {},
+): BootstrapStatus => ({
+  error: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.string.alpha({ length: { min: 10, max: 20 } }), null]),
+    undefined,
+  ]),
+  state: faker.helpers.arrayElement(Object.values(BootstrapState)),
+  ...overrideResponse,
+})
 
 export const getGetConfigResponseDataConfigMock = (
   overrideResponse: Partial<DataConfig> = {},
@@ -1183,6 +1207,58 @@ export const getGetBlobMockHandler = (
   )
 }
 
+export const getGetBootstrapMockHandler = (
+  overrideResponse?:
+    | BootstrapStatus
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<BootstrapStatus> | BootstrapStatus),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    '*/bootstrap',
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0)
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetBootstrapResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
+export const getRetryBootstrapMockHandler = (
+  overrideResponse?:
+    | BootstrapStatus
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<BootstrapStatus> | BootstrapStatus),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/bootstrap/retry',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0)
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRetryBootstrapResponseMock(),
+        { status: 202 },
+      )
+    },
+    options,
+  )
+}
+
 export const getGetConfigMockHandler = (
   overrideResponse?:
     | AppConfig
@@ -2112,6 +2188,8 @@ export const getDefaultMock = () => [
   getGetCodexAuthStatusMockHandler(),
   getStartCodexImageGenerationMockHandler(),
   getGetBlobMockHandler(),
+  getGetBootstrapMockHandler(),
+  getRetryBootstrapMockHandler(),
   getGetConfigMockHandler(),
   getPatchConfigMockHandler(),
   getSetProviderSecretMockHandler(),

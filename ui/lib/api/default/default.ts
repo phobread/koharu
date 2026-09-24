@@ -22,8 +22,10 @@ import type {
 import { fetchApi } from '.././fetch'
 import type {
   AddImageLayerResponse,
+  ApiError,
   AppConfig,
   AppEvent,
+  BootstrapStatus,
   CodexAuthStatus,
   CodexDeviceLogin,
   CodexImageGenerationOptions,
@@ -475,6 +477,146 @@ export function useGetBlob<TData = Awaited<ReturnType<typeof getBlob>>, TError =
   return { ...query, queryKey: queryOptions.queryKey }
 }
 
+export const getGetBootstrapUrl = () => {
+  return `/api/v1/bootstrap`
+}
+
+export const getBootstrap = async (options?: RequestInit): Promise<BootstrapStatus> => {
+  return fetchApi<BootstrapStatus>(getGetBootstrapUrl(), {
+    ...options,
+    method: 'GET',
+  })
+}
+
+export const getGetBootstrapQueryKey = () => {
+  return [`/api/v1/bootstrap`] as const
+}
+
+export const getGetBootstrapQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBootstrap>>,
+  TError = unknown,
+>(options?: {
+  query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getBootstrap>>, TError, TData>>
+  request?: SecondParameter<typeof fetchApi>
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {}
+
+  const queryKey = queryOptions?.queryKey ?? getGetBootstrapQueryKey()
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getBootstrap>>> = ({ signal }) =>
+    getBootstrap({ signal, ...requestOptions })
+
+  return { queryKey, queryFn, gcTime: 300000, retry: 1, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getBootstrap>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetBootstrapQueryResult = NonNullable<Awaited<ReturnType<typeof getBootstrap>>>
+export type GetBootstrapQueryError = unknown
+
+export function useGetBootstrap<TData = Awaited<ReturnType<typeof getBootstrap>>, TError = unknown>(
+  options: {
+    query: Partial<UseQueryOptions<Awaited<ReturnType<typeof getBootstrap>>, TError, TData>> &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBootstrap>>,
+          TError,
+          Awaited<ReturnType<typeof getBootstrap>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetBootstrap<TData = Awaited<ReturnType<typeof getBootstrap>>, TError = unknown>(
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getBootstrap>>, TError, TData>> &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBootstrap>>,
+          TError,
+          Awaited<ReturnType<typeof getBootstrap>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetBootstrap<TData = Awaited<ReturnType<typeof getBootstrap>>, TError = unknown>(
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getBootstrap>>, TError, TData>>
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetBootstrap<TData = Awaited<ReturnType<typeof getBootstrap>>, TError = unknown>(
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getBootstrap>>, TError, TData>>
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+  const queryOptions = getGetBootstrapQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<TData, TError> & {
+    queryKey: DataTag<QueryKey, TData, TError>
+  }
+
+  return { ...query, queryKey: queryOptions.queryKey }
+}
+
+export const getRetryBootstrapUrl = () => {
+  return `/api/v1/bootstrap/retry`
+}
+
+export const retryBootstrap = async (options?: RequestInit): Promise<BootstrapStatus> => {
+  return fetchApi<BootstrapStatus>(getRetryBootstrapUrl(), {
+    ...options,
+    method: 'POST',
+  })
+}
+
+export const getRetryBootstrapMutationOptions = <TError = ApiError, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<Awaited<ReturnType<typeof retryBootstrap>>, TError, void, TContext>
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<Awaited<ReturnType<typeof retryBootstrap>>, TError, void, TContext> => {
+  const mutationKey = ['retryBootstrap']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<Awaited<ReturnType<typeof retryBootstrap>>, void> = () => {
+    return retryBootstrap(requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type RetryBootstrapMutationResult = NonNullable<Awaited<ReturnType<typeof retryBootstrap>>>
+
+export type RetryBootstrapMutationError = ApiError
+
+export const useRetryBootstrap = <TError = ApiError, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof retryBootstrap>>,
+      TError,
+      void,
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<Awaited<ReturnType<typeof retryBootstrap>>, TError, void, TContext> => {
+  return useMutation(getRetryBootstrapMutationOptions(options), queryClient)
+}
 export const getGetConfigUrl = () => {
   return `/api/v1/config`
 }

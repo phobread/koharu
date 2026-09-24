@@ -28,6 +28,7 @@ koharu-runtime = { workspace = true }
 koharu-llm = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+futures = { workspace = true }
 git-version = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }

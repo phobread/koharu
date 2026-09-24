@@ -100,6 +100,50 @@
         }
       }
     },
+    "/bootstrap": {
+      "get": {
+        "operationId": "get_bootstrap",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bootstrap/retry": {
+      "post": {
+        "operationId": "retry_bootstrap",
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Startup hasn't failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/config": {
       "get": {
         "operationId": "get_config",
@@ -986,6 +1030,20 @@
           }
         }
       },
+      "ApiError": {
+        "type": "object",
+        "required": ["status", "message"],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "AppConfig": {
         "type": "object",
         "properties": {
@@ -1022,7 +1080,7 @@
               "detector": "pp-doclayout-v3",
               "font_detector": "yuzumarker-font-detection",
               "inpainter": "lama-manga",
-              "ocr": "paddle-ocr-vl-1.5",
+              "ocr": "paddle-ocr-vl-1.6",
               "renderer": "koharu-renderer",
               "segmenter": "comic-text-detector-seg",
               "translator": "llm"
@@ -1203,6 +1261,23 @@
       "BlobRef": {
         "type": "string",
         "description": "Hex-encoded blake3 hash of an immutable blob."
+      },
+      "BootstrapState": {
+        "type": "string",
+        "enum": ["starting", "ready", "failed"]
+      },
+      "BootstrapStatus": {
+        "type": "object",
+        "required": ["state"],
+        "properties": {
+          "error": {
+            "type": ["string", "null"],
+            "description": "Why the last attempt failed; set when `state` is `failed`."
+          },
+          "state": {
+            "$ref": "#/components/schemas/BootstrapState"
+          }
+        }
       },
       "CodexAuthAttemptStatus": {
         "type": "string",
@@ -2596,7 +2671,7 @@
           },
           "ocr": {
             "type": "string",
-            "default": "paddle-ocr-vl-1.5"
+            "default": "paddle-ocr-vl-1.6"
           },
           "renderer": {
             "type": "string",

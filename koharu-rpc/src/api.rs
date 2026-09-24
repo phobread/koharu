@@ -23,6 +23,7 @@ pub type ApiState = AppState;
 
 fn bootstrap_api() -> OpenApiRouter<ApiState> {
     OpenApiRouter::default()
+        .merge(routes::bootstrap::router())
         .merge(routes::downloads::router())
         .merge(routes::operations::router())
         .merge(events::router())

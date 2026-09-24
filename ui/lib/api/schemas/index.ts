@@ -5,9 +5,12 @@
  */
 
 export * from './addImageLayerResponse'
+export * from './apiError'
 export * from './appConfig'
 export * from './appEvent'
 export * from './blobRef'
+export * from './bootstrapState'
+export * from './bootstrapStatus'
 export * from './codexAuthAttemptStatus'
 export * from './codexAuthStatus'
 export * from './codexDeviceLogin'

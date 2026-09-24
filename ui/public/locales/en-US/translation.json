@@ -458,5 +458,9 @@
     },
     "close": "Close",
     "retry": "Retry"
+  },
+  "startup": {
+    "failed": "Koharu couldn't start",
+    "retry": "Retry"
   }
 }
