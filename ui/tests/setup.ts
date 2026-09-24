@@ -107,7 +107,11 @@ Object.defineProperty(window, 'localStorage', {
 
 // FontFace API stubs for jsdom
 class StubFontFace {
-  constructor(family: string, source: string | ArrayBuffer | ArrayBufferView, descriptors?: any) {}
+  constructor(
+    _family: string,
+    _source: string | ArrayBuffer | ArrayBufferView,
+    _descriptors?: any,
+  ) {}
   load() {
     return Promise.resolve(this)
   }
