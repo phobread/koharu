@@ -6,6 +6,7 @@
 //!   Each exposes typed handler fns that share a `State<ApiState>`.
 //! - `events` — SSE stream (`GET /events`).
 //! - `binary` — byte-oriented reads (`GET /scene.bin`, `GET /blobs/:hash`, …).
+//! - `guard` — Host/Origin checks that keep other websites off the API.
 //! - `mcp` — per-route MCP tools under rmcp.
 //! - `server` — bootstrap glue.
 
@@ -14,6 +15,7 @@ pub mod binary;
 pub mod bootstrap;
 pub mod error;
 pub mod events;
+pub mod guard;
 pub mod mcp;
 pub mod psd_export;
 pub mod routes;
