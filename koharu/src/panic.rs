@@ -1,4 +1,13 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static SHOW_DIALOG: AtomicBool = AtomicBool::new(true);
+
+/// Skip the error dialog on panic, for runs without a desktop session
+/// (`--headless`, `--download`); the panic is still printed and reported.
+pub fn disable_dialog() {
+    SHOW_DIALOG.store(false, Ordering::Relaxed);
+}
 
 pub fn install() {
     let previous = std::panic::take_hook();
@@ -20,14 +29,16 @@ pub fn install() {
             client.flush(Some(Duration::from_secs(2)));
         }
 
-        rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("Koharu has stopped")
-            .set_description(format!(
-                "Something went wrong and Koharu needs to close.\n\n{msg}\n\nat {location}"
-            ))
-            .set_buttons(rfd::MessageButtons::Ok)
-            .show();
+        if SHOW_DIALOG.load(Ordering::Relaxed) {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Koharu has stopped")
+                .set_description(format!(
+                    "Something went wrong and Koharu needs to close.\n\n{msg}\n\nat {location}"
+                ))
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+        }
 
         std::process::exit(1);
     }));

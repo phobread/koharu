@@ -42,6 +42,9 @@ async fn bootstrap_app(
 
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if cli.headless || cli.download {
+        crate::panic::disable_dialog();
+    }
 
     #[cfg(target_os = "windows")]
     {
