@@ -596,7 +596,7 @@ fn dilate_alpha(alpha: &[u8], width: usize, height: usize, radius: usize) -> Vec
 }
 
 fn unpremultiply_rgba(pixels: &mut [u8]) {
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 || a == 255 {
             continue;
