@@ -19,7 +19,7 @@ pub use engines::support;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use koharu_core::{Op, PageId, PipelineStep};
 use koharu_runtime::RuntimeManager;
 use tracing::Instrument;
@@ -156,7 +156,7 @@ pub async fn run(
     'pages: for (page_index, page_id) in pages.iter().enumerate() {
         for (seq, &i) in order.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                bail!("cancelled");
+                return Err(crate::Cancelled.into());
             }
             let info = infos[i];
 

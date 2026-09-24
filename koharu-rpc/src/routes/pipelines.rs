@@ -177,7 +177,7 @@ pub(crate) fn launch(
                     outcome.warning_count
                 )),
             ),
-            Err(e) if e.to_string().contains("cancelled") => (JobStatus::Cancelled, None),
+            Err(e) if koharu_app::is_cancelled(e) => (JobStatus::Cancelled, None),
             Err(e) => {
                 tracing::warn!(operation_id = %op_id_c, "pipeline run failed: {e:#}");
                 (JobStatus::Failed, Some(format!("{e:#}")))
