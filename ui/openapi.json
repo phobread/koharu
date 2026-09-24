@@ -100,6 +100,50 @@
         }
       }
     },
+    "/bootstrap": {
+      "get": {
+        "operationId": "get_bootstrap",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bootstrap/retry": {
+      "post": {
+        "operationId": "retry_bootstrap",
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Startup hasn't failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/config": {
       "get": {
         "operationId": "get_config",
@@ -986,6 +1030,20 @@
           }
         }
       },
+      "ApiError": {
+        "type": "object",
+        "required": ["status", "message"],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "AppConfig": {
         "type": "object",
         "properties": {
@@ -1011,6 +1069,16 @@
               "read_timeout": 300
             }
           },
+          "mcp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpConfig"
+              }
+            ],
+            "default": {
+              "enabled": true
+            }
+          },
           "pipeline": {
             "oneOf": [
               {
@@ -1022,7 +1090,7 @@
               "detector": "pp-doclayout-v3",
               "font_detector": "yuzumarker-font-detection",
               "inpainter": "lama-manga",
-              "ocr": "paddle-ocr-vl-1.5",
+              "ocr": "paddle-ocr-vl-1.6",
               "renderer": "koharu-renderer",
               "segmenter": "comic-text-detector-seg",
               "translator": "llm"
@@ -1034,6 +1102,16 @@
               "$ref": "#/components/schemas/ProviderConfig"
             },
             "default": []
+          },
+          "telemetry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TelemetryConfig"
+              }
+            ],
+            "default": {
+              "crash_reports": true
+            }
           }
         }
       },
@@ -1204,6 +1282,23 @@
         "type": "string",
         "description": "Hex-encoded blake3 hash of an immutable blob."
       },
+      "BootstrapState": {
+        "type": "string",
+        "enum": ["starting", "ready", "failed"]
+      },
+      "BootstrapStatus": {
+        "type": "object",
+        "required": ["state"],
+        "properties": {
+          "error": {
+            "type": ["string", "null"],
+            "description": "Why the last attempt failed; set when `state` is `failed`."
+          },
+          "state": {
+            "$ref": "#/components/schemas/BootstrapState"
+          }
+        }
+      },
       "CodexAuthAttemptStatus": {
         "type": "string",
         "enum": ["pending", "succeeded", "failed"]
@@ -1330,6 +1425,16 @@
               }
             ]
           },
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpConfigPatch"
+              }
+            ]
+          },
           "pipeline": {
             "oneOf": [
               {
@@ -1346,6 +1451,16 @@
               "$ref": "#/components/schemas/ProviderPatch"
             },
             "description": "If present, replaces the entire list. Api_key values of `\"[REDACTED]\"`\nare interpreted as \"leave the existing secret alone\"."
+          },
+          "telemetry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TelemetryConfigPatch"
+              }
+            ]
           }
         }
       },
@@ -2135,6 +2250,24 @@
         "type": "string",
         "enum": ["brushInpaint", "segment", "bubble"]
       },
+      "McpConfig": {
+        "type": "object",
+        "description": "The MCP server at `/mcp`, through which AI assistants can drive Koharu.\nChecked per request, so a change applies immediately.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "McpConfigPatch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": ["boolean", "null"]
+          }
+        }
+      },
       "MetaInfo": {
         "type": "object",
         "required": ["version", "mlDevice"],
@@ -2596,7 +2729,7 @@
           },
           "ocr": {
             "type": "string",
-            "default": "paddle-ocr-vl-1.5"
+            "default": "paddle-ocr-vl-1.6"
           },
           "renderer": {
             "type": "string",
@@ -3035,6 +3168,25 @@
         "properties": {
           "operationId": {
             "type": "string"
+          }
+        }
+      },
+      "TelemetryConfig": {
+        "type": "object",
+        "description": "Crash reporting. Read once at launch (see [`crash_reports_enabled`]), so\na change takes effect after a restart.",
+        "properties": {
+          "crash_reports": {
+            "type": "boolean",
+            "description": "Send crash reports and app-health sessions to the Koharu developers\n(Sentry). Only official builds carry a Sentry DSN.",
+            "default": true
+          }
+        }
+      },
+      "TelemetryConfigPatch": {
+        "type": "object",
+        "properties": {
+          "crashReports": {
+            "type": ["boolean", "null"]
           }
         }
       },

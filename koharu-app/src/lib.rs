@@ -9,6 +9,7 @@ pub mod archive;
 pub mod autosave;
 pub mod blobs;
 pub mod bus;
+pub mod cancel;
 pub mod config;
 pub mod google_fonts;
 pub mod history;
@@ -22,6 +23,7 @@ pub mod utils;
 pub use ai::AiManager;
 pub use app::{App, AppSharedState};
 pub use blobs::BlobStore;
+pub use cancel::{Cancelled, is_cancelled};
 pub use config::AppConfig;
 pub use pipeline::{
     Artifact, Engine, EngineCtx, EngineInfo, PipelineRunOptions, PipelineSpec, Registry, Scope,

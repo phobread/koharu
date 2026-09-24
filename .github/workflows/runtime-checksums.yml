@@ -1,0 +1,39 @@
+name: Runtime checksums
+
+# koharu-runtime/checksums.txt pins the SHA-256 of every native runtime
+# archive (llama.cpp, ZLUDA, CUDA wheels). This job regenerates it from the
+# GitHub release API and PyPI and fails if the committed file differs: either
+# a pinned version was bumped without re-running the script, or an upstream
+# asset was replaced after it was pinned. The failure log prints the expected
+# file contents.
+
+on:
+  push:
+    paths:
+      - '.cargo/config.toml'
+      - 'koharu-runtime/**'
+      - 'scripts/runtime-checksums.ts'
+      - '.github/workflows/runtime-checksums.yml'
+  pull_request:
+    paths:
+      - '.cargo/config.toml'
+      - 'koharu-runtime/**'
+      - 'scripts/runtime-checksums.ts'
+      - '.github/workflows/runtime-checksums.yml'
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun scripts/runtime-checksums.ts --check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -20,7 +20,8 @@ Important current behavior:
 - the server binds to `127.0.0.1` by default; use `--host` to bind elsewhere
 - the API and MCP server share the same loaded project, models, and pipeline state
 - when no `--port` is provided, Koharu chooses a random local port
-- everything except `/api/v1/downloads`, `/api/v1/operations`, and `/api/v1/events` returns `503 Service Unavailable` until the app finishes bootstrapping
+- everything except `/api/v1/bootstrap`, `/api/v1/downloads`, `/api/v1/operations`, and `/api/v1/events` returns `503 Service Unavailable` until the app finishes bootstrapping
+- `GET /api/v1/bootstrap` reports startup as `starting`, `ready`, or `failed` (with an `error` message); after a failure, `POST /api/v1/bootstrap/retry` runs startup again. In `--headless` mode a failed startup exits the process instead
 - browser requests from other websites are rejected with `403 Forbidden`: a request carrying an `Origin` header must be same-origin or come from `localhost`/a loopback address, and no CORS headers are served. Non-browser clients (curl, scripts, MCP clients) are unaffected
 - when bound to loopback (the default), requests whose `Host` is not `localhost` or a loopback address are rejected, which blocks DNS-rebinding attacks
 

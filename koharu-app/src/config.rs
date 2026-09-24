@@ -62,6 +62,40 @@ pub struct AppConfig {
     pub http: HttpConfig,
     pub pipeline: PipelineConfig,
     pub providers: Vec<ProviderConfig>,
+    pub telemetry: TelemetryConfig,
+    pub mcp: McpConfig,
+}
+
+/// Crash reporting. Read once at launch (see [`crash_reports_enabled`]), so
+/// a change takes effect after a restart.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// Send crash reports and app-health sessions to the Koharu developers
+    /// (Sentry). Only official builds carry a Sentry DSN.
+    pub crash_reports: bool,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            crash_reports: true,
+        }
+    }
+}
+
+/// The MCP server at `/mcp`, through which AI assistants can drive Koharu.
+/// Checked per request, so a change applies immediately.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct McpConfig {
+    pub enabled: bool,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Engine selection for each pipeline stage.
@@ -176,6 +210,22 @@ pub fn load() -> Result<AppConfig> {
     Ok(config)
 }
 
+/// Whether crash reporting is enabled, read straight from `config.toml` so it
+/// can run before anything else: no keyring access and no writes. Missing
+/// or unreadable settings count as enabled (the default).
+pub fn crash_reports_enabled() -> bool {
+    let content = config_path()
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok());
+    crash_reports_enabled_in(content.as_deref())
+}
+
+fn crash_reports_enabled_in(config_toml: Option<&str>) -> bool {
+    config_toml
+        .and_then(|content| toml::from_str::<AppConfig>(content).ok())
+        .is_none_or(|config| config.telemetry.crash_reports)
+}
+
 pub fn save(config: &AppConfig) -> Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -255,6 +305,12 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
             });
         }
         config.providers = new_providers;
+    }
+    if let Some(v) = patch.telemetry.and_then(|t| t.crash_reports) {
+        config.telemetry.crash_reports = v;
+    }
+    if let Some(v) = patch.mcp.and_then(|m| m.enabled) {
+        config.mcp.enabled = v;
     }
 
     validate_pipeline_config(config);
@@ -463,5 +519,50 @@ mod tests {
         );
 
         assert_eq!(config.pipeline.renderer, PipelineConfig::default().renderer);
+    }
+
+    #[test]
+    fn old_config_defaults_crash_reports_and_mcp_to_enabled() {
+        let config: AppConfig = toml::from_str("[data]\npath = \"/tmp/test\"\n").unwrap();
+        assert!(config.telemetry.crash_reports);
+        assert!(config.mcp.enabled);
+    }
+
+    #[test]
+    fn apply_patch_toggles_crash_reports_and_mcp() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                telemetry: Some(koharu_core::TelemetryConfigPatch {
+                    crash_reports: Some(false),
+                }),
+                mcp: Some(koharu_core::McpConfigPatch {
+                    enabled: Some(false),
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(!config.telemetry.crash_reports);
+        assert!(!config.mcp.enabled);
+
+        // Absent fields leave the current value alone.
+        apply_patch(&mut config, ConfigPatch::default());
+        assert!(!config.telemetry.crash_reports);
+        assert!(!config.mcp.enabled);
+    }
+
+    #[test]
+    fn crash_reports_setting_is_read_from_config_toml() {
+        assert!(crash_reports_enabled_in(None));
+        assert!(crash_reports_enabled_in(Some("")));
+        assert!(crash_reports_enabled_in(Some("not toml [")));
+        assert!(!crash_reports_enabled_in(Some(
+            "[telemetry]\ncrash_reports = false\n"
+        )));
+
+        let saved = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        assert!(saved.contains("crash_reports = true"), "{saved}");
+        assert!(crash_reports_enabled_in(Some(&saved)));
     }
 }

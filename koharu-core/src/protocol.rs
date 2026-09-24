@@ -204,6 +204,22 @@ pub struct ConfigPatch {
     /// are interpreted as "leave the existing secret alone".
     #[serde(default)]
     pub providers: Option<Vec<ProviderPatch>>,
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfigPatch>,
+    #[serde(default)]
+    pub mcp: Option<McpConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryConfigPatch {
+    pub crash_reports: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfigPatch {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]

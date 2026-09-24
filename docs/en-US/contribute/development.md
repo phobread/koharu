@@ -93,6 +93,16 @@ bun cargo test -p koharu-ml --features=metal
 
 See [Acceleration and Runtime](../explanation/acceleration-and-runtime.md) for details on how backends are selected.
 
+## Bumping Native Runtime Versions
+
+Koharu downloads native runtimes on first launch (llama.cpp, ZLUDA, NVIDIA CUDA wheels) and refuses any archive whose SHA-256 isn't pinned in `koharu-runtime/checksums.txt`. After changing `LLAMA_CPP_TAG` in `.cargo/config.toml`, `RELEASE_TAG` in `koharu-runtime/src/zluda.rs`, or a wheel version in `koharu-runtime/src/cuda.rs`, regenerate the list and commit it:
+
+```bash
+GITHUB_TOKEN=<token> bun scripts/runtime-checksums.ts
+```
+
+`cargo test -p koharu-runtime` fails while a download URL is missing from the list, and the `Runtime checksums` workflow fails if the list no longer matches upstream.
+
 ## Docs
 
 Docs live under `docs/en-US/`, `docs/ja-JP/`, `docs/zh-CN/`, and `docs/pt-BR/`. Build each locale you touched:

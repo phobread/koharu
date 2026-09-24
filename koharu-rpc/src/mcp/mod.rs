@@ -14,7 +14,10 @@
 
 use std::sync::Arc;
 
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use camino::Utf8PathBuf;
 use koharu_app::App;
 use koharu_core::{NodeId, Op, PageId, ReadingOrder};
@@ -223,7 +226,8 @@ impl ServerHandler for KoharuServer {
 // Axum mount
 // ---------------------------------------------------------------------------
 
-/// Mount the MCP endpoint at `/mcp` on `router`.
+/// Mount the MCP endpoint at `/mcp` on `router`. Requests are refused while
+/// Settings → Privacy → "Allow AI tools" (`config.mcp.enabled`) is off.
 pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     let manager = Arc::new(LocalSessionManager::default());
     let factory = {
@@ -232,5 +236,24 @@ pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     };
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
-    router.nest_service("/mcp", service)
+    let mcp = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(state, require_enabled));
+    router.merge(mcp)
+}
+
+/// Checked per request so turning MCP off applies immediately. Before the
+/// app is ready the config isn't loaded yet; tools answer "bootstrapping"
+/// then anyway.
+async fn require_enabled(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if let Some(app) = state.app()
+        && !app.config.load().mcp.enabled
+    {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "the MCP server is turned off in Koharu's settings",
+        )
+        .into_response();
+    }
+    next.run(request).await
 }

@@ -15,6 +15,7 @@ use reqwest::header::{CONTENT_LENGTH, RANGE};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
+use crate::checksums;
 use crate::runtime::{RuntimeHttpClient, RuntimeHttpConfig};
 
 /// 10 MiB per ranged GET — same size hf-hub's `.high()` mode uses. Short enough
@@ -135,10 +136,34 @@ impl Downloads {
     }
 
     /// Download a file to the downloads cache, returning the cached path.
+    ///
+    /// The file must match the SHA-256 pinned for `url` in `checksums.txt`
+    /// (see [`crate::checksums`]). A cached copy that doesn't match is
+    /// discarded and downloaded again; a fresh download that doesn't match is
+    /// deleted and rejected.
     pub(crate) async fn cached_download(&self, url: &str, file_name: &str) -> Result<PathBuf> {
+        let expected = checksums::expected_sha256(url)?;
+        self.download_verified(url, file_name, expected).await
+    }
+
+    /// [`Self::cached_download`] against an explicit SHA-256.
+    async fn download_verified(
+        &self,
+        url: &str,
+        file_name: &str,
+        expected: &str,
+    ) -> Result<PathBuf> {
         let destination = self.downloads_root.join(file_name);
         if destination.exists() {
-            return Ok(destination);
+            match verify_file(&destination, expected).await {
+                Ok(()) => return Ok(destination),
+                Err(error) => {
+                    tracing::warn!("discarding cached download: {error:#}");
+                    tokio::fs::remove_file(&destination)
+                        .await
+                        .with_context(|| format!("failed to remove `{}`", destination.display()))?;
+                }
+            }
         }
 
         if let Some(parent) = destination.parent() {
@@ -148,10 +173,15 @@ impl Downloads {
         }
 
         let reporter = self.begin(file_name);
-        if let Err(error) = self
+        let result = match self
             .ranged_download(url, &destination, &reporter, None)
             .await
         {
+            Ok(()) => verify_file(&destination, expected).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            tokio::fs::remove_file(&destination).await.ok();
             reporter.fail(&error);
             return Err(error);
         }
@@ -358,6 +388,16 @@ impl TransferReporter {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// [`checksums::verify_file`] off the async runtime; archives can be hundreds
+/// of MB.
+async fn verify_file(path: &Path, expected: &str) -> Result<()> {
+    let path = path.to_path_buf();
+    let expected = expected.to_owned();
+    tokio::task::spawn_blocking(move || checksums::verify_file(&path, &expected))
+        .await
+        .context("checksum task panicked")?
+}
+
 fn part_path(destination: &Path) -> Result<PathBuf> {
     let file_name = destination.file_name().ok_or_else(|| {
         anyhow::anyhow!(
@@ -372,11 +412,126 @@ fn part_path(destination: &Path) -> Result<PathBuf> {
 mod tests {
     use std::path::Path;
 
-    use super::part_path;
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    const BODY: &[u8] = b"koharu runtime archive";
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// Serves `body` for any path, with the HEAD + single-range GET subset
+    /// that `ranged_download` uses. Returns the base URL.
+    async fn serve(body: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let mut len = 0;
+                    while !buf[..len].windows(4).any(|w| w == b"\r\n\r\n") {
+                        let n = socket.read(&mut buf[len..]).await.unwrap();
+                        if n == 0 {
+                            return;
+                        }
+                        len += n;
+                    }
+                    let request = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+                    let range = request.lines().find_map(|line| {
+                        let (start, stop) = line.strip_prefix("range: bytes=")?.split_once('-')?;
+                        Some((
+                            start.parse::<usize>().ok()?,
+                            stop.trim().parse::<usize>().ok()?,
+                        ))
+                    });
+                    let (status, bytes) = match range {
+                        Some((start, stop)) => ("206 Partial Content", &body[start..=stop]),
+                        None => ("200 OK", body),
+                    };
+                    let header = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    socket.write_all(header.as_bytes()).await.unwrap();
+                    if !request.starts_with("head") {
+                        socket.write_all(bytes).await.unwrap();
+                    }
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn downloads(root: &Path) -> Downloads {
+        Downloads::new(
+            root.join("downloads"),
+            root.join("huggingface"),
+            &RuntimeHttpConfig::default(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn partial_download_path_appends_suffix() {
         let part = part_path(Path::new("/tmp/models/config.json")).unwrap();
         assert_eq!(part, Path::new("/tmp/models/config.json.part"));
+    }
+
+    #[tokio::test]
+    async fn verified_download_accepts_matching_file() {
+        let url = format!("{}/runtime.zip", serve(BODY).await);
+        let root = tempfile::tempdir().unwrap();
+        let path = downloads(root.path())
+            .download_verified(&url, "runtime.zip", &sha256_hex(BODY))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), BODY);
+    }
+
+    #[tokio::test]
+    async fn verified_download_rejects_and_removes_tampered_file() {
+        let url = format!("{}/runtime.zip", serve(BODY).await);
+        let root = tempfile::tempdir().unwrap();
+        let err = downloads(root.path())
+            .download_verified(&url, "runtime.zip", &sha256_hex(b"the genuine archive"))
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("checksum mismatch"), "{err:#}");
+        assert!(!root.path().join("downloads/runtime.zip").exists());
+    }
+
+    #[tokio::test]
+    async fn tampered_cache_entry_is_downloaded_again() {
+        let url = format!("{}/runtime.zip", serve(BODY).await);
+        let root = tempfile::tempdir().unwrap();
+        let cached = root.path().join("downloads/runtime.zip");
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, b"tampered").unwrap();
+
+        let path = downloads(root.path())
+            .download_verified(&url, "runtime.zip", &sha256_hex(BODY))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), BODY);
+    }
+
+    #[tokio::test]
+    async fn unpinned_url_is_refused_before_downloading() {
+        let root = tempfile::tempdir().unwrap();
+        let err = downloads(root.path())
+            .cached_download("https://example.com/unpinned.zip", "unpinned.zip")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no pinned SHA-256"), "{err:#}");
+        assert!(!root.path().join("downloads/unpinned.zip").exists());
     }
 }

@@ -22,6 +22,7 @@ import {
   LogInIcon,
   LogOutIcon,
   SparklesIcon,
+  ShieldIcon,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -54,12 +55,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { useUpdater, type UpdaterStatus } from '@/components/Updater'
 import {
   getCatalog as getLlmCatalog,
   getConfig,
   getEngineCatalog,
   getGetCatalogQueryKey as getGetLlmCatalogQueryKey,
+  getGetConfigQueryKey,
   getMeta,
   patchConfig,
   deleteCodexSession,
@@ -76,6 +79,7 @@ import type {
   ProviderConfig,
 } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
+import { applyCrashReportingSetting } from '@/lib/crashReporting'
 import { supportedLanguages } from '@/lib/i18n'
 import {
   areShortcutsEqual,
@@ -124,6 +128,12 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       apiKey: p.api_key ?? null,
     }))
   }
+  if (cfg.telemetry) {
+    patch.telemetry = { crashReports: cfg.telemetry.crash_reports }
+  }
+  if (cfg.mcp) {
+    patch.mcp = { enabled: cfg.mcp.enabled }
+  }
   return patch
 }
 
@@ -140,6 +150,7 @@ const TABS = [
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
   { id: 'keybinds', icon: KeyboardIcon, labelKey: 'settings.keybinds' },
   { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.runtime' },
+  { id: 'privacy', icon: ShieldIcon, labelKey: 'settings.privacy' },
   { id: 'about', icon: InfoIcon, labelKey: 'settings.about' },
 ] as const
 
@@ -424,6 +435,19 @@ export function SettingsDialog({
                     setStorageSettingsError(null)
                   }}
                   onApply={() => void handleApplyStorageSettings()}
+                />
+              )}
+              {tab === 'privacy' && appConfig && (
+                <PrivacyPane
+                  config={appConfig}
+                  onChange={(next) => {
+                    setAppConfig(next)
+                    void persistConfig(next).then((saved) => {
+                      if (!saved) return
+                      applyCrashReportingSetting(saved.telemetry?.crash_reports ?? true)
+                      queryClient.invalidateQueries({ queryKey: getGetConfigQueryKey() })
+                    })
+                  }}
                 />
               )}
               {tab === 'keybinds' && <KeybindsPane />}
@@ -1260,6 +1284,67 @@ function StoragePane({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+// ── Privacy ───────────────────────────────────────────────────────
+
+function PrivacyPane({
+  config,
+  onChange,
+}: {
+  config: AppConfig
+  onChange: (next: AppConfig) => void
+}) {
+  const { t } = useTranslation()
+  const crashReports = config.telemetry?.crash_reports ?? true
+  const mcpEnabled = config.mcp?.enabled ?? true
+
+  return (
+    <div className='space-y-8'>
+      <Section
+        title={t('settings.crashReports')}
+        description={t('settings.crashReportsDescription')}
+      >
+        <ToggleRow
+          id='settings-crash-reports'
+          label={t('settings.crashReportsToggle')}
+          checked={crashReports}
+          onCheckedChange={(v) =>
+            onChange({ ...config, telemetry: { ...config.telemetry, crash_reports: v } })
+          }
+        />
+      </Section>
+      <Section title={t('settings.mcp')} description={t('settings.mcpDescription')}>
+        <ToggleRow
+          id='settings-mcp'
+          label={t('settings.mcpToggle')}
+          checked={mcpEnabled}
+          onCheckedChange={(v) => onChange({ ...config, mcp: { ...config.mcp, enabled: v } })}
+        />
+      </Section>
+    </div>
+  )
+}
+
+function ToggleRow({
+  id,
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  id: string
+  label: string
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className='flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5'>
+      <Label htmlFor={id} className='text-sm'>
+        {label}
+      </Label>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   )
 }
 

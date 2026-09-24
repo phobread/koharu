@@ -56,12 +56,6 @@ type MenuItem = {
   testId?: string
 }
 
-type MenuSection = {
-  label: string
-  items: MenuItem[]
-  triggerTestId?: string
-}
-
 export function MenuBar() {
   const { t } = useTranslation()
   const [settingsOpen, setSettingsOpen] = useState(false)

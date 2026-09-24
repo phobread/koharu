@@ -304,7 +304,7 @@ impl AiManager {
 
 fn check_cancelled(cancel: &std::sync::atomic::AtomicBool) -> Result<()> {
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-        bail!("cancelled");
+        return Err(crate::Cancelled.into());
     }
     Ok(())
 }

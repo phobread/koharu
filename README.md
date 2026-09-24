@@ -24,6 +24,7 @@ Under the hood, Koharu uses [candle](https://github.com/huggingface/candle) and 
 
 > [!NOTE]
 > Koharu runs its vision models and LLMs **locally** on your machine to keep your data private and secure.
+> Official releases send crash reports to help fix bugs; you can turn this off in **Settings → Privacy**.
 
 ---
 

@@ -6,6 +6,7 @@ import { useEffect, type ReactNode } from 'react'
 import { I18nextProvider } from 'react-i18next'
 
 import ClientOnly from '@/components/ClientOnly'
+import { CrashReporting } from '@/components/CrashReporting'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { UpdaterProvider } from '@/components/Updater'
 import { connectEvents } from '@/lib/events'
@@ -28,6 +29,7 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <CrashReporting />
       <ThemeProvider attribute='class' defaultTheme='system' enableSystem>
         <ClientOnly>
           <I18nextProvider i18n={i18n}>
