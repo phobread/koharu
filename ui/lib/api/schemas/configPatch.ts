@@ -5,8 +5,10 @@
  */
 import type { DataConfigPatch } from './dataConfigPatch'
 import type { HttpConfigPatch } from './httpConfigPatch'
+import type { McpConfigPatch } from './mcpConfigPatch'
 import type { PipelineConfigPatch } from './pipelineConfigPatch'
 import type { ProviderPatch } from './providerPatch'
+import type { TelemetryConfigPatch } from './telemetryConfigPatch'
 
 /**
  * Sparse patch for `koharu_app::AppConfig`. Missing fields mean "leave
@@ -16,6 +18,7 @@ list — we do not merge by id because ordering is meaningful.
 export interface ConfigPatch {
   data?: null | DataConfigPatch
   http?: null | HttpConfigPatch
+  mcp?: null | McpConfigPatch
   pipeline?: null | PipelineConfigPatch
   /**
      * If present, replaces the entire list. Api_key values of `"[REDACTED]"`
@@ -23,4 +26,5 @@ export interface ConfigPatch {
      * @nullable
      */
   providers?: ProviderPatch[] | null
+  telemetry?: null | TelemetryConfigPatch
 }

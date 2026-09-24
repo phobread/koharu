@@ -1069,6 +1069,16 @@
               "read_timeout": 300
             }
           },
+          "mcp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpConfig"
+              }
+            ],
+            "default": {
+              "enabled": true
+            }
+          },
           "pipeline": {
             "oneOf": [
               {
@@ -1092,6 +1102,16 @@
               "$ref": "#/components/schemas/ProviderConfig"
             },
             "default": []
+          },
+          "telemetry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TelemetryConfig"
+              }
+            ],
+            "default": {
+              "crash_reports": true
+            }
           }
         }
       },
@@ -1405,6 +1425,16 @@
               }
             ]
           },
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpConfigPatch"
+              }
+            ]
+          },
           "pipeline": {
             "oneOf": [
               {
@@ -1421,6 +1451,16 @@
               "$ref": "#/components/schemas/ProviderPatch"
             },
             "description": "If present, replaces the entire list. Api_key values of `\"[REDACTED]\"`\nare interpreted as \"leave the existing secret alone\"."
+          },
+          "telemetry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TelemetryConfigPatch"
+              }
+            ]
           }
         }
       },
@@ -2209,6 +2249,24 @@
       "MaskRole": {
         "type": "string",
         "enum": ["brushInpaint", "segment", "bubble"]
+      },
+      "McpConfig": {
+        "type": "object",
+        "description": "The MCP server at `/mcp`, through which AI assistants can drive Koharu.\nChecked per request, so a change applies immediately.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "McpConfigPatch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": ["boolean", "null"]
+          }
+        }
       },
       "MetaInfo": {
         "type": "object",
@@ -3110,6 +3168,25 @@
         "properties": {
           "operationId": {
             "type": "string"
+          }
+        }
+      },
+      "TelemetryConfig": {
+        "type": "object",
+        "description": "Crash reporting. Read once at launch (see [`crash_reports_enabled`]), so\na change takes effect after a restart.",
+        "properties": {
+          "crash_reports": {
+            "type": "boolean",
+            "description": "Send crash reports and app-health sessions to the Koharu developers\n(Sentry). Only official builds carry a Sentry DSN.",
+            "default": true
+          }
+        }
+      },
+      "TelemetryConfigPatch": {
+        "type": "object",
+        "properties": {
+          "crashReports": {
+            "type": ["boolean", "null"]
           }
         }
       },

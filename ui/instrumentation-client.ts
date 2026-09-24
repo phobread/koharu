@@ -1,9 +1,5 @@
 import * as Sentry from '@sentry/nextjs'
 
-Sentry.init({
-  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  sendDefaultPii: true,
-  sampleRate: 0.1,
-})
-
+// Sentry is initialised by `applyCrashReportingSetting` (lib/crashReporting.ts)
+// once the user's crash-report setting has loaded; until then this is a no-op.
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart
