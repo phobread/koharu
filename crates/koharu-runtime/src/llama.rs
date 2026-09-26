@@ -199,6 +199,10 @@ impl LlamaDistribution {
     }
 }
 
+fn asset_url(asset: &str) -> String {
+    format!("{RELEASE_BASE_URL}/{LLAMA_CPP_TAG}/{asset}")
+}
+
 pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
     LlamaDistribution::detect(runtime).is_ok()
 }
@@ -232,7 +236,7 @@ pub(crate) async fn ensure_ready(runtime: &Runtime) -> Result<()> {
         install.reset()?;
 
         for asset in &distribution.assets() {
-            let url = format!("{RELEASE_BASE_URL}/{LLAMA_CPP_TAG}/{asset}");
+            let url = asset_url(asset);
             let archive = runtime
                 .downloads()
                 .cached_download(&url, asset)
@@ -289,6 +293,21 @@ mod tests {
 
     fn touch(path: &Path) {
         fs::write(path, b"ok").unwrap();
+    }
+
+    #[test]
+    fn every_release_asset_has_a_pinned_checksum() {
+        for distribution in [
+            LlamaDistribution::WindowsCuda13X64,
+            LlamaDistribution::WindowsVulkanX64,
+            LlamaDistribution::LinuxVulkanX64,
+            LlamaDistribution::LinuxVulkanArm64,
+            LlamaDistribution::MacosArm64,
+        ] {
+            for asset in distribution.assets() {
+                crate::checksums::expected_sha256(&asset_url(&asset)).unwrap();
+            }
+        }
     }
 
     #[test]

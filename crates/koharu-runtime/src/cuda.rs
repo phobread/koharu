@@ -447,6 +447,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_wheel_has_pinned_checksums_for_supported_platforms() {
+        // Mirrors `platform_tags()` for each supported OS; `select_wheel` picks
+        // a PyPI file matching one of these, so one must be pinned.
+        let platforms: &[&[&str]] = &[
+            &["win_amd64"],
+            &["manylinux_2_27_x86_64", "manylinux_2_17_x86_64"],
+        ];
+        for wheel in WHEELS {
+            let (distribution, version) = wheel.package.split_once('/').unwrap();
+            let prefix = format!("{}-{version}-", distribution.replace('-', "_"));
+            for tags in platforms {
+                let pinned = crate::checksums::pinned_urls().any(|url| {
+                    let filename = url.rsplit('/').next().unwrap_or_default();
+                    filename.starts_with(&prefix) && tags.iter().any(|tag| filename.contains(tag))
+                });
+                assert!(pinned, "no pinned wheel for {} on {tags:?}", wheel.package);
+            }
+        }
+    }
+
+    #[test]
     fn source_id_includes_platform() {
         let id = source_id().unwrap();
         assert!(id.contains("cuda"));

@@ -174,6 +174,34 @@ mod tests {
     use super::*;
     use crate::ComputePolicy;
 
+    /// Both archives go through `Downloads::cached_download`, which refuses
+    /// any URL without a pinned SHA-256. These are fork-only downloads the
+    /// upstream checksum list never covered, so pin them explicitly here: if a
+    /// regenerated `checksums.txt` ever drops them, this fails instead of
+    /// Korean OCR breaking on the next fresh install.
+    #[test]
+    fn korean_ocr_downloads_have_pinned_checksums() {
+        crate::checksums::expected_sha256(ORT_WHEEL_URL).unwrap();
+        crate::checksums::expected_sha256(MODEL_ARCHIVE_URL).unwrap();
+    }
+
+    /// End-to-end: a fresh install fetches both archives through the verified,
+    /// fail-closed download path and extracts them. Network; run with
+    /// `cargo test -p koharu-runtime -- --ignored fresh_install`.
+    #[tokio::test]
+    #[ignore = "downloads ~27 MB (onnxruntime wheel + Korean model) from PyPI and Baidu BOS"]
+    async fn fresh_install_downloads_verified_assets() {
+        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            return;
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::new(tempdir.path(), ComputePolicy::CpuOnly).unwrap();
+        let assets = ensure_assets(&runtime).await.unwrap();
+        assert!(assets.runtime_library.is_file());
+        assert!(assets.model.is_file());
+        assert!(assets.metadata.is_file());
+    }
+
     #[test]
     fn assets_live_outside_the_huggingface_cache() {
         let tempdir = tempfile::tempdir().unwrap();

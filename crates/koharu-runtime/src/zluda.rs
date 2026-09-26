@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 const RELEASE_BASE_URL: &str = "https://github.com/vosen/ZLUDA/releases/download";
 #[cfg(any(target_os = "windows", test))]
 const RELEASE_TAG: &str = "v6-preview.77";
@@ -43,9 +43,7 @@ mod platform {
     use crate::install::InstallState;
     use crate::loader::{add_runtime_search_path, preload_library};
 
-    use super::{
-        RELEASE_BASE_URL, RELEASE_TAG, ZLUDA_ACTIVE, ZLUDA_ASSET_NAME, ZLUDA_DLLS, source_id,
-    };
+    use super::{RELEASE_TAG, ZLUDA_ACTIVE, ZLUDA_ASSET_NAME, ZLUDA_DLLS, asset_url, source_id};
 
     const HIP_ROOT_CANDIDATES: &[&str] = &[
         r"C:\hip_sdk",
@@ -111,7 +109,7 @@ mod platform {
 
         install.reset()?;
 
-        let url = format!("{RELEASE_BASE_URL}/{RELEASE_TAG}/{ZLUDA_ASSET_NAME}");
+        let url = asset_url();
         let archive = runtime
             .downloads()
             .cached_download(&url, ZLUDA_ASSET_NAME)
@@ -173,6 +171,11 @@ mod platform {
 pub(crate) use platform::{package_enabled, package_prepare, package_present};
 
 #[cfg(any(target_os = "windows", test))]
+fn asset_url() -> String {
+    format!("{RELEASE_BASE_URL}/{RELEASE_TAG}/{ZLUDA_ASSET_NAME}")
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn source_id() -> String {
     format!("zluda;tag={RELEASE_TAG};asset={ZLUDA_ASSET_NAME};extract={ZLUDA_EXTRACT_REVISION}")
 }
@@ -189,6 +192,11 @@ crate::declare_native_package!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_asset_has_a_pinned_checksum() {
+        crate::checksums::expected_sha256(&asset_url()).unwrap();
+    }
 
     #[test]
     fn source_id_mentions_release_asset() {

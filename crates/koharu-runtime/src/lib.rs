@@ -1,4 +1,5 @@
 mod archive;
+mod checksums;
 mod cuda;
 pub mod downloads;
 mod install;

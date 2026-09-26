@@ -4457,6 +4457,7 @@ dependencies = [
  "reqwest-middleware",
  "reqwest-retry",
  "serde",
+ "sha2",
  "tar",
  "tempfile",
  "tokio",
