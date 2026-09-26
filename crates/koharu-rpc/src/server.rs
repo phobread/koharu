@@ -10,32 +10,39 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
 
 use crate::AppState;
 use crate::api;
+use crate::guard::RequestGuard;
 
 /// Function that maps a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Build the API router + mount MCP at `/mcp`.
+/// Build the API router + mount MCP at `/mcp`, behind the request guard (see
+/// [`crate::guard`]).
 ///
 /// Deliberately NO CORS layer: every legitimate client is same-origin (the
 /// Tauri build serves the UI from this server; `next dev` proxies /api/v1
-/// server-side) or a non-browser tool that ignores CORS. Advertising
-/// permissive CORS only pre-approved arbitrary websites to read and mutate
-/// the local, unauthenticated API from the user's browser.
-pub fn router_for(app: AppState) -> Router {
-    let base = api::router(app.clone());
-    crate::mcp::mount(base, app)
+/// server-side) or a non-browser tool that ignores CORS. Instead of advertising
+/// permissive CORS — which pre-approved arbitrary websites to read and mutate
+/// the local, unauthenticated API — the guard rejects cross-origin and
+/// DNS-rebinding requests while letting non-browser clients through.
+pub fn router_for(app: AppState, guard: RequestGuard) -> Router {
+    let base = crate::mcp::mount(api::router(app.clone()), app);
+    base.layer(middleware::from_fn_with_state(
+        guard,
+        crate::guard::middleware,
+    ))
 }
 
 /// Same as `router_for` but installs `resolver` as a fallback, serving
 /// embedded frontend assets for unmatched GET requests.
-pub fn router_with_assets(app: AppState, resolver: AssetResolver) -> Router {
-    router_for(app).fallback(move |req: Request<Body>| {
+pub fn router_with_assets(app: AppState, guard: RequestGuard, resolver: AssetResolver) -> Router {
+    router_for(app, guard).fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
     })
@@ -59,7 +66,8 @@ async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
 
 /// Serve HTTP on an already-bound listener. Tauri-friendly.
 pub async fn serve_with_listener(listener: TcpListener, app: AppState) -> Result<()> {
-    axum::serve(listener, router_for(app)).await?;
+    let guard = RequestGuard::for_bind_addr(listener.local_addr()?.ip());
+    axum::serve(listener, router_for(app, guard)).await?;
     Ok(())
 }
 
@@ -70,6 +78,7 @@ pub async fn serve_with_listener_and_assets(
     app: AppState,
     resolver: AssetResolver,
 ) -> Result<()> {
-    axum::serve(listener, router_with_assets(app, resolver)).await?;
+    let guard = RequestGuard::for_bind_addr(listener.local_addr()?.ip());
+    axum::serve(listener, router_with_assets(app, guard, resolver)).await?;
     Ok(())
 }
