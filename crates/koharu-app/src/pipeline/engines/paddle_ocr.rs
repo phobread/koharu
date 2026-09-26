@@ -14,7 +14,7 @@ use koharu_core::{NodeDataPatch, NodePatch, Op, TextDataPatch};
 use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOcrVlTask};
 use koharu_ml::{
     TextRegion,
-    comic_text_detector::crop_text_block_deskewed,
+    comic_text_detector::{crop_text_block_deskewed, crop_text_block_exact},
     korean_ocr::{KoreanOcr, contains_lexical_hangul, repair_hangul},
 };
 use koharu_runtime::RuntimeManager;
@@ -24,11 +24,17 @@ use crate::app::shared_llama_backend;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    load_source_image, single_line_ocr_text, text_node_to_region, text_nodes,
+    is_degenerate_ocr_text, load_source_image, single_line_ocr_text, text_node_to_region,
+    text_nodes,
 };
 
 const MAX_NEW_TOKENS: usize = 256;
-const KOREAN_REPAIR_MIN_CONFIDENCE: f32 = 0.90;
+// Per-line trust bar for `repair_hangul`. On BadEnd 017 the dedicated
+// recognizer's *correct* outlined-Hangul lines sit at ~0.77-0.99 while its
+// clearly-wrong lines scored <=0.48, so 0.77 admits the good lines (incl.
+// block 3's `변태`@0.771) and rejects the bad ones; alignment + never-indel in
+// `repair_hangul` guards the rest.
+const KOREAN_REPAIR_MIN_CONFIDENCE: f32 = 0.77;
 
 pub struct Model {
     paddle: Mutex<PaddleOcrVl>,
@@ -140,6 +146,13 @@ impl Engine for Model {
                     }
                 }
             }
+            // Emoji-only output (no letters) means the recognizer hallucinated on
+            // a glyph it could not read; blank it rather than pass garbage to the
+            // translator.
+            if is_degenerate_ocr_text(&text) {
+                tracing::info!(discarded = %text, "blanking degenerate emoji-only OCR output");
+                text.clear();
+            }
             ops.push(Op::UpdateNode {
                 page: ctx.page,
                 id: *node_id,
@@ -172,11 +185,12 @@ fn korean_verification_crop(image: &DynamicImage, region: &TextRegion) -> Dynami
     tight.y -= pad;
     tight.width += pad * 2.0;
     tight.height += pad * 2.0;
-    // The verifier's line projection needs the actual detector rectangle,
-    // not CTD's broader line-polygon union and OCR margin.
-    tight.detector = None;
-    tight.line_polygons = None;
-    crop_text_block_deskewed(image, &tight)
+    // The verifier's line projection needs the actual detector rectangle with
+    // only the 3% margin added above. `crop_text_block_exact` adds no further
+    // OCR margin: the generic margin is proportional to the whole block and is
+    // large enough to pull the bright speech-balloon border into the crop,
+    // where `split_text_lines` mistakes it for glyph rows.
+    crop_text_block_exact(image, &tight)
 }
 
 inventory::submit! {

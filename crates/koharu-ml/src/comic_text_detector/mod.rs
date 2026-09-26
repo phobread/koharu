@@ -16,8 +16,8 @@ use crate::{device, loading, types::TextRegion};
 
 pub use postprocess::{
     ComicTextDetection, Quad, RotatedRect, crop_text_block_bbox, crop_text_block_deskewed,
-    estimate_block_rotation, expanded_text_block_crop_bounds, extract_text_block_regions,
-    refine_segmentation_mask,
+    crop_text_block_exact, estimate_block_rotation, expanded_text_block_crop_bounds,
+    extract_text_block_regions, refine_segmentation_mask,
 };
 
 const HF_REPO: &str = "mayocream/comic-text-detector";

@@ -53,6 +53,11 @@ test-results/
 .recovery/
 .maintenance/
 
+# Local-only: agent scratch/secrets and OCR investigation artifacts — never publish.
+.claude/
+exports/
+.tmp-ocr017*/
+
 # Zensical
 site/
 

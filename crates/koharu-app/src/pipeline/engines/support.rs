@@ -285,6 +285,18 @@ pub fn single_line_ocr_text(text: &str) -> String {
     out
 }
 
+/// True when OCR output for a text region carries an emoji/pictograph but no
+/// actual letters — the signature of PaddleOCR-VL hallucinating (e.g. `🌞.💚`)
+/// on a glyph it cannot read. Such a block is blanked rather than fed
+/// downstream to the translator. Real hearts (`♡` U+2661, `♥` U+2665) are BMP
+/// symbols below the emoji planes, so decorative bubbles are untouched, and any
+/// block that still contains a letter is kept as-is.
+pub fn is_degenerate_ocr_text(text: &str) -> bool {
+    let has_emoji = text.chars().any(|c| c as u32 >= 0x1_F000);
+    let has_letter = text.chars().any(char::is_alphabetic);
+    has_emoji && !has_letter
+}
+
 /// Hangul: Korean writes with spaces between words.
 fn is_hangul(c: char) -> bool {
     matches!(c as u32,
@@ -578,6 +590,22 @@ mod tests {
         assert_eq!(single_line_ocr_text("  one line  "), "one line");
         assert_eq!(single_line_ocr_text("a\r\n\r\nb"), "a b");
         assert_eq!(single_line_ocr_text(""), "");
+    }
+
+    #[test]
+    fn is_degenerate_ocr_text_flags_only_emoji_hallucinations() {
+        // Emoji + no letters = a hallucinated OCR failure (real BadEnd block 7).
+        assert!(is_degenerate_ocr_text("🌞.💚"));
+        assert!(is_degenerate_ocr_text("🎈"));
+        // Real text, even with a stray emoji, is kept.
+        assert!(!is_degenerate_ocr_text("안녕🌞"));
+        assert!(!is_degenerate_ocr_text("응"));
+        // BMP heart symbols the manga actually uses are not emoji.
+        assert!(!is_degenerate_ocr_text("♡"));
+        assert!(!is_degenerate_ocr_text("변태 자식이..♡"));
+        // Punctuation/empty only: ambiguous, left alone (not blanked).
+        assert!(!is_degenerate_ocr_text("..!?"));
+        assert!(!is_degenerate_ocr_text(""));
     }
 
     #[test]

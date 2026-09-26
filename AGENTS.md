@@ -10,10 +10,11 @@ Settings → Runtime → Clear cache removes only regenerable project thumbnails
 The user authorized development cleanup. Large build products and disposable
 test environments were removed after final verification. On September 15 the
 user also made the final build definitive: the old STABLE installation, frozen
-recovery executable and old shortcuts were permanently deleted. Git history,
-recovery evidence and the source snapshot remain pending separate explicit
-authorization because their deletion is irreversible. The current source tree
-and normal app data/models/fonts remain.
+recovery executable and old shortcuts were permanently deleted. The definitive
+source commit and Windows executable are publicly backed up at
+`https://github.com/phobread/koharu/releases/tag/definitive-2026-09-15`.
+Local Git history, recovery evidence and the redundant source snapshot were then
+deleted. The current source tree and normal app data/models/fonts remain.
 
 ## Definitive personal translation build (updated 2026-09-15)
 
@@ -277,9 +278,7 @@ mutex in routes/config.rs + SettingsDialog committedConfigRef/intent-queue +
 dedicated secret endpoints). The invasive failure-atomicity item is closed;
 `NITS.md` now contains only the lower-risk deferred tail. Dev tooling:
 `scripts/cdp/` has webview CDP smoke-test scripts
-(README has usage). Earlier: remote-inpaint was extracted to a standalone public
-repo, https://github.com/phobread/koharu-remote-inpaint, to propose upstream;
-the fork is back to fully-local inpainting.
+(README has usage). This fork uses fully-local inpainting only.
 Remote `upstream` = mayocream/koharu, **merged through `00966bee` (2026-07-08)** — the
 repo now uses the **`crates/` layout** (all Rust crates under `crates/`), has the
 koharu-secrets crate, and runs harfrust 0.10 / cudarc 0.19.8 / oxfmt 0.56. candle is
@@ -334,11 +333,10 @@ restored. **Keep that fallback in any future merge.**
   (~2.7 GB) present in `%LOCALAPPDATA%\Koharu\models`. Its prompt
   is a precomputed embedding compiled into the exe (`koharu-ml/src/flux2_klein/
   precomputed.rs`) — model re-downloads cannot affect it.
-- FLUX.1 Fill (12B) was trialed on a rented GPU (2026-07-14) and REJECTED for
-  bubble cleanup: generative fill invents content (objects/text) in flat masked
-  bubbles regardless of prompt/mask config. The whole remote-inpaint engine +
-  server package now lives at https://github.com/phobread/koharu-remote-inpaint
-  (including an integration patch) — it is NOT in this fork anymore.
+- FLUX.1 Fill (12B) was trialed (2026-07-14) and REJECTED for bubble cleanup:
+  generative fill invents content (objects/text) in flat masked bubbles
+  regardless of prompt/mask config. Do not revisit it. This fork does only local
+  inpainting (lama-manga / flux2-klein).
 - **Rendered-colour write-back** (scene v6): the renderer persists the text colour it
   actually painted into `TextData.rendered_text_color` (beside `rendered_font_size_px`),
   and the UI swatch prefers it over the black guess for auto blocks. Blocks rendered
@@ -377,7 +375,35 @@ restored. **Keep that fallback in any future merge.**
 Fuller history and per-project (BadEnd) status live in Claude's memory dir:
 `C:\Users\amiru\.claude\projects\D--projects-koharuFORK\memory\fork-dev-state.md`.
 
-### Claude worker orchestration
+## Claude coordination and worker orchestration
+
+### Parallel Claude coordination (user instruction, 2026-09-25)
+
+Claude may work independently in parallel on other commits, branches, or
+worktrees. Keep Claude's handoff current whenever Codex makes a change.
+
+- Read the shared coordination log before editing:
+  `D:\projects\koharuFORK\.maintenance\claude-coordination.md`.
+  Use this canonical absolute path from other worktrees too, so branch-local
+  copies do not become separate sources of coordination state.
+- Record intended scope before overlapping work; preserve other agents'
+  uncommitted edits. Use separate worktrees for concurrent implementation
+  when Git is available; do not switch another worker's checkout or overwrite
+  its changes.
+- After each coherent change, append affected files, purpose, branch/commit
+  or worktree identity when available, verification actually performed,
+  outstanding work, and integration/conflict notes. Update existing task
+  handoffs when findings or implementation invalidate them. Preserve prior
+  entries; do not overwrite the shared log with an older branch's copy.
+- If Claude has a known active communication channel, send it the update as
+  well. A written handoff is not proof that Claude has read it; distinguish
+  recorded updates from delivered/acknowledged messages. Do not launch a new
+  Claude worker just to announce a change.
+- Initial OCR evidence and review prompt are under
+  `exports/ocr-badend-017-2026-09-25/`; these are investigation artifacts,
+  not an implemented or inference-validated fix.
+
+### Bounded Claude worker use
 
 Claude Code is available as a bounded local workhorse; Codex remains the
 orchestrator and is responsible for scope, diff review, verification, and the

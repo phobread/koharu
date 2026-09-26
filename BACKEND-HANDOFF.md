@@ -21,8 +21,9 @@ uses the existing normal app-data root and OpenRouter settings.
 Build products, disposable test data, old test executables and completed
 runtime installers are removed after verification. Old executable builds and
 shortcuts were removed when the user designated the installed build as
-definitive. Git history, recovery/test evidence and the source snapshot remain
-pending separate explicit authorization. Current source and all saved user
+definitive. The definitive source commit and executable were publicly backed up
+at the GitHub release. Local Git history, recovery/test evidence and the
+redundant source snapshot were then deleted. Current source and all saved user
 projects, models, fonts and settings remain.
 
 The user wants to continue in a fresh chat and conserve usage. Read AGENTS.md,

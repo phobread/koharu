@@ -197,10 +197,46 @@ pub fn crop_text_block_deskewed(image: &DynamicImage, block: &TextRegion) -> Dyn
     // Pad the upright rect a little: rotation estimates hug the ink and OCR
     // models prefer a small margin around the glyphs.
     let pad = (block.width.min(block.height) * 0.08).clamp(2.0, 12.0);
+    warp_block_upright(image, block, pad).unwrap_or_else(|| crop_text_block_bbox(image, block))
+}
+
+/// Crop `block` out of `image` exactly as its rect describes — deskewing a
+/// rotated block, otherwise an axis-aligned crop — and adding **no** extra
+/// OCR margin. The caller owns whatever padding the crop should carry.
+///
+/// This is the tight-crop path for callers that pre-expand the rect by their
+/// own small margin (the Korean verifier) and must not also inherit the
+/// generic [`ocr_crop_margin`], which is large enough to pull the bright
+/// speech-balloon border into the crop and corrupt the verifier's row
+/// projection.
+pub fn crop_text_block_exact(image: &DynamicImage, block: &TextRegion) -> DynamicImage {
+    let angle = block.rotation_deg.unwrap_or(0.0);
+    if angle.is_finite()
+        && angle.abs() >= DESKEW_MIN_DEG
+        && let Some(warped) = warp_block_upright(image, block, 0.0)
+    {
+        return warped;
+    }
+    let [x1, y1, x2, y2] = clamp_crop_bounds(
+        image.width(),
+        image.height(),
+        block.x,
+        block.y,
+        block.x + block.width,
+        block.y + block.height,
+    );
+    image.crop_imm(x1, y1, x2.saturating_sub(x1), y2.saturating_sub(y1))
+}
+
+/// Warp the rotated `block` upright, padding the upright rect by `pad` on
+/// every side. Returns `None` only when the projection is degenerate, so the
+/// caller can fall back to an axis-aligned crop.
+fn warp_block_upright(image: &DynamicImage, block: &TextRegion, pad: f32) -> Option<DynamicImage> {
     let w = block.width + 2.0 * pad;
     let h = block.height + 2.0 * pad;
     let cx = block.x + block.width * 0.5;
     let cy = block.y + block.height * 0.5;
+    let angle = block.rotation_deg.unwrap_or(0.0);
     let (sin, cos) = angle.to_radians().sin_cos();
 
     // Corners of the padded upright rect rotated into image space
@@ -232,9 +268,7 @@ pub fn crop_text_block_deskewed(image: &DynamicImage, block: &TextRegion) -> Dyn
         ((out_w - 1) as f32, (out_h - 1) as f32),
         (0.0, (out_h - 1) as f32),
     ];
-    let Some(projection) = Projection::from_control_points(src, dst) else {
-        return crop_text_block_bbox(image, block);
-    };
+    let projection = Projection::from_control_points(src, dst)?;
 
     let mut out = RgbImage::from_pixel(out_w, out_h, Rgb([255, 255, 255]));
     warp_into(
@@ -244,7 +278,7 @@ pub fn crop_text_block_deskewed(image: &DynamicImage, block: &TextRegion) -> Dyn
         imageproc::geometric_transformations::Border::Constant(Rgb([255, 255, 255])),
         &mut out,
     );
-    DynamicImage::ImageRgb8(out)
+    Some(DynamicImage::ImageRgb8(out))
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +881,68 @@ mod tests {
         let crop = crop_text_block_bbox(&image, &block);
         assert!(crop.width() > 12);
         assert!(crop.height() > 8);
+    }
+
+    #[test]
+    fn crop_text_block_exact_adds_no_margin() {
+        let mut image = RgbImage::from_pixel(24, 24, Rgb([255, 255, 255]));
+        image.put_pixel(4, 5, Rgb([0, 0, 0]));
+        let image = DynamicImage::ImageRgb8(image);
+        // Same plain detector box the bbox path pads to 14×12 above; carrying a
+        // line polygon / detector that the caller would otherwise expand.
+        let block = TextRegion {
+            x: 4.0,
+            y: 5.0,
+            width: 10.0,
+            height: 8.0,
+            detector: Some("ctd".to_string()),
+            line_polygons: Some(vec![[[4.0, 5.0], [14.0, 5.0], [14.0, 13.0], [4.0, 13.0]]]),
+            ..Default::default()
+        };
+
+        // Exact crop is the rect itself — no OCR margin, and no expanded-bounds
+        // widening despite the ctd detector / line polygon.
+        let exact = crop_text_block_exact(&image, &block).to_rgb8();
+        assert_eq!((exact.width(), exact.height()), (10, 8));
+        // The corner glyph sits on the crop border, exactly where the rect put it.
+        assert_eq!(exact.get_pixel(0, 0).0, [0, 0, 0]);
+        // The generic crop would have padded it larger.
+        let padded = crop_text_block_bbox(&image, &block);
+        assert!(padded.width() > exact.width() && padded.height() > exact.height());
+    }
+
+    #[test]
+    fn crop_text_block_exact_deskews_without_padding() {
+        // Black stripe (80×6) rotated 20° about (60, 60) on a white page, as in
+        // the deskew test above.
+        let mut image = RgbImage::from_pixel(120, 120, Rgb([255, 255, 255]));
+        let (sin, cos) = 20.0f32.to_radians().sin_cos();
+        for t in -40..40 {
+            for d in -3..3 {
+                let x = 60.0 + cos * t as f32 - sin * d as f32;
+                let y = 60.0 + sin * t as f32 + cos * d as f32;
+                if x >= 0.0 && y >= 0.0 && (x as u32) < 120 && (y as u32) < 120 {
+                    image.put_pixel(x as u32, y as u32, Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let image = DynamicImage::ImageRgb8(image);
+        let block = TextRegion {
+            x: 22.0,
+            y: 54.0,
+            width: 76.0,
+            height: 12.0,
+            rotation_deg: Some(20.0),
+            ..Default::default()
+        };
+
+        let crop = crop_text_block_exact(&image, &block).to_rgb8();
+        // Output is exactly the rect size: deskewed, but with no extra margin
+        // (the deskew path would have padded it to 92×28).
+        assert_eq!((crop.width(), crop.height()), (76, 12));
+        // The stripe is upright across the midline.
+        let mid_y = crop.height() / 2;
+        assert!(crop.get_pixel(crop.width() / 2, mid_y)[0] < 100);
     }
 
     /// Paint `lines` parallel "text lines" of ink rotated by `deg` (clockwise,
