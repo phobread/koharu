@@ -442,6 +442,8 @@
     "appConfig": "App Config",
     "runtime": "Runtime",
     "privacy": "Privacy",
+    "flux2FlatFill": "Skip Flux on plain bubbles",
+    "flux2FlatFillDescription": "Text on a speech bubble that is one plain colour (any colour) is filled with that colour instead of being redrawn by Flux.2, which is much faster. Bubbles with shading, texture, outlines or artwork behind the text still go to Flux.2.",
     "crashReports": "Crash reports",
     "crashReportsDescription": "When Koharu hits an error or crashes, send a report to the Koharu developers (via Sentry) so it can be fixed. Reports include the error, app version, OS and recent log lines, but no personal data such as your IP address. Only official releases send reports. The desktop app applies a change after a restart.",
     "crashReportsToggle": "Send crash reports",

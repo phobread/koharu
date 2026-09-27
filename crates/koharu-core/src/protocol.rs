@@ -259,6 +259,7 @@ pub struct PipelineConfigPatch {
     pub renderer: Option<String>,
     pub flux2_strength: Option<f64>,
     pub flux2_steps: Option<u32>,
+    pub flux2_flat_fill: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]

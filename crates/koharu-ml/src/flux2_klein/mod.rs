@@ -1,3 +1,4 @@
+mod flat_fill;
 mod latents;
 mod precomputed;
 pub mod qwen;
@@ -92,6 +93,9 @@ pub struct Flux2InpaintOptions {
     pub strength: f64,
     pub max_pixels: u32,
     pub mask_padding: u8,
+    /// Fill crops whose bubbles are plainly one colour with that colour
+    /// instead of running Flux2 (see `flat_fill`). Needs bubble IDs.
+    pub flat_fill: bool,
 }
 
 impl Default for Flux2InpaintOptions {
@@ -101,6 +105,7 @@ impl Default for Flux2InpaintOptions {
             strength: 1.0,
             max_pixels: 1024 * 1024,
             mask_padding: 16,
+            flat_fill: false,
         }
     }
 }
@@ -328,7 +333,14 @@ impl Flux2Klein {
         reference_image: Option<&DynamicImage>,
         options: &Flux2InpaintOptions,
     ) -> Result<DynamicImage> {
-        self.inpaint_with_reference_and_composite_mask(image, mask, mask, reference_image, options)
+        self.inpaint_with_reference_and_composite_mask(
+            image,
+            mask,
+            mask,
+            None,
+            reference_image,
+            options,
+        )
     }
 
     /// Generate with a broad mask while compositing through a tighter one.
@@ -338,11 +350,14 @@ impl Flux2Klein {
     /// A glyph-level composite mask keeps the generated cleanup only where the
     /// original lettering actually needs replacing.
     #[instrument(level = "debug", skip_all)]
+    /// `bubble_ids` is the speech-bubble ID map (0 = no bubble); flat fill
+    /// only runs when it is given and `options.flat_fill` is on.
     pub fn inpaint_with_reference_and_composite_mask(
         &self,
         image: &DynamicImage,
         generation_mask: &DynamicImage,
         composite_mask: &DynamicImage,
+        bubble_ids: Option<&GrayImage>,
         reference_image: Option<&DynamicImage>,
         options: &Flux2InpaintOptions,
     ) -> Result<DynamicImage> {
@@ -382,6 +397,8 @@ impl Flux2Klein {
             "planned Flux2 inpaint crops"
         );
 
+        let bubble_ids =
+            bubble_ids.filter(|ids| options.flat_fill && ids.dimensions() == image.dimensions());
         let mut running_output = image.clone();
         for (crop_index, bounds) in plan.into_iter().enumerate() {
             let image_crop =
@@ -391,12 +408,37 @@ impl Flux2Klein {
             let composite_mask_crop =
                 composite_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
             let generation_started = Instant::now();
-            let generated = self.inpaint_full_frame(
-                &image_crop,
-                &generation_mask_crop,
-                reference_image,
-                options,
-            )?;
+            let flat = bubble_ids.and_then(|ids| {
+                let ids_crop =
+                    image::imageops::crop_imm(ids, bounds.x, bounds.y, bounds.width, bounds.height)
+                        .to_image();
+                match flat_fill::classify_crop(
+                    &image_crop.to_rgba8(),
+                    &generation_mask_crop.to_luma8(),
+                    &composite_mask_crop.to_luma8(),
+                    &ids_crop,
+                ) {
+                    flat_fill::CropFill::Flat(colours) => {
+                        tracing::info!(crop_index, bubbles = ?colours, "Flux2 crop filled flat");
+                        Some(DynamicImage::ImageRgb8(flat_fill::flat_crop(
+                            &colours, &ids_crop,
+                        )))
+                    }
+                    flat_fill::CropFill::Flux(reason) => {
+                        tracing::info!(crop_index, ?reason, "Flux2 crop needs generation");
+                        None
+                    }
+                }
+            });
+            let generated = match flat {
+                Some(generated) => generated,
+                None => self.inpaint_full_frame(
+                    &image_crop,
+                    &generation_mask_crop,
+                    reference_image,
+                    options,
+                )?,
+            };
             let generation_ms = generation_started.elapsed().as_millis();
             let composite_started = Instant::now();
             running_output =
@@ -423,6 +465,7 @@ impl Flux2Klein {
         options: &Flux2InpaintOptions,
     ) -> Result<DynamicImage> {
         let _cuda_cleanup = CudaTemporaryMemoryCleanup::new(&self.device);
+        let mut phases = PhaseTimer::new(&self.device);
         let (latents, packed_h, packed_w, size) = {
             let (rgb, size) = prepare_rgb_image(image, options.max_pixels);
             let resized_mask = expand_mask(
@@ -430,6 +473,7 @@ impl Flux2Klein {
                 options.mask_padding,
             );
             let image_latents = self.encode_image_latents(&rgb)?;
+            phases.mark("vae_encode")?;
             let (batch, channels, packed_h, packed_w) = image_latents.dims4()?;
             if batch != 1 || channels != 128 {
                 bail!("unexpected Flux2 latent shape {:?}", image_latents.shape());
@@ -477,6 +521,7 @@ impl Flux2Klein {
                 pack_latents(&scheduler.scale_noise(&image_latents, initial_timestep, &noise)?)?;
             let keep_mask = ((&latent_mask * -1.0)? + 1.0)?;
             drop(noise);
+            phases.mark("prepare")?;
 
             for step_idx in start_index..timesteps.len() {
                 let timestep = Tensor::from_vec(
@@ -522,12 +567,15 @@ impl Flux2Klein {
                 drop(init_latents);
                 let previous_latents = std::mem::replace(&mut latents, masked_latents);
                 drop(previous_latents);
+                phases.mark("transformer_step")?;
             }
 
             (latents, packed_h, packed_w, size)
         };
 
         let rgb = self.decode_packed_latents(latents, packed_h, packed_w)?;
+        phases.mark("vae_decode")?;
+        phases.finish(size.width, size.height, packed_h * packed_w);
         let mut output = resize_back_if_needed(rgb, size);
         if image.color().has_alpha() {
             let original_alpha = inpainting::extract_alpha(&image.to_rgba8());
@@ -566,6 +614,48 @@ impl Flux2Klein {
         let rgb = tensor_to_rgb_image(&decoded)?;
         drop(decoded);
         Ok(rgb)
+    }
+}
+
+/// Per-phase GPU time of one crop, logged at debug level. The device is only
+/// synchronized at phase boundaries while debug logging is on, so normal runs
+/// keep their asynchronous execution.
+struct PhaseTimer<'a> {
+    device: &'a Device,
+    enabled: bool,
+    last: Instant,
+    phases: Vec<(&'static str, u128)>,
+}
+
+impl<'a> PhaseTimer<'a> {
+    fn new(device: &'a Device) -> Self {
+        Self {
+            device,
+            enabled: tracing::enabled!(tracing::Level::DEBUG),
+            last: Instant::now(),
+            phases: Vec::new(),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) -> Result<()> {
+        if self.enabled {
+            self.device.synchronize()?;
+            self.phases.push((phase, self.last.elapsed().as_millis()));
+            self.last = Instant::now();
+        }
+        Ok(())
+    }
+
+    fn finish(&self, width: u32, height: u32, image_tokens: usize) {
+        if self.enabled {
+            tracing::debug!(
+                width,
+                height,
+                image_tokens,
+                phases = ?self.phases,
+                "Flux2 crop phase timings (ms)"
+            );
+        }
     }
 }
 

@@ -77,6 +77,8 @@ pub struct PipelineRunOptions {
     /// Flux.2 Klein tuning. `None` leaves the engine's built-in default in effect.
     pub flux2_strength: Option<f64>,
     pub flux2_steps: Option<u32>,
+    /// Fill plain single-colour bubbles flat instead of running Flux2.
+    pub flux2_flat_fill: Option<bool>,
     pub reading_order: Option<ReadingOrder>,
     /// Global render defaults (renderer engine only). Applied when a text node
     /// has no explicit per-node override; otherwise the renderer auto-fits the
@@ -121,6 +123,33 @@ inventory::collect!(EngineInfo);
 // Registry — lazy load + cache engine instances
 // ---------------------------------------------------------------------------
 
+/// Engines too large to share the GPU. Flux.2 Klein alone nearly fills a
+/// 6 GB card; kept resident beside the detection/OCR models, the driver falls
+/// back to system memory and every step slows 3-75x (measured 2026-09-27).
+/// Loading one of these unloads every other GPU engine, and loading any other
+/// GPU engine unloads these.
+const EXCLUSIVE_ENGINES: &[&str] = &["flux2-klein"];
+
+/// CPU-only engines: they never trigger or suffer eviction.
+const CPU_ENGINES: &[&str] = &["koharu-renderer", "llm"];
+
+/// Cached engines to unload before `requested` runs, per the residency rules
+/// above.
+fn engines_to_evict<'a>(
+    loaded: impl IntoIterator<Item = &'a str>,
+    requested: &str,
+) -> Vec<&'a str> {
+    if CPU_ENGINES.contains(&requested) {
+        return Vec::new();
+    }
+    let requested_exclusive = EXCLUSIVE_ENGINES.contains(&requested);
+    loaded
+        .into_iter()
+        .filter(|&other| other != requested && !CPU_ENGINES.contains(&other))
+        .filter(|other| requested_exclusive || EXCLUSIVE_ENGINES.contains(other))
+        .collect()
+}
+
 pub struct Registry {
     engines: RwLock<HashMap<&'static str, Arc<dyn Engine>>>,
 }
@@ -145,6 +174,9 @@ impl Registry {
         runtime: &RuntimeManager,
         cpu: bool,
     ) -> Result<Arc<dyn Engine>> {
+        if !cpu {
+            self.make_room_for(id);
+        }
         if let Some(engine) = self.engines.read().get(id).cloned() {
             return Ok(engine);
         }
@@ -161,6 +193,34 @@ impl Registry {
         let engine: Arc<dyn Engine> = Arc::from(loaded);
         self.engines.write().insert(info.id, engine.clone());
         Ok(engine)
+    }
+
+    /// Unload the engines that must not share the GPU with `id`, then return
+    /// their freed memory to the driver. An engine still in use elsewhere (a
+    /// concurrent job) is only freed once that job drops it.
+    fn make_room_for(&self, id: &str) {
+        let evicted: Vec<(&'static str, Arc<dyn Engine>)> = {
+            let mut engines = self.engines.write();
+            engines_to_evict(engines.keys().copied(), id)
+                .into_iter()
+                .filter_map(|victim| engines.remove_entry(victim))
+                .collect()
+        };
+        if evicted.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = evicted.iter().map(|(name, _)| *name).collect();
+        let started = Instant::now();
+        drop(evicted);
+        if let Err(err) = koharu_ml::release_gpu_memory() {
+            tracing::warn!("failed to release GPU memory after unloading engines: {err:#}");
+        }
+        tracing::info!(
+            engine = id,
+            unloaded = ?names,
+            elapsed_ms = started.elapsed().as_millis(),
+            "unloaded engines to free GPU memory"
+        );
     }
 
     /// Drop all cached engines (frees GPU memory).
@@ -225,4 +285,59 @@ pub fn build_order(infos: &[&EngineInfo]) -> Result<Vec<usize>> {
     let order = toposort(&g, None)
         .map_err(|c| anyhow::anyhow!("cycle at '{}'", infos[g[c.node_id()]].id))?;
     Ok(order.into_iter().map(|n| g[n]).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::engines_to_evict;
+
+    const DETECT_OCR: [&str; 5] = [
+        "comic-text-bubble-detector",
+        "comic-text-detector-seg",
+        "speech-bubble-segmentation",
+        "yuzumarker-font-detection",
+        "paddle-ocr-vl-1.6",
+    ];
+
+    fn sorted(mut ids: Vec<&str>) -> Vec<&str> {
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn exclusive_engine_unloads_every_other_gpu_engine() {
+        let loaded = DETECT_OCR
+            .iter()
+            .copied()
+            .chain(["lama-manga", "koharu-renderer", "llm"]);
+        let mut expected = DETECT_OCR.to_vec();
+        expected.push("lama-manga");
+        assert_eq!(
+            sorted(engines_to_evict(loaded, "flux2-klein")),
+            sorted(expected)
+        );
+    }
+
+    #[test]
+    fn gpu_engine_unloads_only_exclusive_engines() {
+        let loaded = ["flux2-klein", "comic-text-detector-seg", "koharu-renderer"];
+        assert_eq!(
+            engines_to_evict(loaded, "paddle-ocr-vl-1.6"),
+            vec!["flux2-klein"]
+        );
+    }
+
+    #[test]
+    fn cpu_engines_neither_trigger_nor_suffer_eviction() {
+        let loaded = ["flux2-klein", "paddle-ocr-vl-1.6", "llm"];
+        assert!(engines_to_evict(loaded, "koharu-renderer").is_empty());
+        assert!(engines_to_evict(loaded, "llm").is_empty());
+        assert!(engines_to_evict(["koharu-renderer", "llm"], "flux2-klein").is_empty());
+    }
+
+    #[test]
+    fn requested_engine_is_never_evicted() {
+        assert!(engines_to_evict(["flux2-klein"], "flux2-klein").is_empty());
+        assert!(engines_to_evict(["lama-manga"], "lama-manga").is_empty());
+    }
 }

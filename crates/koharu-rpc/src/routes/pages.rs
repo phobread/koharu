@@ -555,15 +555,20 @@ async fn put_mask(
             None => false,
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        let (flux2_strength, flux2_steps) = {
+        let (flux2_strength, flux2_steps, flux2_flat_fill) = {
             let config = app.config.load();
-            (config.pipeline.flux2_strength, config.pipeline.flux2_steps)
+            (
+                config.pipeline.flux2_strength,
+                config.pipeline.flux2_steps,
+                config.pipeline.flux2_flat_fill,
+            )
         };
         let options = PipelineRunOptions {
             region: Some(region),
             restore_source_region: Some(restore_source_region),
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
+            flux2_flat_fill: Some(flux2_flat_fill),
             ..Default::default()
         };
         let ctx = EngineCtx {

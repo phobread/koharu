@@ -151,6 +151,7 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       inpainter: cfg.pipeline.inpainter,
       renderer: cfg.pipeline.renderer,
       flux2Steps: cfg.pipeline.flux2_steps,
+      flux2FlatFill: cfg.pipeline.flux2_flat_fill,
     }
   }
   if (cfg.providers) {
@@ -1086,6 +1087,21 @@ function EnginesPane({
                     {label}
                   </Button>
                 ))}
+              </div>
+              <div className='flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5'>
+                <div className='space-y-0.5'>
+                  <Label htmlFor='settings-flux2-flat-fill' className='text-xs'>
+                    {t('settings.flux2FlatFill')}
+                  </Label>
+                  <p className='text-[11px] leading-relaxed text-muted-foreground'>
+                    {t('settings.flux2FlatFillDescription')}
+                  </p>
+                </div>
+                <Switch
+                  id='settings-flux2-flat-fill'
+                  checked={pipeline.flux2_flat_fill ?? true}
+                  onCheckedChange={(v) => onChange({ ...pipeline, flux2_flat_fill: v })}
+                />
               </div>
             </div>
           )}

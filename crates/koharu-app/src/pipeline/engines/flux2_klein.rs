@@ -89,12 +89,15 @@ impl Engine for Model {
         let options = Flux2InpaintOptions {
             num_inference_steps: ctx.options.flux2_steps.unwrap_or(4).clamp(1, 20) as usize,
             strength: ctx.options.flux2_strength.unwrap_or(1.0).clamp(0.05, 1.0),
+            flat_fill: ctx.options.flux2_flat_fill.unwrap_or(false),
             ..Default::default()
         };
+        let bubble_ids = bubble_mask.to_luma8();
         let result = self.0.inpaint_with_reference_and_composite_mask(
             &image,
             &generation_mask,
             &composite_mask,
+            Some(&bubble_ids),
             None,
             &options,
         )?;

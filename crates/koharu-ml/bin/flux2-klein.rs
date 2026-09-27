@@ -74,6 +74,7 @@ async fn main() -> Result<()> {
             strength: cli.strength,
             max_pixels: cli.max_pixels,
             mask_padding: cli.mask_padding,
+            flat_fill: false,
         };
         model.inpaint_with_reference(&image, &mask, reference.as_ref(), &options)?
     } else {

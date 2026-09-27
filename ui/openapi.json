@@ -1155,6 +1155,7 @@
             "default": {
               "bubble_segmenter": "speech-bubble-segmentation",
               "detector": "pp-doclayout-v3",
+              "flux2_flat_fill": true,
               "flux2_steps": 4,
               "flux2_strength": 1.0,
               "font_detector": "yuzumarker-font-detection",
@@ -2844,6 +2845,11 @@
             "type": "string",
             "default": "pp-doclayout-v3"
           },
+          "flux2_flat_fill": {
+            "type": "boolean",
+            "description": "Fill text on plain, single-colour speech bubbles with the bubble's\ncolour instead of running Flux2 on it.",
+            "default": true
+          },
           "flux2_steps": {
             "type": "integer",
             "format": "int32",
@@ -2889,6 +2895,9 @@
           },
           "detector": {
             "type": ["string", "null"]
+          },
+          "flux2FlatFill": {
+            "type": ["boolean", "null"]
           },
           "flux2Steps": {
             "type": ["integer", "null"],

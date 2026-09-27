@@ -8,6 +8,8 @@ export interface PipelineConfigPatch {
   bubbleSegmenter?: string | null
   /** @nullable */
   detector?: string | null
+  /** @nullable */
+  flux2FlatFill?: boolean | null
   /**
    * @minimum 0
    * @nullable

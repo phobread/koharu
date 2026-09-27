@@ -45,3 +45,26 @@ pub fn device(cpu: bool) -> Result<Device> {
         Ok(Device::Cpu)
     }
 }
+
+/// Hand GPU memory freed by dropped models back to the driver.
+///
+/// candle allocates from CUDA's stream-ordered memory pool, which keeps freed
+/// blocks reserved for this process. After unloading a model, trim the pool so
+/// the next model (or llama.cpp's separate allocator) can actually use it.
+pub fn release_gpu_memory() -> Result<()> {
+    // Nothing to release unless a CUDA device was ever handed out.
+    #[cfg(feature = "cuda")]
+    if GPU_SUPPORTED.get().copied().unwrap_or(false) && cuda_is_available() {
+        use candle_core::cuda::cudarc::driver::{CudaContext, result};
+
+        let context = CudaContext::new(0)?;
+        context.synchronize()?;
+        if context.has_async_alloc() {
+            unsafe {
+                let pool = result::device::get_mem_pool(context.cu_device())?;
+                result::mem_pool::trim_to(pool, 0)?;
+            }
+        }
+    }
+    Ok(())
+}

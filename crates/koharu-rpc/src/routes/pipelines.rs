@@ -106,9 +106,13 @@ pub(crate) fn launch(
     for id in &req.steps {
         pipeline::Registry::find(id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     }
-    let (flux2_strength, flux2_steps) = {
+    let (flux2_strength, flux2_steps, flux2_flat_fill) = {
         let config = app.config.load();
-        (config.pipeline.flux2_strength, config.pipeline.flux2_steps)
+        (
+            config.pipeline.flux2_strength,
+            config.pipeline.flux2_steps,
+            config.pipeline.flux2_flat_fill,
+        )
     };
     let spec = PipelineSpec {
         scope: match req.pages {
@@ -126,6 +130,7 @@ pub(crate) fn launch(
             restore_source_region: None,
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
+            flux2_flat_fill: Some(flux2_flat_fill),
             reading_order: req.reading_order,
             default_font_size: req.default_font_size,
             box_padding: req.box_padding,

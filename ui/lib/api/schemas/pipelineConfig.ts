@@ -11,6 +11,11 @@
 export interface PipelineConfig {
   bubble_segmenter?: string
   detector?: string
+  /**
+   * Fill text on plain, single-colour speech bubbles with the bubble's
+   * colour instead of running Flux2 on it.
+   */
+  flux2_flat_fill?: boolean
   /** @minimum 0 */
   flux2_steps?: number
   flux2_strength?: number

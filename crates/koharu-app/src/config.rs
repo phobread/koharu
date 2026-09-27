@@ -140,6 +140,9 @@ pub struct PipelineConfig {
     pub renderer: String,
     pub flux2_strength: f64,
     pub flux2_steps: u32,
+    /// Fill text on plain, single-colour speech bubbles with the bubble's
+    /// colour instead of running Flux2 on it.
+    pub flux2_flat_fill: bool,
 }
 
 impl Default for PipelineConfig {
@@ -155,6 +158,7 @@ impl Default for PipelineConfig {
             renderer: "koharu-renderer".to_string(),
             flux2_strength: 1.0,
             flux2_steps: 4,
+            flux2_flat_fill: true,
         }
     }
 }
@@ -336,6 +340,9 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
         {
             config.pipeline.flux2_steps = v;
         }
+        if let Some(v) = p.flux2_flat_fill {
+            config.pipeline.flux2_flat_fill = v;
+        }
     }
     if let Some(editor) = patch.editor
         && let Some(client) = editor.client
@@ -504,6 +511,29 @@ mod tests {
 
         assert_eq!(pipeline.flux2_strength, 1.0);
         assert_eq!(pipeline.flux2_steps, 4);
+    }
+
+    #[test]
+    fn flux2_flat_fill_defaults_on_and_can_be_switched_off() {
+        assert!(PipelineConfig::default().flux2_flat_fill);
+        let old: AppConfig =
+            toml::from_str("[pipeline]\ninpainter = \"flux2-klein\"\nflux2_steps = 2\n").unwrap();
+        assert!(old.pipeline.flux2_flat_fill);
+
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                pipeline: Some(PipelineConfigPatch {
+                    flux2_flat_fill: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(!config.pipeline.flux2_flat_fill);
+        apply_patch(&mut config, ConfigPatch::default());
+        assert!(!config.pipeline.flux2_flat_fill);
     }
 
     #[test]

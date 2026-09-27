@@ -41,10 +41,15 @@ const MAX_NEW_TOKENS: usize = 256;
 // with the sturdier line splitter: Hangul errors 50 -> 32.
 const KOREAN_REPAIR_MIN_CONFIDENCE: f32 = 0.77;
 
+/// The PP-OCRv5 verifier lives for the whole process, not with the engine.
+/// It runs on the CPU, so unloading it would free no GPU memory, and the
+/// registry now unloads this engine before every Flux2 run; keeping the
+/// verifier avoids rebuilding its ONNX Runtime session on every page.
+static KOREAN_OCR: OnceCell<Mutex<KoreanOcr>> = OnceCell::const_new();
+
 pub struct Model {
     paddle: Mutex<PaddleOcrVl>,
     runtime: RuntimeManager,
-    korean: OnceCell<Mutex<KoreanOcr>>,
 }
 
 #[async_trait]
@@ -112,8 +117,7 @@ impl Engine for Model {
                 .any(|output| contains_lexical_hangul(&output.text));
 
         let korean = if use_hybrid {
-            match self
-                .korean
+            match KOREAN_OCR
                 .get_or_try_init(|| async {
                     Ok::<_, anyhow::Error>(Mutex::new(KoreanOcr::load(&self.runtime).await?))
                 })
@@ -215,7 +219,6 @@ inventory::submit! {
             Ok(Box::new(Model {
                 paddle: Mutex::new(m),
                 runtime: runtime.clone(),
-                korean: OnceCell::new(),
             }) as Box<dyn Engine>)
         }),
     }

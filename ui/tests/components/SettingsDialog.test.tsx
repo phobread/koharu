@@ -139,6 +139,31 @@ describe('SettingsDialog Flux.2 Klein quality', () => {
     })
   })
 
+  it('turns plain-bubble flat fill off and on through PATCH', async () => {
+    const patches: ConfigPatch[] = []
+    installSettingsHandlers(
+      {
+        pipeline: { ...pipeline, inpainter: 'flux2-klein', flux2_flat_fill: true },
+        providers: [],
+      },
+      patches,
+    )
+    renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='engines' />)
+
+    const flatFill = await screen.findByRole('switch', { name: 'settings.flux2FlatFill' })
+    expect(flatFill).toBeChecked()
+    await userEvent.click(flatFill)
+
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0].pipeline).toMatchObject({ inpainter: 'flux2-klein', flux2FlatFill: false })
+  })
+
+  it('hides the flat-fill switch for other inpainters', async () => {
+    renderSettings('lama-manga', 2)
+    await screen.findByText('settings.enginesDescription')
+    expect(screen.queryByRole('switch', { name: 'settings.flux2FlatFill' })).not.toBeInTheDocument()
+  })
+
   it('selects only a supported committed step value', async () => {
     const fast = renderSettings('flux2-klein', 2)
     expect(await screen.findByRole('button', { name: 'settings.flux2Fast' })).toHaveAttribute(
