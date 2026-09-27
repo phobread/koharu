@@ -206,6 +206,22 @@ pub struct ConfigPatch {
     pub providers: Option<Vec<ProviderPatch>>,
     #[serde(default)]
     pub editor: Option<EditorConfigPatch>,
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfigPatch>,
+    #[serde(default)]
+    pub mcp: Option<McpConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryConfigPatch {
+    pub crash_reports: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfigPatch {
+    pub enabled: Option<bool>,
 }
 
 /// Patch for the editor/UI preferences blob. `client` is an opaque JSON

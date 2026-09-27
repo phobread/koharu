@@ -31,8 +31,8 @@ pub use protocol::{
     ConfigPatch, DataConfigPatch, EditorConfigPatch, EngineCatalog, EngineCatalogEntry,
     FontFaceInfo, HttpConfigPatch, LlmCatalog, LlmCatalogModel, LlmGenerationOptions,
     LlmLoadRequest, LlmProviderCatalog, LlmProviderCatalogStatus, LlmState, LlmStateStatus,
-    LlmTarget, LlmTargetKind, MetaInfo, PipelineConfigPatch, PipelineLlmRequest, ProviderPatch,
-    ReadingOrder, Region,
+    LlmTarget, LlmTargetKind, McpConfigPatch, MetaInfo, PipelineConfigPatch, PipelineLlmRequest,
+    ProviderPatch, ReadingOrder, Region, TelemetryConfigPatch,
 };
 pub use scene::{
     ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, NodeKindTag, Page, PageId,

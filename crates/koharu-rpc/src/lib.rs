@@ -24,7 +24,7 @@ pub mod server;
 use std::sync::Arc;
 
 pub use api::{ApiState, api, router};
-pub use bootstrap::BootstrapManager;
+pub use bootstrap::{BootstrapManager, Bootstrapper};
 pub use error::{ApiError, ApiResult};
 
 /// Concrete state threaded through every `State<ApiState>` extractor.

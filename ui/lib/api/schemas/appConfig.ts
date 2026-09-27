@@ -5,13 +5,17 @@
 import type { DataConfig } from './dataConfig'
 import type { EditorConfig } from './editorConfig'
 import type { HttpConfig } from './httpConfig'
+import type { McpConfig } from './mcpConfig'
 import type { PipelineConfig } from './pipelineConfig'
 import type { ProviderConfig } from './providerConfig'
+import type { TelemetryConfig } from './telemetryConfig'
 
 export interface AppConfig {
   data?: DataConfig
   editor?: EditorConfig
   http?: HttpConfig
+  mcp?: McpConfig
   pipeline?: PipelineConfig
   providers?: ProviderConfig[]
+  telemetry?: TelemetryConfig
 }

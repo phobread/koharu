@@ -101,6 +101,8 @@ This is useful when you want an agent to:
 - export rendered pages
 - automate review or batch workflows
 
+The MCP server can be switched off in **Settings → Privacy → Allow AI tools to control Koharu** (`mcp.enabled` in `config.toml`); `/mcp` then answers `403 Forbidden`.
+
 For client-specific setup examples, see [Configure MCP Clients](configure-mcp-clients.md).
 
 For the built-in tool list itself, see [MCP Tools Reference](../reference/mcp-tools.md).

@@ -14,11 +14,12 @@
 
 use std::sync::Arc;
 
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use camino::Utf8PathBuf;
-use koharu_app::{
-    App,
-    pipeline::{PipelineRunOptions, PipelineSpec, Scope},
-};
+use koharu_app::App;
 use koharu_core::{NodeId, Op, PageId, ReadingOrder};
 use rmcp::handler::server::wrapper::{Json as JsonOutput, Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -27,10 +28,10 @@ use rmcp::transport::streamable_http_server::{
 };
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicBool;
-use uuid::Uuid;
 
 use crate::AppState;
+use crate::error::ApiError;
+use crate::routes::pipelines::{self, StartPipelineRequest};
 
 /// Server state handed to each tool call. Carries the shared `App`.
 #[derive(Clone)]
@@ -169,46 +170,44 @@ impl KoharuServer {
 
     #[tool(
         name = "koharu.start_pipeline",
-        description = "Kick off a pipeline run; returns a job id"
+        description = "Kick off a pipeline run; returns a job id. Track it via \
+                       GET /api/v1/operations/{id} or SSE, cancel it via \
+                       DELETE /api/v1/operations/{id}"
     )]
     async fn start_pipeline(
         &self,
         Parameters(input): Parameters<StartPipelineInput>,
     ) -> Result<JsonOutput<StartPipelineOutput>, rmcp::ErrorData> {
-        let app = self.app()?;
-        let session = app
-            .current_session()
-            .ok_or_else(|| rmcp::ErrorData::invalid_request("no project open", None))?;
-        let spec = PipelineSpec {
-            scope: match input.pages {
-                Some(pages) => Scope::Pages(pages),
-                None => Scope::WholeProject,
-            },
+        // `launch` derefs into `App`, which panics while still bootstrapping.
+        self.app()?;
+        let req = StartPipelineRequest {
             steps: input.steps,
-            options: PipelineRunOptions {
-                target_language: input.target_language,
-                system_prompt: input.system_prompt,
-                default_font: input.default_font,
-                text_node_ids: input.text_node_ids,
-                reading_order: input.reading_order,
-                region: None,
-                ..Default::default()
-            },
+            pages: input.pages,
+            region: None,
+            text_node_ids: input.text_node_ids,
+            target_language: input.target_language,
+            source_language: None,
+            system_prompt: input.system_prompt,
+            default_font: input.default_font,
+            reading_order: input.reading_order,
+            default_font_size: None,
+            box_padding: None,
+            shader_effect: None,
+            shader_stroke: None,
+            text_align: None,
         };
-        let job_id = Uuid::new_v4().to_string();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let registry = app.registry.clone();
-        let runtime = app.runtime.clone();
-        let llm = app.llm.clone();
-        let renderer = app.renderer.clone();
-        let cpu = app.cpu_only();
-        tokio::spawn(async move {
-            let _ = koharu_app::pipeline::run(
-                session, registry, runtime, cpu, llm, renderer, spec, cancel, None, None,
-            )
-            .await;
-        });
-        Ok(JsonOutput(StartPipelineOutput { job_id }))
+        let res = pipelines::launch(&self.state, req).map_err(api_err)?;
+        Ok(JsonOutput(StartPipelineOutput {
+            job_id: res.operation_id,
+        }))
+    }
+}
+
+fn api_err(e: ApiError) -> rmcp::ErrorData {
+    if e.status == StatusCode::BAD_REQUEST.as_u16() {
+        rmcp::ErrorData::invalid_request(e.message, None)
+    } else {
+        rmcp::ErrorData::internal_error(e.message, None)
     }
 }
 
@@ -233,7 +232,8 @@ impl ServerHandler for KoharuServer {
 // Axum mount
 // ---------------------------------------------------------------------------
 
-/// Mount the MCP endpoint at `/mcp` on `router`.
+/// Mount the MCP endpoint at `/mcp` on `router`. Requests are refused while
+/// Settings → Privacy → "Allow AI tools" (`config.mcp.enabled`) is off.
 pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     let manager = Arc::new(LocalSessionManager::default());
     let factory = {
@@ -242,5 +242,24 @@ pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     };
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
-    router.nest_service("/mcp", service)
+    let mcp = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(state, require_enabled));
+    router.merge(mcp)
+}
+
+/// Checked per request so turning MCP off applies immediately. Before the
+/// app is ready the config isn't loaded yet; tools answer "bootstrapping"
+/// then anyway.
+async fn require_enabled(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if let Some(app) = state.app()
+        && !app.config.load().mcp.enabled
+    {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "the MCP server is turned off in Koharu's settings",
+        )
+        .into_response();
+    }
+    next.run(request).await
 }

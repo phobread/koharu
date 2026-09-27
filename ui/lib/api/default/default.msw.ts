@@ -7,6 +7,7 @@ import { HttpResponse, http } from 'msw'
 import type { RequestHandlerOptions } from 'msw'
 
 import {
+  BootstrapState,
   CodexAuthAttemptStatus,
   FontSource,
   GradientDirection,
@@ -24,6 +25,7 @@ import type {
   AddImageLayerResponse,
   AppConfig,
   AppEvent,
+  BootstrapStatus,
   ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
@@ -44,6 +46,7 @@ import type {
   LlmCatalog,
   LlmState,
   LlmTarget,
+  McpConfig,
   MetaInfo,
   PipelineConfig,
   ProjectSummary,
@@ -51,6 +54,7 @@ import type {
   SceneSnapshot,
   StartDownloadResponse,
   StartPipelineResponse,
+  TelemetryConfig,
   TextFillGradient,
   TextShaderEffect,
   TextStrokeStyle,
@@ -115,6 +119,28 @@ export const getStartCodexImageGenerationResponseMock = (
 export const getGetBlobResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
 
+export const getGetBootstrapResponseMock = (
+  overrideResponse: Partial<Extract<BootstrapStatus, object>> = {},
+): BootstrapStatus => ({
+  error: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.string.alpha({ length: { min: 10, max: 20 } }), null]),
+    undefined,
+  ]),
+  state: faker.helpers.arrayElement(Object.values(BootstrapState)),
+  ...overrideResponse,
+})
+
+export const getRetryBootstrapResponseMock = (
+  overrideResponse: Partial<Extract<BootstrapStatus, object>> = {},
+): BootstrapStatus => ({
+  error: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.string.alpha({ length: { min: 10, max: 20 } }), null]),
+    undefined,
+  ]),
+  state: faker.helpers.arrayElement(Object.values(BootstrapState)),
+  ...overrideResponse,
+})
+
 export const getGetConfigResponseDataConfigMock = (
   overrideResponse: Partial<DataConfig> = {},
 ): DataConfig => ({
@@ -140,6 +166,10 @@ export const getGetConfigResponseHttpConfigMock = (
   ...overrideResponse,
 })
 
+export const getGetConfigResponseMcpConfigMock = (
+  overrideResponse: Partial<McpConfig> = {},
+): McpConfig => ({ ...{ enabled: faker.datatype.boolean() }, ...overrideResponse })
+
 export const getGetConfigResponsePipelineConfigMock = (
   overrideResponse: Partial<PipelineConfig> = {},
 ): PipelineConfig => ({
@@ -158,12 +188,17 @@ export const getGetConfigResponsePipelineConfigMock = (
   ...overrideResponse,
 })
 
+export const getGetConfigResponseTelemetryConfigMock = (
+  overrideResponse: Partial<TelemetryConfig> = {},
+): TelemetryConfig => ({ ...{ crash_reports: faker.datatype.boolean() }, ...overrideResponse })
+
 export const getGetConfigResponseMock = (
   overrideResponse: Partial<Extract<AppConfig, object>> = {},
 ): AppConfig => ({
   data: faker.helpers.arrayElement([{ ...getGetConfigResponseDataConfigMock() }]),
   editor: faker.helpers.arrayElement([{ ...getGetConfigResponseEditorConfigMock() }]),
   http: faker.helpers.arrayElement([{ ...getGetConfigResponseHttpConfigMock() }]),
+  mcp: faker.helpers.arrayElement([{ ...getGetConfigResponseMcpConfigMock() }]),
   pipeline: faker.helpers.arrayElement([{ ...getGetConfigResponsePipelineConfigMock() }]),
   providers: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
     () => ({
@@ -178,6 +213,7 @@ export const getGetConfigResponseMock = (
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
     }),
   ),
+  telemetry: faker.helpers.arrayElement([{ ...getGetConfigResponseTelemetryConfigMock() }]),
   ...overrideResponse,
 })
 
@@ -206,6 +242,10 @@ export const getPatchConfigResponseHttpConfigMock = (
   ...overrideResponse,
 })
 
+export const getPatchConfigResponseMcpConfigMock = (
+  overrideResponse: Partial<McpConfig> = {},
+): McpConfig => ({ ...{ enabled: faker.datatype.boolean() }, ...overrideResponse })
+
 export const getPatchConfigResponsePipelineConfigMock = (
   overrideResponse: Partial<PipelineConfig> = {},
 ): PipelineConfig => ({
@@ -224,12 +264,17 @@ export const getPatchConfigResponsePipelineConfigMock = (
   ...overrideResponse,
 })
 
+export const getPatchConfigResponseTelemetryConfigMock = (
+  overrideResponse: Partial<TelemetryConfig> = {},
+): TelemetryConfig => ({ ...{ crash_reports: faker.datatype.boolean() }, ...overrideResponse })
+
 export const getPatchConfigResponseMock = (
   overrideResponse: Partial<Extract<AppConfig, object>> = {},
 ): AppConfig => ({
   data: faker.helpers.arrayElement([{ ...getPatchConfigResponseDataConfigMock() }]),
   editor: faker.helpers.arrayElement([{ ...getPatchConfigResponseEditorConfigMock() }]),
   http: faker.helpers.arrayElement([{ ...getPatchConfigResponseHttpConfigMock() }]),
+  mcp: faker.helpers.arrayElement([{ ...getPatchConfigResponseMcpConfigMock() }]),
   pipeline: faker.helpers.arrayElement([{ ...getPatchConfigResponsePipelineConfigMock() }]),
   providers: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
     () => ({
@@ -244,6 +289,7 @@ export const getPatchConfigResponseMock = (
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
     }),
   ),
+  telemetry: faker.helpers.arrayElement([{ ...getPatchConfigResponseTelemetryConfigMock() }]),
   ...overrideResponse,
 })
 
@@ -1276,6 +1322,54 @@ export const getGetBlobMockHandler = (
   )
 }
 
+export const getGetBootstrapMockHandler = (
+  overrideResponse?:
+    | BootstrapStatus
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<BootstrapStatus> | BootstrapStatus),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    '*/bootstrap',
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetBootstrapResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
+export const getRetryBootstrapMockHandler = (
+  overrideResponse?:
+    | BootstrapStatus
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<BootstrapStatus> | BootstrapStatus),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/bootstrap/retry',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRetryBootstrapResponseMock(),
+        { status: 202 },
+      )
+    },
+    options,
+  )
+}
+
 export const getGetConfigMockHandler = (
   overrideResponse?:
     | AppConfig
@@ -2186,6 +2280,8 @@ export const getDefaultMock = () => [
   getGetCodexAuthStatusMockHandler(),
   getStartCodexImageGenerationMockHandler(),
   getGetBlobMockHandler(),
+  getGetBootstrapMockHandler(),
+  getRetryBootstrapMockHandler(),
   getGetConfigMockHandler(),
   getPatchConfigMockHandler(),
   getSetProviderSecretMockHandler(),

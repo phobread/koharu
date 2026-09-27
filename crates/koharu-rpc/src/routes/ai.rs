@@ -106,7 +106,7 @@ async fn start_codex_image_generation(
             .await;
         let (status, error) = match result {
             Ok(()) => (JobStatus::Completed, None),
-            Err(e) if e.to_string().contains("cancelled") => (JobStatus::Cancelled, None),
+            Err(e) if koharu_app::is_cancelled(&e) => (JobStatus::Cancelled, None),
             Err(e) => {
                 tracing::warn!(operation_id = %op_id_c, "Codex image generation failed: {e:#}");
                 (JobStatus::Failed, Some(format!("{e:#}")))

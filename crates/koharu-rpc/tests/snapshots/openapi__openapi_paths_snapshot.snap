@@ -35,6 +35,18 @@ expression: paths
         ],
     ),
     (
+        "/bootstrap",
+        [
+            "get",
+        ],
+    ),
+    (
+        "/bootstrap/retry",
+        [
+            "post",
+        ],
+    ),
+    (
         "/config",
         [
             "get",
@@ -231,6 +243,12 @@ expression: paths
         "/scene.json",
         [
             "get",
+        ],
+    ),
+    (
+        "/storage/project-cache/clear",
+        [
+            "post",
         ],
     ),
 ]

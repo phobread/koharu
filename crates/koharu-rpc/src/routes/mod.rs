@@ -3,6 +3,7 @@
 //! `api.rs`.
 
 pub mod ai;
+pub mod bootstrap;
 pub mod config;
 pub mod downloads;
 pub mod fonts;

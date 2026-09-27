@@ -88,6 +88,17 @@ async fn start_pipeline(
     State(app): State<AppState>,
     Json(req): Json<StartPipelineRequest>,
 ) -> ApiResult<Json<StartPipelineResponse>> {
+    launch(&app, req).map(Json)
+}
+
+/// Validate `req`, register it as an operation (jobs registry + cancel
+/// handle), and detach the run. Shared by `POST /pipelines` and the MCP
+/// `koharu.start_pipeline` tool so both report progress and can be cancelled
+/// the same way.
+pub(crate) fn launch(
+    app: &AppState,
+    req: StartPipelineRequest,
+) -> ApiResult<StartPipelineResponse> {
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
@@ -199,7 +210,7 @@ async fn start_pipeline(
                     outcome.warning_count
                 )),
             ),
-            Err(e) if e.to_string().contains("cancelled") => (JobStatus::Cancelled, None),
+            Err(e) if koharu_app::is_cancelled(e) => (JobStatus::Cancelled, None),
             Err(e) => {
                 tracing::warn!(operation_id = %op_id_c, "pipeline run failed: {e:#}");
                 (JobStatus::Failed, Some(format!("{e:#}")))
@@ -222,5 +233,5 @@ async fn start_pipeline(
         unregister_cancel(&op_id_c);
     });
 
-    Ok(Json(StartPipelineResponse { operation_id }))
+    Ok(StartPipelineResponse { operation_id })
 }

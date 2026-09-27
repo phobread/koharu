@@ -108,6 +108,15 @@ Current behavior:
 - these HTTP values are used by the shared runtime HTTP client for downloads and provider-backed requests
 - applying changes saves the config and restarts the desktop app because the runtime client is built at startup
 
+## Privacy
+
+The `Privacy` tab has two switches, both on by default:
+
+- `Send crash reports`: when Koharu hits an error or crashes, send a report (the error, app version, OS and recent log lines, without personal data such as your IP address) to the Koharu developers through Sentry. Only official releases carry a Sentry key, so builds from source never send reports. The desktop app reads this setting at launch, so a change applies after a restart; the Web UI applies it immediately
+- `Allow AI tools to control Koharu`: enables the MCP server at `/mcp`. When off, `/mcp` answers `403 Forbidden`. The change applies immediately
+
+Both are stored in `config.toml` as `telemetry.crash_reports` and `mcp.enabled`.
+
 ## About
 
 The `About` tab currently shows:

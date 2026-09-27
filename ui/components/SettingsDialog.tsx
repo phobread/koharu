@@ -22,6 +22,7 @@ import {
   LogInIcon,
   LogOutIcon,
   SparklesIcon,
+  ShieldIcon,
   TypeIcon,
   BoldIcon,
   ItalicIcon,
@@ -61,12 +62,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { useUpdater, type UpdaterStatus } from '@/components/Updater'
 import {
   getCatalog as getLlmCatalog,
   getConfig,
   getEngineCatalog,
   getGetCatalogQueryKey as getGetLlmCatalogQueryKey,
+  getGetConfigQueryKey,
   getMeta,
   patchConfig,
   setProviderSecret,
@@ -89,6 +92,7 @@ import type {
   ProviderConfig,
 } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
+import { applyCrashReportingSetting } from '@/lib/crashReporting'
 import { normalizeFamilyName } from '@/lib/font-utils'
 import { supportedLanguages } from '@/lib/i18n'
 import { queueAutoRender } from '@/lib/io/scene'
@@ -156,6 +160,12 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       apiKey: p.api_key ?? null,
     }))
   }
+  if (cfg.telemetry) {
+    patch.telemetry = { crashReports: cfg.telemetry.crash_reports }
+  }
+  if (cfg.mcp) {
+    patch.mcp = { enabled: cfg.mcp.enabled }
+  }
   return patch
 }
 
@@ -173,6 +183,7 @@ const TABS = [
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
   { id: 'keybinds', icon: KeyboardIcon, labelKey: 'settings.keybinds' },
   { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.runtime' },
+  { id: 'privacy', icon: ShieldIcon, labelKey: 'settings.privacy' },
   { id: 'about', icon: InfoIcon, labelKey: 'settings.about' },
 ] as const
 
@@ -527,6 +538,30 @@ export function SettingsDialog({
                     setStorageSettingsError(null)
                   }}
                   onApply={() => void handleApplyStorageSettings()}
+                />
+              )}
+              {tab === 'privacy' && appConfig && (
+                <PrivacyPane
+                  config={appConfig}
+                  onChange={(change) => {
+                    setAppConfig((cur) => (cur ? { ...cur, ...change } : cur))
+                    void enqueueConfigMutation((base) => ({ ...base, ...change })).then((ok) => {
+                      const committed = committedConfigRef.current
+                      if (!ok) {
+                        // Put the switch back to what the server actually has.
+                        if (committed) {
+                          setAppConfig((cur) =>
+                            cur
+                              ? { ...cur, telemetry: committed.telemetry, mcp: committed.mcp }
+                              : cur,
+                          )
+                        }
+                        return
+                      }
+                      applyCrashReportingSetting(committed?.telemetry?.crash_reports ?? true)
+                      queryClient.invalidateQueries({ queryKey: getGetConfigQueryKey() })
+                    })
+                  }}
                 />
               )}
               {tab === 'keybinds' && <KeybindsPane />}
@@ -1799,6 +1834,69 @@ function StoragePane({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+// ── Privacy ───────────────────────────────────────────────────────
+
+type PrivacyChange = Pick<AppConfig, 'telemetry'> | Pick<AppConfig, 'mcp'>
+
+function PrivacyPane({
+  config,
+  onChange,
+}: {
+  config: AppConfig
+  onChange: (change: PrivacyChange) => void
+}) {
+  const { t } = useTranslation()
+  const crashReports = config.telemetry?.crash_reports ?? true
+  const mcpEnabled = config.mcp?.enabled ?? true
+
+  return (
+    <div className='space-y-8'>
+      <Section
+        title={t('settings.crashReports')}
+        description={t('settings.crashReportsDescription')}
+      >
+        <ToggleRow
+          id='settings-crash-reports'
+          label={t('settings.crashReportsToggle')}
+          checked={crashReports}
+          onCheckedChange={(v) =>
+            onChange({ telemetry: { ...config.telemetry, crash_reports: v } })
+          }
+        />
+      </Section>
+      <Section title={t('settings.mcp')} description={t('settings.mcpDescription')}>
+        <ToggleRow
+          id='settings-mcp'
+          label={t('settings.mcpToggle')}
+          checked={mcpEnabled}
+          onCheckedChange={(v) => onChange({ mcp: { ...config.mcp, enabled: v } })}
+        />
+      </Section>
+    </div>
+  )
+}
+
+function ToggleRow({
+  id,
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  id: string
+  label: string
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className='flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5'>
+      <Label htmlFor={id} className='text-sm'>
+        {label}
+      </Label>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   )
 }
 
