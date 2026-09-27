@@ -146,10 +146,18 @@ impl Downloads {
 
         if !blob_path.exists() {
             let reporter = self.begin(filename);
-            if let Err(error) = self
+            let mut result = self
                 .ranged_download(&url, &blob_path, &reporter, Some(metadata.size() as u64))
-                .await
+                .await;
+            if result.is_ok()
+                && let Some((_, file)) = pinned
             {
+                result = verify_pinned_download(&blob_path, file).await;
+                if result.is_err() {
+                    tokio::fs::remove_file(&blob_path).await.ok();
+                }
+            }
+            if let Err(error) = result {
                 reporter.fail(&error);
                 return Err(error.context(format!("failed to download HF model file `{label}`")));
             }
@@ -292,6 +300,13 @@ impl Downloads {
                     .bytes()
                     .await
                     .with_context(|| format!("failed to read range {range} of `{url}`"))?;
+                // A server or proxy that ignores `Range` sends the whole file.
+                let expected = stop - start + 1;
+                anyhow::ensure!(
+                    bytes.len() as u64 == expected,
+                    "range {range} of `{url}` returned {} bytes instead of {expected}",
+                    bytes.len()
+                );
                 let mut file = tokio::fs::OpenOptions::new()
                     .write(true)
                     .open(temp_ref)
@@ -495,6 +510,16 @@ fn validate_pinned_metadata(
     Ok(())
 }
 
+/// A pinned LFS file's oid is its SHA-256, so the downloaded bytes are
+/// checked, not only the metadata the server reports. Git-blob SHA-1 oids
+/// belong to small config files, which stay size-checked.
+async fn verify_pinned_download(path: &Path, file: &ModelFile) -> Result<()> {
+    if file.oid.len() == 64 {
+        verify_file(path, file.oid).await?;
+    }
+    Ok(())
+}
+
 /// [`checksums::verify_file`] off the async runtime; archives can be hundreds
 /// of MB.
 async fn verify_file(path: &Path, expected: &str) -> Result<()> {
@@ -538,6 +563,12 @@ mod tests {
     /// Serves `body` for any path, with the HEAD + single-range GET subset
     /// that `ranged_download` uses. Returns the base URL.
     async fn serve(body: &'static [u8]) -> String {
+        serve_with(body, true).await
+    }
+
+    /// Like [`serve`]; with `honour_ranges` false every GET gets the whole
+    /// body, as from a server or proxy that ignores `Range`.
+    async fn serve_with(body: &'static [u8], honour_ranges: bool) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -562,8 +593,10 @@ mod tests {
                         ))
                     });
                     let (status, bytes) = match range {
-                        Some((start, stop)) => ("206 Partial Content", &body[start..=stop]),
-                        None => ("200 OK", body),
+                        Some((start, stop)) if honour_ranges => {
+                            ("206 Partial Content", &body[start..=stop])
+                        }
+                        _ => ("200 OK", body),
                     };
                     let header = format!(
                         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -760,6 +793,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read(path).unwrap(), BODY);
+    }
+
+    #[tokio::test]
+    async fn range_responses_of_the_wrong_length_are_rejected() {
+        // Two chunks, so a server ignoring `Range` sends too much for each.
+        let body: &'static [u8] = vec![7u8; CHUNK_SIZE as usize + 1].leak();
+        let url = format!("{}/model.bin", serve_with(body, false).await);
+        let root = tempfile::tempdir().unwrap();
+        let err = test_downloads(&root)
+            .download_verified(&url, "model.bin", &sha256_hex(body))
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("instead of"), "{err:#}");
+        assert!(!root.path().join("downloads/model.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn pinned_lfs_downloads_are_checked_against_their_sha256() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.safetensors");
+        std::fs::write(&path, BODY).unwrap();
+        let file = |oid: &'static str| ModelFile {
+            filename: "model.safetensors",
+            oid,
+            size: BODY.len() as u64,
+        };
+
+        let genuine: &'static str = sha256_hex(BODY).leak();
+        verify_pinned_download(&path, &file(genuine)).await.unwrap();
+        let other: &'static str = sha256_hex(b"other weights").leak();
+        let err = verify_pinned_download(&path, &file(other))
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("checksum mismatch"), "{err:#}");
+        // Git-blob SHA-1 oids (small non-LFS files) are size-checked only.
+        verify_pinned_download(&path, &file(TEST_FILE.oid))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
