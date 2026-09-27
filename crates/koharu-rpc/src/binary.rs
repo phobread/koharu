@@ -41,8 +41,7 @@ async fn get_scene_json(State(app): State<AppState>) -> ApiResult<Json<SceneSnap
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
-    let scene = session.scene.read().clone();
-    let epoch = session.epoch();
+    let (epoch, scene) = session.snapshot_with_epoch();
     Ok(Json(SceneSnapshot { epoch, scene }))
 }
 
@@ -61,16 +60,12 @@ async fn get_scene_bin(State(app): State<AppState>) -> ApiResult<Response> {
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
-    let (epoch, bytes) = {
-        let scene = session.scene.read();
-        let epoch = session.epoch();
-        let bytes = postcard::to_allocvec(&WireSnapshot {
-            epoch,
-            scene: &scene,
-        })
-        .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?;
-        (epoch, bytes)
-    };
+    let (epoch, scene) = session.snapshot_with_epoch();
+    let bytes = postcard::to_allocvec(&WireSnapshot {
+        epoch,
+        scene: &scene,
+    })
+    .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?;
     let mut resp = Response::new(Body::from(bytes));
     resp.headers_mut().insert(
         CONTENT_TYPE,

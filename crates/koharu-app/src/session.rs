@@ -185,6 +185,16 @@ impl ProjectSession {
         self.scene.read().clone()
     }
 
+    /// The scene plus the epoch it was taken at. Locks history before scene,
+    /// like `apply` and `compact`: taking the scene first and then the epoch
+    /// can deadlock against a concurrent edit, and reading them separately
+    /// can label a scene with a later epoch.
+    pub fn snapshot_with_epoch(&self) -> (u64, Scene) {
+        let history = self.history.lock();
+        let scene = self.scene.read().clone();
+        (history.epoch(), scene)
+    }
+
     // --- compaction --------------------------------------------------------
 
     /// Write a new snapshot (scene.bin) and truncate the log. Safe to call
@@ -1528,6 +1538,29 @@ mod tests {
         let session = ProjectSession::open(&path).unwrap();
         assert_eq!(session.scene.read().pages.len(), 1);
         assert!(session.scene.read().pages.contains_key(&page_id));
+    }
+
+    #[test]
+    fn scene_and_epoch_snapshots_stay_consistent_under_concurrent_edits() {
+        let (_tmp, path) = tmp_dir();
+        let session = ProjectSession::create(&path, "concurrent").unwrap();
+        let base = session.epoch();
+        let writer = {
+            let session = session.clone();
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    let page = Page::new(&format!("p{i}"), 8, 8);
+                    session.apply(Op::AddPage { page, at: i }).unwrap();
+                }
+            })
+        };
+        for _ in 0..200 {
+            let (epoch, scene) = session.snapshot_with_epoch();
+            assert_eq!(scene.pages.len() as u64, epoch - base);
+        }
+        writer.join().unwrap();
+        let (epoch, scene) = session.snapshot_with_epoch();
+        assert_eq!((epoch - base, scene.pages.len()), (50, 50));
     }
 
     #[test]
