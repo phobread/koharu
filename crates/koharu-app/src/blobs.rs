@@ -7,11 +7,12 @@
 //! `BlobRef` itself lives in `koharu-core::blob`; this module only provides
 //! the filesystem store + cache.
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use atomicwrites::{AtomicFile, OverwriteBehavior};
 use image::{DynamicImage, RgbaImage};
 use koharu_core::BlobRef;
 use lru::LruCache;
@@ -48,14 +49,23 @@ impl BlobStore {
     // --- raw bytes ---------------------------------------------------------
 
     /// Write raw bytes; return the blake3-derived `BlobRef`.
+    ///
+    /// The history frame that will reference the blob is fsynced, so the blob
+    /// must be durable first: it is fsynced under a temporary name and renamed
+    /// into place, and a crash never leaves a torn file under its hash. A file
+    /// already there with the wrong length (torn by an older build) is
+    /// replaced rather than trusted.
     pub fn put_bytes(&self, data: &[u8]) -> Result<BlobRef> {
         let hash = blake3::hash(data).to_hex().to_string();
         let path = self.blob_path(&hash)?;
-        if !path.exists() {
+        let intact = std::fs::metadata(&path).is_ok_and(|meta| meta.len() == data.len() as u64);
+        if !intact {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, data).with_context(|| format!("write blob {hash}"))?;
+            AtomicFile::new(&path, OverwriteBehavior::AllowOverwrite)
+                .write(|file| file.write_all(data))
+                .with_context(|| format!("write blob {hash}"))?;
         }
         Ok(BlobRef::new(hash))
     }
@@ -167,6 +177,24 @@ mod tests {
         let a = store.put_bytes(b"x").unwrap();
         let b = store.put_bytes(b"x").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn put_replaces_a_torn_blob_and_leaves_no_temp_files() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+        let r = store.put_bytes(b"complete blob").unwrap();
+        let path = store.blob_path(r.hash()).unwrap();
+        // What a crash mid-write could leave under the final name.
+        std::fs::write(&path, b"compl").unwrap();
+
+        assert_eq!(store.put_bytes(b"complete blob").unwrap(), r);
+        assert_eq!(store.get_bytes(&r).unwrap(), b"complete blob");
+        let shard: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(shard, [path.file_name().unwrap()]);
     }
 
     #[test]
