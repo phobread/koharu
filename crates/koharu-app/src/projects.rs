@@ -28,12 +28,25 @@ pub fn projects_dir(config: &AppConfig) -> Result<Utf8PathBuf> {
 }
 
 /// Resolve an `id` (directory basename, no extension) to its absolute path.
+///
+/// Ids come from [`list_projects`] as directory names verbatim, so they are
+/// used verbatim. Slugifying here sent a hand-named folder such as
+/// `BadEnd (copy)` to a different project (`badend-copy`), which then got
+/// opened or deleted instead. Anything but a single plain name is rejected.
 pub fn project_path(config: &AppConfig, id: &str) -> Result<Utf8PathBuf> {
-    let slug = slugify(id);
-    if slug.is_empty() {
-        anyhow::bail!("invalid project id: {id}");
+    if !is_plain_name(id) {
+        anyhow::bail!("invalid project id: {id:?}");
     }
-    Ok(projects_dir(config)?.join(format!("{slug}.{PROJECT_EXT}")))
+    Ok(projects_dir(config)?.join(format!("{id}.{PROJECT_EXT}")))
+}
+
+/// One path component with no separators, drive or stream colons, or
+/// control characters, and not `.`/`..`.
+fn is_plain_name(id: &str) -> bool {
+    !matches!(id, "" | "." | "..")
+        && !id
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
 }
 
 /// Pick a fresh `{projects_dir}/{slug}.khrproj` path for a new project with
@@ -183,6 +196,34 @@ fn slugify(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_ids_resolve_to_their_own_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.data.path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let root = projects_dir(&config).unwrap();
+        // Two folders whose names slugify to the same id.
+        fs::create_dir(root.join("badend-copy.khrproj")).unwrap();
+        fs::create_dir(root.join("BadEnd (copy).khrproj")).unwrap();
+
+        let ids: Vec<String> = list_projects(&config)
+            .unwrap()
+            .into_iter()
+            .map(|project| project.id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            assert_eq!(
+                project_path(&config, id).unwrap(),
+                root.join(format!("{id}.{PROJECT_EXT}"))
+            );
+        }
+
+        for bad in ["", ".", "..", "../x", "a/b", "a\\b", "C:x", "x\0"] {
+            assert!(project_path(&config, bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn slugify_basic() {
