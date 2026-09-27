@@ -11,6 +11,9 @@
 //!   and would otherwise count as "same origin". Skipped for non-loopback
 //!   binds (`--host 0.0.0.0`), where the server is reached under names we
 //!   can't know in advance.
+//! - `Sec-Fetch-Site` — browsers attach it to every request, including the
+//!   no-cors GETs (`<img>`, `<link>`, navigations) that carry no `Origin`.
+//!   `cross-site` is refused: no other site's page has business here.
 //!
 //! Requests without these headers (curl, SDKs, MCP clients) pass through.
 
@@ -26,6 +29,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::ApiError;
 
 const X_FORWARDED_HOST: &str = "x-forwarded-host";
+const SEC_FETCH_SITE: &str = "sec-fetch-site";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RequestGuard {
@@ -46,6 +50,13 @@ impl RequestGuard {
             && !parse_authority(host).is_some_and(|a| is_loopback_host(a.host()))
         {
             return Err("host not allowed");
+        }
+
+        if headers
+            .get(SEC_FETCH_SITE)
+            .is_some_and(|site| site.as_bytes().eq_ignore_ascii_case(b"cross-site"))
+        {
+            return Err("cross-site request");
         }
 
         if let Some(origin) = headers.get(header::ORIGIN)
@@ -116,6 +127,8 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use axum::http::HeaderName;
 
     use super::*;
 
@@ -192,6 +205,26 @@ mod tests {
             ]);
             assert_eq!(loopback().check(&h), Err("origin not allowed"), "{origin}");
             assert_eq!(any_addr().check(&h), Err("origin not allowed"), "{origin}");
+        }
+    }
+
+    #[test]
+    fn rejects_cross_site_requests_that_carry_no_origin() {
+        // An <img> or <link> on another site: browsers omit Origin on no-cors
+        // GETs but always say where the request came from.
+        let h = headers(&[("host", "127.0.0.1:4000"), ("sec-fetch-site", "cross-site")]);
+        assert_eq!(loopback().check(&h), Err("cross-site request"));
+        assert_eq!(any_addr().check(&h), Err("cross-site request"));
+
+        for site in ["same-origin", "same-site", "none"] {
+            let h = HeaderMap::from_iter([
+                (header::HOST, HeaderValue::from_static("127.0.0.1:4000")),
+                (
+                    HeaderName::from_static("sec-fetch-site"),
+                    HeaderValue::from_static(site),
+                ),
+            ]);
+            assert!(loopback().check(&h).is_ok(), "{site}");
         }
     }
 
