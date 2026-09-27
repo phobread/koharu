@@ -157,7 +157,6 @@ pub async fn run(
     let total_pages = pages.len().max(1);
     let total_steps = order.len().max(1);
     let total_units = (total_pages * total_steps) as u64;
-    let mut completed: u64 = 0;
     let mut warning_count: usize = 0;
     let steps: Vec<(&EngineInfo, plan::StepIo)> = order
         .iter()
@@ -182,16 +181,16 @@ pub async fn run(
         );
     }
 
-    for (page_index, seq) in plan::schedule(pages.len(), steps.len(), chunk) {
+    // `completed` counts units already handled, whether they ran, failed or
+    // were skipped, so progress always reaches 100%.
+    let units = plan::schedule(pages.len(), steps.len(), chunk);
+    for (completed, (page_index, seq)) in (0_u64..).zip(units) {
         if cancel.load(Ordering::Relaxed) {
             return Err(crate::Cancelled.into());
         }
         let (info, io) = steps[seq];
         let page_id = &pages[page_index];
         let percent = ((completed * 100) / total_units).min(100) as u8;
-        // Every unit counts once, whether it runs, fails or is skipped, so
-        // progress always reaches 100%.
-        completed += 1;
 
         if deleted[page_index] || !session.scene.read().pages.contains_key(page_id) {
             deleted[page_index] = true;

@@ -1549,7 +1549,7 @@ mod tests {
             let session = session.clone();
             std::thread::spawn(move || {
                 for i in 0..50 {
-                    let page = Page::new(&format!("p{i}"), 8, 8);
+                    let page = Page::new(format!("p{i}"), 8, 8);
                     session.apply(Op::AddPage { page, at: i }).unwrap();
                 }
             })
