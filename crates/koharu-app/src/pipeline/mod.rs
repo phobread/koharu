@@ -119,6 +119,9 @@ pub enum Scope {
 /// failed translation doesn't cost the page its inpainting. The function
 /// returns the total number of per-step warnings that fired, letting callers
 /// flag the run as `CompletedWithErrors`.
+///
+/// Pages run one after another, except in runs with an engine that can't
+/// share the GPU: those go stage by stage in chunks (see [`chunk_size`]).
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(level = "info", skip_all)]
 pub async fn run(
@@ -170,8 +173,16 @@ pub async fn run(
     // deleted the page since the run started.
     let mut missing = vec![plan::MissingArtifacts::default(); pages.len()];
     let mut deleted = vec![false; pages.len()];
+    let chunk = chunk_size(&steps);
+    if chunk > 1 {
+        tracing::info!(
+            chunk,
+            pages = pages.len(),
+            "running pages in chunks, stage by stage"
+        );
+    }
 
-    for (page_index, seq) in plan::schedule(pages.len(), steps.len()) {
+    for (page_index, seq) in plan::schedule(pages.len(), steps.len(), chunk) {
         if cancel.load(Ordering::Relaxed) {
             return Err(crate::Cancelled.into());
         }
@@ -297,6 +308,31 @@ pub async fn run(
         });
     }
     Ok(RunOutcome { warning_count })
+}
+
+/// Pages per chunk when a run includes an engine that can't share the GPU
+/// (Flux.2 Klein, which evicts the detection/OCR engines and is evicted by
+/// them): each chunk goes stage by stage, so those engines load once per
+/// chunk instead of once per page, and the chunk's pages still finish early.
+const EXCLUSIVE_RUN_CHUNK: usize = 8;
+
+/// `KOHARU_PIPELINE_CHUNK` overrides the chunk size for any run (`1` = page
+/// by page, the order before chunking).
+fn chunk_size(steps: &[(&EngineInfo, plan::StepIo)]) -> usize {
+    if let Some(chunk) = std::env::var("KOHARU_PIPELINE_CHUNK")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        return chunk.max(1);
+    }
+    if steps
+        .iter()
+        .any(|(info, _)| engine::is_exclusive_engine(info.id))
+    {
+        EXCLUSIVE_RUN_CHUNK
+    } else {
+        1
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

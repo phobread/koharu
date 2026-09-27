@@ -135,6 +135,11 @@ const EXCLUSIVE_ENGINES: &[&str] = &["flux2-klein"];
 /// CPU-only engines: they never trigger or suffer eviction.
 const CPU_ENGINES: &[&str] = &["koharu-renderer", "llm"];
 
+/// Whether engine `id` can't share the GPU with any other engine.
+pub(crate) fn is_exclusive_engine(id: &str) -> bool {
+    EXCLUSIVE_ENGINES.contains(&id)
+}
+
 /// Cached engines to unload before `requested` runs, per the residency rules
 /// above.
 fn engines_to_evict<'a>(

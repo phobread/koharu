@@ -32,12 +32,20 @@ impl MissingArtifacts {
     }
 }
 
-/// `(page_index, step_index)` units in execution order: each page runs all
-/// its steps before the next page starts.
-pub(crate) fn schedule(pages: usize, steps: usize) -> Vec<(usize, usize)> {
-    (0..pages)
-        .flat_map(|page| (0..steps).map(move |step| (page, step)))
-        .collect()
+/// `(page_index, step_index)` units in execution order. Pages go through the
+/// steps in chunks of `chunk`: every page of a chunk finishes a step before
+/// any starts the next, so each engine loads once per chunk. `1` runs page by
+/// page; a chunk as large as the run goes stage by stage.
+pub(crate) fn schedule(pages: usize, steps: usize, chunk: usize) -> Vec<(usize, usize)> {
+    let chunk = chunk.max(1);
+    let mut units = Vec::with_capacity(pages * steps);
+    for first in (0..pages).step_by(chunk) {
+        let chunk_pages = first..(first + chunk).min(pages);
+        for step in 0..steps {
+            units.extend(chunk_pages.clone().map(|page| (page, step)));
+        }
+    }
+    units
 }
 
 #[cfg(test)]
@@ -135,11 +143,30 @@ mod tests {
     }
 
     #[test]
-    fn schedule_finishes_each_page_before_the_next() {
+    fn chunk_of_one_finishes_each_page_before_the_next() {
         assert_eq!(
-            schedule(2, 3),
+            schedule(2, 3, 1),
             [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
         );
-        assert!(schedule(0, 3).is_empty());
+        assert!(schedule(0, 3, 1).is_empty());
+        assert_eq!(schedule(2, 3, 0), schedule(2, 3, 1));
+    }
+
+    #[test]
+    fn chunks_go_stage_by_stage_and_keep_each_pages_step_order() {
+        assert_eq!(
+            schedule(3, 2, 2),
+            [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (2, 1)]
+        );
+        // A chunk covering the run: one pass per step.
+        assert_eq!(schedule(2, 2, 8), [(0, 0), (1, 0), (0, 1), (1, 1)]);
+        for chunk in 1..6 {
+            let units = schedule(5, 4, chunk);
+            assert_eq!(units.len(), 20);
+            for page in 0..5 {
+                let steps: Vec<_> = units.iter().filter(|u| u.0 == page).map(|u| u.1).collect();
+                assert_eq!(steps, [0, 1, 2, 3], "chunk {chunk}, page {page}");
+            }
+        }
     }
 }
