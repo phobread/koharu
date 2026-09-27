@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Write;
 
 use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
+use atomicwrites::{AtomicFile, OverwriteBehavior};
+use camino::{Utf8Path, Utf8PathBuf};
 use koharu_runtime::default_app_data_root;
 use koharu_secrets::SecretStore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -261,7 +263,13 @@ fn crash_reports_enabled_in(config_toml: Option<&str>) -> bool {
 }
 
 pub fn save(config: &AppConfig) -> Result<()> {
-    let path = config_path()?;
+    write_config_file(&config_path()?, config)
+}
+
+/// The UI saves every preference change here, and an interrupted plain write
+/// leaves a truncated file that stops the next launch. Write a fsynced temp
+/// file and rename it over the old one instead.
+fn write_config_file(path: &Utf8Path, config: &AppConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config dir `{parent}`"))?;
@@ -270,7 +278,9 @@ pub fn save(config: &AppConfig) -> Result<()> {
     // credentials persist only in the OS keyring.
     let content =
         toml::to_string_pretty(&config_for_disk(config)).context("failed to serialize config")?;
-    fs::write(&path, content).with_context(|| format!("failed to write config to `{path}`"))
+    AtomicFile::new(path.as_std_path(), OverwriteBehavior::AllowOverwrite)
+        .write(|file| file.write_all(content.as_bytes()))
+        .with_context(|| format!("failed to write config to `{path}`"))
 }
 
 fn config_for_disk(config: &AppConfig) -> AppConfig {
@@ -511,6 +521,25 @@ mod tests {
 
         assert_eq!(pipeline.flux2_strength, 1.0);
         assert_eq!(pipeline.flux2_steps, 4);
+    }
+
+    #[test]
+    fn config_file_is_replaced_whole_without_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join(CONFIG_FILE)).unwrap();
+        std::fs::write(&path, "stale = true\n").unwrap();
+        let mut config = AppConfig::default();
+        config.pipeline.flux2_steps = 2;
+
+        write_config_file(&path, &config).unwrap();
+
+        let saved: AppConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.pipeline.flux2_steps, 2);
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [CONFIG_FILE]);
     }
 
     #[test]
