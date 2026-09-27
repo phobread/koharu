@@ -213,12 +213,24 @@ impl App {
         let session = self
             .current_session()
             .ok_or_else(|| anyhow::anyhow!("no project open"))?;
+        self.apply_to(&session, op)
+    }
+
+    /// Apply `op` to `session`, which the caller captured before awaiting an
+    /// upload, decode or engine run. If the user switched projects meanwhile,
+    /// the op still lands in the project it was made for, beside the blobs it
+    /// references, rather than in whichever project is open now.
+    pub fn apply_to(&self, session: &Arc<ProjectSession>, op: koharu_core::Op) -> Result<u64> {
         let epoch = session.apply(op)?;
-        if let Some(tx) = self
-            .autosave
-            .try_lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|h| h.tx.clone()))
+        let still_open = self
+            .current_session()
+            .is_some_and(|current| Arc::ptr_eq(&current, session));
+        if still_open
+            && let Some(tx) = self
+                .autosave
+                .try_lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|h| h.tx.clone()))
         {
             let _ = tx.try_send(AutosaveSignal::Dirty);
         }

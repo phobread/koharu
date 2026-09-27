@@ -179,14 +179,17 @@ async fn create_pages(
         });
     }
 
-    app.apply(Op::Batch {
-        ops,
-        label: if has_removals {
-            "Replace pages".into()
-        } else {
-            "Import pages".into()
+    app.apply_to(
+        &session,
+        Op::Batch {
+            ops,
+            label: if has_removals {
+                "Replace pages".into()
+            } else {
+                "Import pages".into()
+            },
         },
-    })
+    )
     .map_err(ApiError::internal)?;
 
     Ok(Json(CreatePagesResponse { pages: created_ids }))
@@ -309,14 +312,17 @@ async fn create_pages_from_paths(
         });
     }
 
-    app.apply(Op::Batch {
-        ops,
-        label: if has_removals {
-            "Replace pages".into()
-        } else {
-            "Import pages".into()
+    app.apply_to(
+        &session,
+        Op::Batch {
+            ops,
+            label: if has_removals {
+                "Replace pages".into()
+            } else {
+                "Import pages".into()
+            },
         },
-    })
+    )
     .map_err(ApiError::internal)?;
 
     Ok(Json(CreatePagesResponse { pages: created_ids }))
@@ -403,11 +409,14 @@ async fn add_image_layer(
             name: Some(filename),
         }),
     };
-    app.apply(Op::AddNode {
-        page: page_id,
-        node,
-        at: page_node_count,
-    })
+    app.apply_to(
+        &session,
+        Op::AddNode {
+            page: page_id,
+            node,
+            at: page_node_count,
+        },
+    )
     .map_err(ApiError::internal)?;
 
     Ok(Json(AddImageLayerResponse { node: node_id }))
@@ -602,9 +611,10 @@ async fn put_mask(
             ops,
             label: format!("Repair Brush ({})", engine_id),
         };
-        app.apply(batch).map_err(ApiError::internal)?;
+        app.apply_to(&session, batch).map_err(ApiError::internal)?;
     } else {
-        app.apply(mask_op).map_err(ApiError::internal)?;
+        app.apply_to(&session, mask_op)
+            .map_err(ApiError::internal)?;
     }
 
     Ok(Json(PutMaskResponse {
