@@ -50,7 +50,7 @@ impl BlobStore {
     /// Write raw bytes; return the blake3-derived `BlobRef`.
     pub fn put_bytes(&self, data: &[u8]) -> Result<BlobRef> {
         let hash = blake3::hash(data).to_hex().to_string();
-        let path = self.blob_path(&hash);
+        let path = self.blob_path(&hash)?;
         if !path.exists() {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -62,13 +62,13 @@ impl BlobStore {
 
     /// Read raw bytes by `BlobRef`.
     pub fn get_bytes(&self, r: &BlobRef) -> Result<Vec<u8>> {
-        let path = self.blob_path(r.hash());
+        let path = self.blob_path(r.hash())?;
         std::fs::read(&path).with_context(|| format!("blob not found: {}", r.hash()))
     }
 
     /// Whether a blob exists on disk (no decode, no cache touch).
     pub fn exists(&self, r: &BlobRef) -> bool {
-        self.blob_path(r.hash()).exists()
+        self.blob_path(r.hash()).is_ok_and(|path| path.exists())
     }
 
     // --- decoded images ----------------------------------------------------
@@ -118,10 +118,19 @@ impl BlobStore {
 
     // --- internals ---------------------------------------------------------
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
+    /// Refs arrive from API paths, ops and saved scenes, so only hex digests
+    /// are accepted: separators, dots and drive prefixes never reach the
+    /// filesystem.
+    fn blob_path(&self, hash: &str) -> Result<PathBuf> {
+        anyhow::ensure!(is_hex_digest(hash), "invalid blob ref: not a hex digest");
         let (prefix, rest) = hash.split_at(2.min(hash.len()));
-        self.root.join(prefix).join(rest)
+        Ok(self.root.join(prefix).join(rest))
     }
+}
+
+/// Blake3 digests are 64 hex digits; shorter ones only appear in tests.
+fn is_hex_digest(hash: &str) -> bool {
+    (1..=128).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
@@ -158,5 +167,29 @@ mod tests {
         let a = store.put_bytes(b"x").unwrap();
         let b = store.put_bytes(b"x").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn refs_that_are_not_hex_digests_never_reach_the_filesystem() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::open(dir.path().join("blobs")).unwrap();
+        // Files outside the store that traversal refs would name.
+        std::fs::create_dir_all(dir.path().join("x")).unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
+
+        for hash in [
+            "..x/../secret.txt",
+            "../secret.txt",
+            "..\\..\\secret.txt",
+            "ab/../../secret.txt",
+            "/etc/hostname",
+            "C:\\Windows\\win.ini",
+            "",
+        ] {
+            let r = BlobRef::new(hash);
+            assert!(store.get_bytes(&r).is_err(), "{hash:?}");
+            assert!(!store.exists(&r), "{hash:?}");
+            assert!(store.load_image(&r).is_err(), "{hash:?}");
+        }
     }
 }
