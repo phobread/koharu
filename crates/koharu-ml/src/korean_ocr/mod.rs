@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, GenericImageView, imageops::FilterType};
+use image::{DynamicImage, GenericImageView, GrayImage, imageops::FilterType};
 use ndarray::Array4;
 use once_cell::sync::OnceCell;
 use ort::{inputs, session::Session, value::TensorRef};
@@ -24,7 +24,12 @@ pub struct KoreanOcr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineRecognition {
     pub text: String,
+    /// Mean of the emitted characters' scores (Paddle's CTC convention).
     pub confidence: f32,
+    /// One score per `text` character: the CTC probability at the timestep
+    /// that emitted it. Outlined dots and hearts drag the line mean down, so
+    /// per-character scores let a confident syllable stand on its own.
+    pub char_confidences: Vec<f32>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +104,7 @@ impl KoreanOcr {
 
         let mut previous = usize::MAX;
         let mut text = String::new();
+        let mut char_confidences = Vec::new();
         let mut score_sum = 0.0_f32;
         let mut score_count = 0_usize;
         for timestep in 0..shape[1] {
@@ -112,7 +118,9 @@ impl KoreanOcr {
                 }
             }
             if best_index != 0 && best_index != previous {
-                text.push_str(&self.characters[best_index]);
+                let emitted = &self.characters[best_index];
+                text.push_str(emitted);
+                char_confidences.extend(emitted.chars().map(|_| best_score));
                 score_sum += best_score;
                 score_count += 1;
             }
@@ -126,6 +134,7 @@ impl KoreanOcr {
             } else {
                 score_sum / score_count as f32
             },
+            char_confidences,
         })
     }
 
@@ -135,6 +144,43 @@ impl KoreanOcr {
             .map(|line| self.recognize_line(line))
             .collect()
     }
+
+    /// Like [`Self::recognize_block`], but on a dark bubble a line whose
+    /// Hangul reading is below `minimum_confidence` is re-read with inverted
+    /// polarity, and that reading is used when it clears the bar
+    /// ([`prefer_trusted_polarity`]).
+    pub fn recognize_block_with_fallback(
+        &mut self,
+        image: &DynamicImage,
+        dark_bubble: bool,
+        minimum_confidence: f32,
+    ) -> Result<Vec<LineRecognition>> {
+        split_text_lines(image)
+            .iter()
+            .map(|line| {
+                let original = self.recognize_line(line)?;
+                if !dark_bubble || hangul_confidence(&original) >= f64::from(minimum_confidence) {
+                    return Ok(original);
+                }
+                let inverted = self.recognize_line(&invert(line))?;
+                Ok(prefer_trusted_polarity(
+                    original,
+                    Some(inverted),
+                    minimum_confidence,
+                ))
+            })
+            .collect()
+    }
+}
+
+fn invert(image: &DynamicImage) -> DynamicImage {
+    let mut rgb = image.to_rgb8();
+    for pixel in rgb.pixels_mut() {
+        for channel in pixel.0.iter_mut() {
+            *channel = 255 - *channel;
+        }
+    }
+    DynamicImage::ImageRgb8(rgb)
 }
 
 fn preprocess(image: &DynamicImage) -> Result<Array4<f32>> {
@@ -163,37 +209,71 @@ fn preprocess(image: &DynamicImage) -> Result<Array4<f32>> {
 /// Split a detected block into horizontal lines by finding ink whose
 /// brightness opposes the dominant background. This handles both ordinary
 /// dark-on-white bubbles and BadEnd's white-outlined lettering on black.
+///
+/// Rows with enough ink form natural spans. Two failure modes are handled
+/// without discarding real lines:
+/// - Tightly set lines (or artwork running between them) can fuse into one
+///   tall span. When the bubble has at least two consistent line pitches
+///   between normal-height neighbours, a span clearly taller than one line is
+///   cut at the deepest projection valley near each expected boundary. With
+///   no such evidence nothing is cut, so a single tall glyph is never halved.
+/// - Detector boxes can clip a neighbouring caption. Only specks and partial
+///   rows touching the crop's top or bottom edge are dropped; short interior
+///   lines (e.g. after one fused span) are kept.
+///
+/// Each line is trimmed to its ink columns plus a margin.
 pub fn split_text_lines(image: &DynamicImage) -> Vec<DynamicImage> {
-    let gray = image.to_luma8();
-    if gray.width() == 0 || gray.height() == 0 {
+    line_rects(&image.to_luma8())
+        .into_iter()
+        .map(|rect| {
+            image.crop_imm(
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            )
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineRect {
+    top: u32,
+    bottom: u32,
+    left: u32,
+    right: u32,
+}
+
+fn line_rects(gray: &GrayImage) -> Vec<LineRect> {
+    let (width, height) = gray.dimensions();
+    if width == 0 || height == 0 {
         return Vec::new();
     }
     let mean = gray.pixels().map(|pixel| u64::from(pixel[0])).sum::<u64>() as f64
-        / f64::from(gray.width() * gray.height());
+        / f64::from(width * height);
     let dark_background = mean < 128.0;
-    let min_ink = (gray.width() / 50).max(4);
-    let active = (0..gray.height())
+    let is_ink = |luma: u8| {
+        if dark_background {
+            luma >= 180
+        } else {
+            luma <= 75
+        }
+    };
+    let profile = (0..height)
         .map(|y| {
-            (0..gray.width())
-                .filter(|&x| {
-                    let luma = gray.get_pixel(x, y)[0];
-                    if dark_background {
-                        luma >= 180
-                    } else {
-                        luma <= 75
-                    }
-                })
+            (0..width)
+                .filter(|&x| is_ink(gray.get_pixel(x, y)[0]))
                 .count() as u32
-                >= min_ink
         })
         .collect::<Vec<_>>();
 
+    let min_ink = (width / 50).max(4);
     let mut spans = Vec::new();
     let mut start = None;
     let mut last_active = 0_u32;
-    for (y, is_active) in active.into_iter().enumerate() {
+    for (y, &count) in profile.iter().enumerate() {
         let y = y as u32;
-        if is_active {
+        if count >= min_ink {
             start.get_or_insert(y);
             last_active = y;
         } else if let Some(top) = start
@@ -210,23 +290,141 @@ pub fn split_text_lines(image: &DynamicImage) -> Vec<DynamicImage> {
     {
         spans.push((top, last_active + 1));
     }
-
-    // Detector boxes can overlap a neighboring caption. Small partial rows
-    // are not useful recognition lines and would poison the confidence gate.
-    if let Some(max_height) = spans.iter().map(|(top, bottom)| bottom - top).max()
-        && spans.len() > 1
-    {
-        spans.retain(|(top, bottom)| (bottom - top) * 5 >= max_height * 3);
+    if spans.is_empty() {
+        return Vec::new();
     }
 
-    spans
+    let span_height = |(top, bottom): (u32, u32)| f64::from(bottom - top);
+    // Lower median, so one fused span cannot inflate the typical line height.
+    let typical = lower_median(spans.iter().map(|&span| span_height(span)).collect());
+    let normal = spans
+        .iter()
+        .map(|&span| (0.5 * typical..=1.3 * typical).contains(&span_height(span)))
+        .collect::<Vec<_>>();
+    let pitches = (0..spans.len().saturating_sub(1))
+        .filter(|&i| normal[i] && normal[i + 1])
+        .map(|i| f64::from(spans[i + 1].0 - spans[i].0))
+        .collect::<Vec<_>>();
+    let consistent = pitches.len() >= 2
+        && pitches.iter().copied().fold(f64::MIN, f64::max)
+            <= 1.35 * pitches.iter().copied().fold(f64::MAX, f64::min);
+    // (line pitch, line height) measured from the bubble's own clean lines.
+    let pitch = consistent.then(|| {
+        let line = median(
+            spans
+                .iter()
+                .zip(&normal)
+                .filter(|(_, is_normal)| **is_normal)
+                .map(|(&span, _)| span_height(span))
+                .collect(),
+        );
+        (median(pitches.clone()), line)
+    });
+
+    let mut pieces = Vec::new();
+    for &(top, bottom) in &spans {
+        let span = f64::from(bottom - top);
+        let fused = pitch.and_then(|(pitch, line)| {
+            let parts = round_half_up((span + pitch - line) / pitch);
+            (span > 1.7 * line && parts >= 2).then_some((pitch, line, parts))
+        });
+        let Some((pitch, line, parts)) = fused else {
+            pieces.push((top, bottom));
+            continue;
+        };
+        let segment = profile[top as usize..bottom as usize]
+            .iter()
+            .map(|&count| f64::from(count))
+            .collect::<Vec<_>>();
+        let base = percentile10(segment.clone());
+        let middle = median(segment);
+        let mut cuts = Vec::new();
+        let mut previous = top;
+        for i in 1..parts {
+            let center = f64::from(top) + f64::from(i) * span / f64::from(parts);
+            let low = (previous + (0.6 * line) as u32).max((center - 0.35 * pitch) as u32);
+            let high = bottom
+                .saturating_sub((0.6 * line) as u32)
+                .min((center + 0.35 * pitch) as u32);
+            if high <= low {
+                continue;
+            }
+            let valley = (low..high)
+                .min_by_key(|&y| (profile[y as usize], y))
+                .expect("non-empty window");
+            // Only a real valley separates two lines.
+            if f64::from(profile[valley as usize]) - base <= 0.5 * (middle - base) {
+                cuts.push(valley);
+                previous = valley;
+            }
+        }
+        let mut edges = vec![top];
+        edges.extend(cuts);
+        edges.push(bottom);
+        pieces.extend(edges.windows(2).map(|pair| (pair[0], pair[1])));
+    }
+
+    let reference = pitch.map_or(typical, |(_, line)| line);
+    let several = pieces.len() > 1;
+    pieces
         .into_iter()
+        .filter(|&(top, bottom)| {
+            let piece = f64::from(bottom - top);
+            let at_edge = top <= 1 || bottom >= height - 1;
+            !(several && (piece < 0.25 * reference || (at_edge && piece < 0.6 * reference)))
+        })
         .map(|(top, bottom)| {
-            let top = top.saturating_sub(5);
-            let bottom = (bottom + 5).min(image.height());
-            image.crop_imm(0, top, image.width(), bottom - top)
+            let columns = (0..width)
+                .filter(|&x| (top..bottom).any(|y| is_ink(gray.get_pixel(x, y)[0])))
+                .collect::<Vec<_>>();
+            let margin = round_half_up(0.3 * reference.min(f64::from(bottom - top)));
+            let (left, right) = match (columns.first(), columns.last()) {
+                (Some(&first), Some(&last)) => {
+                    (first.saturating_sub(margin), (last + 1 + margin).min(width))
+                }
+                _ => (0, width),
+            };
+            LineRect {
+                top: top.saturating_sub(5),
+                bottom: (bottom + 5).min(height),
+                left,
+                right,
+            }
         })
         .collect()
+}
+
+fn round_half_up(value: f64) -> u32 {
+    (value + 0.5).floor().max(0.0) as u32
+}
+
+fn sorted(mut values: Vec<f64>) -> Vec<f64> {
+    values.sort_by(f64::total_cmp);
+    values
+}
+
+fn lower_median(values: Vec<f64>) -> f64 {
+    let values = sorted(values);
+    values[(values.len() - 1) / 2]
+}
+
+fn median(values: Vec<f64>) -> f64 {
+    let values = sorted(values);
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) / 2.0
+    }
+}
+
+/// numpy-style (linear interpolation) 10th percentile.
+fn percentile10(values: Vec<f64>) -> f64 {
+    let values = sorted(values);
+    let position = 0.1 * (values.len() - 1) as f64;
+    let low = position.floor() as usize;
+    let high = (low + 1).min(values.len() - 1);
+    values[low] + (values[high] - values[low]) * (position - low as f64)
 }
 
 pub fn is_dark_panel(image: &DynamicImage) -> bool {
@@ -261,6 +459,16 @@ pub fn contains_lexical_hangul(text: &str) -> bool {
 /// Alignment can be ambiguous around repeated syllables, but because we only
 /// ever substitute (never indel) and only from trusted lines, the worst case is
 /// swapping one already-uncertain syllable, not corrupting sentence structure.
+///
+/// A line is trusted by the mean confidence of its Hangul only
+/// ([`hangul_confidence`]): outlined dots and hearts score low and would
+/// otherwise sink a line whose syllables were read confidently.
+///
+/// VL sometimes emits ASCII junk where a syllable is (`8-?` for `응-?`,
+/// `....CI?` for `...에?`). A run of ASCII letters/digits the verifier does not
+/// also read counts as one substitutable slot: a trusted verifier syllable
+/// aligned to it replaces the whole run. An unaligned run stays, so real Latin
+/// text (`OK`, `TV`) is never deleted.
 pub fn repair_hangul(
     paddle_vl: &str,
     dedicated: &[LineRecognition],
@@ -275,39 +483,197 @@ pub fn repair_hangul(
     let verifier = dedicated
         .iter()
         .flat_map(|line| {
-            let trusted = line.confidence >= minimum_confidence;
+            let trusted = hangul_confidence(line) >= f64::from(minimum_confidence);
             line.text
                 .chars()
                 .filter(|character| is_lexical_hangul(*character))
                 .map(move |character| (character, trusted))
         })
         .collect::<Vec<_>>();
-    let mut output = paddle_vl.chars().collect::<Vec<_>>();
-    let vl_positions = output
+    let verifier_text = dedicated
         .iter()
-        .enumerate()
-        .filter_map(|(index, character)| is_lexical_hangul(*character).then_some(index))
-        .collect::<Vec<_>>();
-    if verifier.is_empty() || vl_positions.is_empty() {
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let vl = paddle_vl.chars().collect::<Vec<_>>();
+    let units = repair_units(&vl, &verifier_text);
+    if verifier.is_empty() || units.is_empty() {
         return paddle_vl.to_owned();
     }
 
-    let vl_seq = vl_positions.iter().map(|&i| output[i]).collect::<Vec<_>>();
+    // Junk slots align as a character no verifier syllable can match.
+    let unit_seq = units
+        .iter()
+        .map(|unit| unit.hangul.unwrap_or('\0'))
+        .collect::<Vec<_>>();
     let verifier_seq = verifier
         .iter()
         .map(|(character, _)| *character)
         .collect::<Vec<_>>();
-    for (i, j) in align_sequences(&vl_seq, &verifier_seq) {
+    let mut replacements = vec![None; units.len()];
+    for (i, j) in align_sequences(&unit_seq, &verifier_seq) {
         // Only aligned pairs (matches/substitutions) apply; gaps are skipped so
         // no word is inserted into or deleted from the VL text.
         if let (Some(i), Some(j)) = (i, j) {
             let (replacement, trusted) = verifier[j];
             if trusted {
-                output[vl_positions[i]] = replacement;
+                replacements[i] = Some(replacement);
             }
         }
     }
-    output.into_iter().collect()
+    let mut output = String::with_capacity(paddle_vl.len());
+    let mut position = 0;
+    for (unit, replacement) in units.iter().zip(replacements) {
+        output.extend(&vl[position..unit.start]);
+        match replacement {
+            Some(character) => output.push(character),
+            None => output.extend(&vl[unit.start..unit.end]),
+        }
+        position = unit.end;
+    }
+    output.extend(&vl[position..]);
+    output
+}
+
+/// A VL character range `repair_hangul` may overwrite: one Hangul character,
+/// or (`hangul == None`) a junk run of ASCII letters/digits.
+struct RepairUnit {
+    start: usize,
+    end: usize,
+    hangul: Option<char>,
+}
+
+fn repair_units(vl: &[char], verifier_text: &str) -> Vec<RepairUnit> {
+    let mut units = Vec::new();
+    let mut i = 0;
+    while i < vl.len() {
+        if vl[i].is_ascii_alphanumeric() {
+            let mut end = i;
+            while end < vl.len() && vl[end].is_ascii_alphanumeric() {
+                end += 1;
+            }
+            let run = vl[i..end].iter().collect::<String>();
+            if !verifier_text.contains(&run) {
+                units.push(RepairUnit {
+                    start: i,
+                    end,
+                    hangul: None,
+                });
+            }
+            i = end;
+            continue;
+        }
+        if is_lexical_hangul(vl[i]) {
+            units.push(RepairUnit {
+                start: i,
+                end: i + 1,
+                hangul: Some(vl[i]),
+            });
+        }
+        i += 1;
+    }
+    units
+}
+
+/// Mean per-character confidence over a line's Hangul (0 when it has none).
+pub fn hangul_confidence(line: &LineRecognition) -> f64 {
+    let (sum, count) = line
+        .text
+        .chars()
+        .zip(&line.char_confidences)
+        .filter(|(character, _)| is_lexical_hangul(*character))
+        .fold((0.0_f64, 0_usize), |(sum, count), (_, &score)| {
+            (sum + f64::from(score), count + 1)
+        });
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+/// Which reading of a line to repair with on a dark bubble: the original,
+/// unless it is untrusted and the inverted-polarity reading is trusted.
+/// Plain inversion helps PP-OCRv5 on some white-outlined glyphs, but it is
+/// only consulted when the original reading is unsure.
+pub fn prefer_trusted_polarity(
+    original: LineRecognition,
+    inverted: Option<LineRecognition>,
+    minimum_confidence: f32,
+) -> LineRecognition {
+    let bar = f64::from(minimum_confidence);
+    match inverted {
+        Some(inverted)
+            if hangul_confidence(&original) < bar && hangul_confidence(&inverted) >= bar =>
+        {
+            inverted
+        }
+        _ => original,
+    }
+}
+
+/// Restore word breaks VL dropped at the bubble's line breaks. Korean bubbles
+/// break lines between words, and VL often runs lines together
+/// (`리한을흉보는것만은싫어`). Where two adjacent syllables of `text` align to
+/// the last syllable of one verifier line and the first of the next — or to
+/// syllables the verifier itself separates with a space — and both agree with
+/// the verifier, a space is inserted. Existing spaces are never removed.
+pub fn space_at_line_breaks(text: &str, dedicated: &[LineRecognition]) -> String {
+    // (syllable, line index, space before it within its line)
+    let mut verifier = Vec::new();
+    for (line_index, line) in dedicated.iter().enumerate() {
+        let mut gap = false;
+        for character in line.text.chars() {
+            if is_lexical_hangul(character) {
+                verifier.push((character, line_index, gap));
+                gap = false;
+            } else if character.is_whitespace() {
+                gap = true;
+            }
+        }
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let positions = chars
+        .iter()
+        .enumerate()
+        .filter_map(|(index, character)| is_lexical_hangul(*character).then_some(index))
+        .collect::<Vec<_>>();
+    if positions.len() < 2 || verifier.is_empty() {
+        return text.to_owned();
+    }
+    let text_seq = positions.iter().map(|&i| chars[i]).collect::<Vec<_>>();
+    let verifier_seq = verifier
+        .iter()
+        .map(|(character, ..)| *character)
+        .collect::<Vec<_>>();
+    let mut aligned = vec![None; positions.len()];
+    for (i, j) in align_sequences(&text_seq, &verifier_seq) {
+        if let (Some(i), Some(j)) = (i, j) {
+            aligned[i] = Some(j);
+        }
+    }
+    let mut breaks = vec![false; chars.len()];
+    for i in 0..positions.len() - 1 {
+        let between = &chars[positions[i] + 1..positions[i + 1]];
+        if between.iter().any(|character| character.is_whitespace()) {
+            continue;
+        }
+        let (Some(a), Some(b)) = (aligned[i], aligned[i + 1]) else {
+            continue;
+        };
+        let (first, first_line, _) = verifier[a];
+        let (second, second_line, gap) = verifier[b];
+        if b != a + 1 || first != text_seq[i] || second != text_seq[i + 1] {
+            continue;
+        }
+        if second_line == first_line + 1 || (second_line == first_line && gap) {
+            breaks[positions[i + 1]] = true;
+        }
+    }
+    let mut output = String::with_capacity(text.len() + 8);
+    for (character, space_before) in chars.into_iter().zip(breaks) {
+        if space_before {
+            output.push(' ');
+        }
+        output.push(character);
+    }
+    output
 }
 
 /// Needleman–Wunsch global alignment of two character sequences. Returns the
@@ -384,6 +750,7 @@ mod tests {
             .map(|(text, confidence)| LineRecognition {
                 text: (*text).to_owned(),
                 confidence: *confidence,
+                char_confidences: vec![*confidence; text.chars().count()],
             })
             .collect()
     }
@@ -521,5 +888,164 @@ mod tests {
         let split = split_text_lines(&DynamicImage::ImageLuma8(image));
         assert_eq!(split.len(), 2);
         assert!(split.iter().all(|line| line.height() >= 28));
+    }
+
+    fn scored(text: &str, scores: &[f32]) -> LineRecognition {
+        LineRecognition {
+            text: text.to_owned(),
+            confidence: scores.iter().sum::<f32>() / scores.len() as f32,
+            char_confidences: scores.to_vec(),
+        }
+    }
+
+    #[test]
+    fn trusts_a_line_by_its_hangul_not_its_punctuation() {
+        // BadEnd 017: the outlined heart reads as `V` at 0.14, sinking the line
+        // mean to 0.68 although both syllables were read at 0.95.
+        let line = scored("헤헤V", &[0.95, 0.95, 0.14]);
+        assert!(line.confidence < 0.77);
+        let rest = scored("그럼", &[0.98, 0.98]);
+        assert_eq!(
+            repair_hangul("하하♡ 그럼", &[line, rest], 0.77),
+            "헤헤♡ 그럼"
+        );
+    }
+
+    #[test]
+    fn replaces_ascii_junk_standing_in_for_a_syllable() {
+        assert_eq!(
+            repair_hangul("8-?", &lines(&[("응-?", 0.94)]), 0.77),
+            "응-?"
+        );
+        assert_eq!(
+            repair_hangul("....CI?", &lines(&[(".에?", 0.80)]), 0.77),
+            "....에?"
+        );
+        // Latin the verifier also reads is text, not junk.
+        assert_eq!(
+            repair_hangul("OK 좋아", &lines(&[("OK 좋아", 0.99)]), 0.77),
+            "OK 좋아"
+        );
+        // An unaligned run is never deleted.
+        assert_eq!(
+            repair_hangul("TV 봤어", &lines(&[("봣어", 0.99)]), 0.77),
+            "TV 봣어"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_inverted_reading_only_when_it_is_trusted() {
+        let original = scored("뭐야", &[0.60, 0.70]);
+        let inverted = scored("뭐야", &[0.99, 0.99]);
+        let unsure = scored("뮤야", &[0.50, 0.60]);
+        assert_eq!(
+            prefer_trusted_polarity(original.clone(), Some(inverted.clone()), 0.77),
+            inverted
+        );
+        assert_eq!(
+            prefer_trusted_polarity(original.clone(), Some(unsure), 0.77),
+            original
+        );
+        let confident = scored("짜증나네", &[0.9; 4]);
+        assert_eq!(
+            prefer_trusted_polarity(confident.clone(), Some(inverted), 0.77),
+            confident
+        );
+    }
+
+    #[test]
+    fn restores_word_breaks_at_the_bubbles_line_breaks() {
+        let dedicated = lines(&[
+            ("..리한을", 0.9),
+            ("흉보는", 0.9),
+            ("것만은", 0.9),
+            ("싫어", 0.9),
+        ]);
+        assert_eq!(
+            space_at_line_breaks("..리한을흉보는것만은싫어....", &dedicated),
+            "..리한을 흉보는 것만은 싫어...."
+        );
+        // The verifier's own in-line space counts too.
+        let dedicated = lines(&[("입으로 직접", 0.9)]);
+        assert_eq!(
+            space_at_line_breaks("입으로직접", &dedicated),
+            "입으로 직접"
+        );
+        // Syllables the verifier reads differently get no break inserted.
+        let dedicated = lines(&[("모습이랑", 0.9), ("비교해서", 0.9)]);
+        assert_eq!(
+            space_at_line_breaks("모습이당비고하서", &dedicated),
+            "모습이당비고하서"
+        );
+        // Existing spaces are kept, never removed.
+        let dedicated = lines(&[("그자식", 0.9)]);
+        assert_eq!(space_at_line_breaks("그 자식", &dedicated), "그 자식");
+    }
+
+    /// White bars on black: `rows` are (top, bottom) text lines spanning
+    /// columns 20..100; `bridges` are (top, bottom, left, right) extra ink.
+    fn bars(height: u32, rows: &[(u32, u32)], bridges: &[(u32, u32, u32, u32)]) -> DynamicImage {
+        let mut image = GrayImage::from_pixel(120, height, Luma([0]));
+        for &(top, bottom) in rows {
+            for y in top..bottom {
+                for x in 20..100 {
+                    image.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+        for &(top, bottom, left, right) in bridges {
+            for y in top..bottom {
+                for x in left..right {
+                    image.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+        DynamicImage::ImageLuma8(image)
+    }
+
+    #[test]
+    fn cuts_fused_lines_using_the_bubbles_own_pitch() {
+        // BadEnd 010: two tightly set lines touch and fuse into one span. The
+        // other lines give a consistent 30 px pitch, so the fused span is cut.
+        let rows = [(10, 30), (40, 60), (70, 90), (100, 120), (130, 150)];
+        let image = bars(170, &rows, &[(30, 40, 60, 66)]);
+        assert_eq!(split_text_lines(&image).len(), 5);
+    }
+
+    #[test]
+    fn never_halves_a_single_span_without_pitch_evidence() {
+        // One tall span with a faint valley but no other lines to measure a
+        // pitch from: it may be a single tall glyph, so it stays whole.
+        let image = bars(90, &[(10, 40), (46, 76)], &[(40, 46, 60, 65)]);
+        assert_eq!(split_text_lines(&image).len(), 1);
+    }
+
+    #[test]
+    fn keeps_short_interior_lines_after_a_fused_span() {
+        // The old rule dropped every span shorter than 60% of the tallest, so
+        // one fused span threw the real lines below it away.
+        let image = bars(140, &[(10, 70), (80, 100), (110, 130)], &[]);
+        assert_eq!(split_text_lines(&image).len(), 3);
+    }
+
+    #[test]
+    fn drops_partial_rows_clipped_at_the_crop_edge() {
+        let image = bars(110, &[(0, 12), (30, 55), (70, 95)], &[]);
+        let split = split_text_lines(&image);
+        assert_eq!(split.len(), 2);
+        assert!(split.iter().all(|line| line.height() >= 25));
+    }
+
+    #[test]
+    fn trims_each_line_to_its_ink_columns() {
+        let mut image = GrayImage::from_pixel(120, 80, Luma([0]));
+        for y in 20..50 {
+            for x in 40..80 {
+                image.put_pixel(x, y, Luma([255]));
+            }
+        }
+        let split = split_text_lines(&DynamicImage::ImageLuma8(image));
+        assert_eq!(split.len(), 1);
+        assert_eq!(split[0].width(), 40 + 2 * 9);
     }
 }

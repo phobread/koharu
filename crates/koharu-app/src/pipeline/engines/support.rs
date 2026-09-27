@@ -258,7 +258,9 @@ pub fn image_dimensions(image: &DynamicImage) -> (u32, u32) {
 /// their lines join bare. Korean, Latin, Cyrillic and the like DO separate
 /// words with spaces — joining those bare would fuse the last word of one
 /// line with the first word of the next, so they join with a space. A hyphen
-/// at a line break is treated as a soft hyphen and dropped.
+/// between two Latin letters at a line break is treated as a soft hyphen and
+/// dropped; anywhere else (e.g. Korean's long-vowel dash in `레이이-`) it is
+/// real text and kept.
 pub fn single_line_ocr_text(text: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
@@ -274,7 +276,7 @@ pub fn single_line_ocr_text(text: &str) -> String {
             out.push_str(line);
         } else if space_less {
             out.push_str(line);
-        } else if out.ends_with('-') {
+        } else if is_soft_hyphen_break(&out, line) {
             out.pop();
             out.push_str(line);
         } else {
@@ -283,6 +285,18 @@ pub fn single_line_ocr_text(text: &str) -> String {
         }
     }
     out
+}
+
+/// `before` ends in `-` that splits one Latin-script word across a line break.
+fn is_soft_hyphen_break(before: &str, next: &str) -> bool {
+    let mut tail = before.chars().rev();
+    tail.next() == Some('-')
+        && tail.next().is_some_and(is_latin_letter)
+        && next.chars().next().is_some_and(is_latin_letter)
+}
+
+fn is_latin_letter(c: char) -> bool {
+    c.is_alphabetic() && !is_hangul(c) && !is_han_or_kana(c)
 }
 
 /// True when OCR output for a text region carries an emoji/pictograph but no
@@ -586,6 +600,13 @@ mod tests {
             single_line_ocr_text("even this confe-\nssion is\ntoo much"),
             "even this confession is too much"
         );
+        // A Korean long-vowel dash at a break is text, not a soft hyphen: it
+        // stays and the next word keeps its space.
+        assert_eq!(
+            single_line_ocr_text("그치만\n레이이-\n저 새끼가"),
+            "그치만 레이이- 저 새끼가"
+        );
+        assert_eq!(single_line_ocr_text("에이-\nOK"), "에이- OK");
         // Blank lines and stray whitespace disappear; single lines pass through.
         assert_eq!(single_line_ocr_text("  one line  "), "one line");
         assert_eq!(single_line_ocr_text("a\r\n\r\nb"), "a b");

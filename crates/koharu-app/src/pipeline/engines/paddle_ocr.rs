@@ -15,7 +15,9 @@ use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOc
 use koharu_ml::{
     TextRegion,
     comic_text_detector::{crop_text_block_deskewed, crop_text_block_exact},
-    korean_ocr::{KoreanOcr, contains_lexical_hangul, repair_hangul},
+    korean_ocr::{
+        KoreanOcr, contains_lexical_hangul, is_dark_panel, repair_hangul, space_at_line_breaks,
+    },
 };
 use koharu_runtime::RuntimeManager;
 use tokio::sync::OnceCell;
@@ -29,11 +31,14 @@ use crate::pipeline::engines::support::{
 };
 
 const MAX_NEW_TOKENS: usize = 256;
-// Per-line trust bar for `repair_hangul`. On BadEnd 017 the dedicated
+// Per-line trust bar for `repair_hangul` (a line's Hangul-only mean) and for
+// the dark-bubble inverted-polarity fallback. On BadEnd 017 the dedicated
 // recognizer's *correct* outlined-Hangul lines sit at ~0.77-0.99 while its
 // clearly-wrong lines scored <=0.48, so 0.77 admits the good lines (incl.
 // block 3's `변태`@0.771) and rejects the bad ones; alignment + never-indel in
-// `repair_hangul` guards the rest.
+// `repair_hangul` guards the rest. Re-validated 2026-09-27 on 9 unseen BadEnd
+// pages (40 bubbles, blind key, rules frozen before the test run) together
+// with the sturdier line splitter: Hangul errors 50 -> 32.
 const KOREAN_REPAIR_MIN_CONFIDENCE: f32 = 0.77;
 
 pub struct Model {
@@ -132,8 +137,13 @@ impl Engine for Model {
                     let mut korean = korean
                         .lock()
                         .map_err(|_| anyhow::anyhow!("Korean OCR mutex poisoned"))?;
-                    let lines = korean.recognize_block(&verification_regions[index])?;
-                    Ok(repair_hangul(&text, &lines, KOREAN_REPAIR_MIN_CONFIDENCE))
+                    let lines = korean.recognize_block_with_fallback(
+                        &verification_regions[index],
+                        is_dark_panel(&regions[index]),
+                        KOREAN_REPAIR_MIN_CONFIDENCE,
+                    )?;
+                    let repaired = repair_hangul(&text, &lines, KOREAN_REPAIR_MIN_CONFIDENCE);
+                    Ok(space_at_line_breaks(&repaired, &lines))
                 })();
                 match repaired {
                     Ok(repaired) if repaired != text => {
