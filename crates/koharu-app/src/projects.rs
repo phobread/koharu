@@ -9,7 +9,7 @@
 //! clients never collide on the same name.
 
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -186,7 +186,6 @@ fn slugify(input: &str) -> String {
         }
         // Other chars dropped silently.
     }
-    let _ = SystemTime::now().duration_since(UNIX_EPOCH); // silence unused import warn
     while out.ends_with('-') {
         out.pop();
     }

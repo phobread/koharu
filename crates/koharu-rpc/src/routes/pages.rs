@@ -18,7 +18,7 @@ use image::GenericImageView;
 use koharu_app::pipeline::{self, EngineCtx, PipelineRunOptions};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op, Page,
-    PageId, ReadingOrder, Region, Scene, Transform,
+    PageId, ReadingOrder, Region, Transform,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -427,11 +427,6 @@ fn center_on_page(page: Option<&koharu_core::Page>, iw: u32, ih: u32) -> (f32, f
     let x = ((p.width as f32) - iw as f32) / 2.0;
     let y = ((p.height as f32) - ih as f32) / 2.0;
     (x.max(0.0), y.max(0.0))
-}
-
-#[allow(dead_code)]
-fn scene_contains_page(scene: &Scene, id: PageId) -> bool {
-    scene.pages.contains_key(&id)
 }
 
 // ---------------------------------------------------------------------------
