@@ -8,6 +8,7 @@
 pub mod artifacts;
 pub mod engine;
 mod engines;
+mod plan;
 
 pub use artifacts::Artifact;
 pub use engine::{
@@ -30,8 +31,8 @@ use tracing::Instrument;
 pub type ProgressSink = Arc<dyn Fn(ProgressTick) + Send + Sync>;
 
 /// Observer for non-fatal step failures. Called once per failed step; the
-/// pipeline skips the rest of that page's steps and moves on to the next
-/// page.
+/// pipeline then skips that page's steps that need the failed step's output
+/// and carries on with the rest.
 pub type WarningSink = Arc<dyn Fn(WarningTick) + Send + Sync>;
 
 #[derive(Debug, Clone)]
@@ -111,11 +112,12 @@ pub enum Scope {
 /// Execute `spec` against `session`. Each engine step becomes one `Op::Batch`
 /// applied via the session's history (one undo step per step per page).
 ///
-/// A failed step on a given page is non-fatal: the rest of that page's steps
-/// are skipped (they typically depend on the failed step's output), one
-/// [`WarningTick`] is emitted via `warnings`, and the driver moves on to the
-/// next page. The function returns the total number of per-step warnings
-/// that fired, letting callers flag the run as `CompletedWithErrors`.
+/// A failed step on a given page is non-fatal: one [`WarningTick`] is emitted
+/// via `warnings`, the page's later steps that need (directly or not) what it
+/// would have produced are skipped, and independent ones still run, so a
+/// failed translation doesn't cost the page its inpainting. The function
+/// returns the total number of per-step warnings that fired, letting callers
+/// flag the run as `CompletedWithErrors`.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(level = "info", skip_all)]
 pub async fn run(
@@ -153,117 +155,130 @@ pub async fn run(
     let total_units = (total_pages * total_steps) as u64;
     let mut completed: u64 = 0;
     let mut warning_count: usize = 0;
-
-    'pages: for (page_index, page_id) in pages.iter().enumerate() {
-        for (seq, &i) in order.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(crate::Cancelled.into());
-            }
-            let info = infos[i];
-
-            if let Some(sink) = progress.as_ref() {
-                let percent = ((completed * 100) / total_units).min(100) as u8;
-                sink(ProgressTick {
-                    step: step_for(info),
-                    step_id: info.id.to_string(),
-                    step_index: seq,
-                    total_steps,
-                    page_index,
-                    total_pages,
-                    overall_percent: percent,
-                });
-            }
-
-            // The page must still exist (user may have deleted it mid-run).
-            if !session.scene.read().pages.contains_key(page_id) {
-                // Skip the remaining steps for a deleted page and credit all
-                // of them against total_units so progress still reaches 100%.
-                completed += (total_steps - seq) as u64;
-                continue 'pages;
-            }
-
-            let engine = match registry.get(info.id, &runtime, cpu).await {
-                Ok(e) => e,
-                Err(err) => {
-                    // Engine *load* failure: same recovery as a run failure.
-                    report_step_failure(
-                        info.id,
-                        page_id,
-                        seq,
-                        page_index,
-                        total_pages,
-                        total_steps,
-                        &err,
-                        &mut warning_count,
-                        warnings.as_ref(),
-                    );
-                    completed += (total_steps - seq) as u64;
-                    continue 'pages;
-                }
+    let steps: Vec<(&EngineInfo, plan::StepIo)> = order
+        .iter()
+        .map(|&i| {
+            let io = plan::StepIo {
+                needs: infos[i].needs,
+                produces: infos[i].produces,
             };
-            let scene_snap = session.scene_snapshot();
-            let ctx = EngineCtx {
-                scene: &scene_snap,
-                page: *page_id,
-                blobs: &session.blobs,
-                runtime: &runtime,
-                cancel: &cancel,
-                options: &spec.options,
-                llm: &llm,
-                renderer: &renderer,
-            };
-            let step_started = Instant::now();
-            let step_result = async { engine.run(ctx).await }
-                .instrument(tracing::info_span!("step", engine = info.id, page = %page_id))
-                .await;
-            tracing::info!(
-                engine = info.id,
-                page = %page_id,
-                elapsed_ms = step_started.elapsed().as_millis(),
-                "pipeline step finished"
-            );
-            let ops = match step_result {
-                Ok(ops) => ops,
-                Err(err) => {
-                    report_step_failure(
-                        info.id,
-                        page_id,
-                        seq,
-                        page_index,
-                        total_pages,
-                        total_steps,
-                        &err,
-                        &mut warning_count,
-                        warnings.as_ref(),
-                    );
-                    // Subsequent steps on this page almost always consume the
-                    // failed step's artifact; skip the rest and move on.
-                    completed += (total_steps - seq) as u64;
-                    continue 'pages;
-                }
-            };
-            completed += 1;
-            if ops.is_empty() {
-                continue;
-            }
-            let batch = Op::Batch {
-                ops,
-                label: format!("{}: page {}", info.id, page_id),
-            };
-            if let Err(err) = session.apply(batch) {
+            (infos[i], io)
+        })
+        .collect();
+    // Per page: what failed steps never produced, and whether the user has
+    // deleted the page since the run started.
+    let mut missing = vec![plan::MissingArtifacts::default(); pages.len()];
+    let mut deleted = vec![false; pages.len()];
+
+    for (page_index, seq) in plan::schedule(pages.len(), steps.len()) {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(crate::Cancelled.into());
+        }
+        let (info, io) = steps[seq];
+        let page_id = &pages[page_index];
+        let percent = ((completed * 100) / total_units).min(100) as u8;
+        // Every unit counts once, whether it runs, fails or is skipped, so
+        // progress always reaches 100%.
+        completed += 1;
+
+        if deleted[page_index] || !session.scene.read().pages.contains_key(page_id) {
+            deleted[page_index] = true;
+            continue;
+        }
+        // Skip only the steps that need what a failed step never produced:
+        // a failed translation still leaves the page to be inpainted.
+        if missing[page_index].blocks(io) {
+            missing[page_index].record(io);
+            continue;
+        }
+
+        if let Some(sink) = progress.as_ref() {
+            sink(ProgressTick {
+                step: step_for(info),
+                step_id: info.id.to_string(),
+                step_index: seq,
+                total_steps,
+                page_index,
+                total_pages,
+                overall_percent: percent,
+            });
+        }
+
+        let engine = match registry.get(info.id, &runtime, cpu).await {
+            Ok(e) => e,
+            Err(err) => {
+                // Engine *load* failure: same recovery as a run failure.
                 report_step_failure(
                     info.id,
                     page_id,
                     seq,
                     page_index,
                     total_pages,
-                    total_steps,
                     &err,
                     &mut warning_count,
                     warnings.as_ref(),
                 );
-                continue 'pages;
+                missing[page_index].record(io);
+                continue;
             }
+        };
+        let scene_snap = session.scene_snapshot();
+        let ctx = EngineCtx {
+            scene: &scene_snap,
+            page: *page_id,
+            blobs: &session.blobs,
+            runtime: &runtime,
+            cancel: &cancel,
+            options: &spec.options,
+            llm: &llm,
+            renderer: &renderer,
+        };
+        let step_started = Instant::now();
+        let step_result = async { engine.run(ctx).await }
+            .instrument(tracing::info_span!("step", engine = info.id, page = %page_id))
+            .await;
+        tracing::info!(
+            engine = info.id,
+            page = %page_id,
+            elapsed_ms = step_started.elapsed().as_millis(),
+            "pipeline step finished"
+        );
+        let ops = match step_result {
+            Ok(ops) => ops,
+            Err(err) => {
+                report_step_failure(
+                    info.id,
+                    page_id,
+                    seq,
+                    page_index,
+                    total_pages,
+                    &err,
+                    &mut warning_count,
+                    warnings.as_ref(),
+                );
+                missing[page_index].record(io);
+                continue;
+            }
+        };
+        if ops.is_empty() {
+            continue;
+        }
+        let batch = Op::Batch {
+            ops,
+            label: format!("{}: page {}", info.id, page_id),
+        };
+        if let Err(err) = session.apply(batch) {
+            report_step_failure(
+                info.id,
+                page_id,
+                seq,
+                page_index,
+                total_pages,
+                &err,
+                &mut warning_count,
+                warnings.as_ref(),
+            );
+            missing[page_index].record(io);
         }
     }
 
@@ -288,12 +303,10 @@ fn report_step_failure(
     step_index: usize,
     page_index: usize,
     total_pages: usize,
-    total_steps: usize,
     err: &anyhow::Error,
     warning_count: &mut usize,
     sink: Option<&WarningSink>,
 ) {
-    let _ = total_steps;
     tracing::warn!(
         engine = engine_id,
         page = %page_id,
