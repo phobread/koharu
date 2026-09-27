@@ -1,5 +1,11 @@
 # To do
 
+## UI
+
+- **General UI refresh.** The interface has too many buttons, dials and
+  dropdown menus; simplify it and ease the everyday translate-and-touch-up
+  workflow.
+
 ## Inpainting
 
 - **Finish half-removed text in plain bubbles.** Inside a detected text box
