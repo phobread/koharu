@@ -208,17 +208,20 @@ async fn import_project(
     std::fs::remove_dir(dest.as_std_path())
         .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?;
 
-    let body_vec = body.to_vec();
     let dest_c = dest.clone();
-    tokio::task::spawn_blocking(move || koharu_app::archive::import_khr_bytes(&body_vec, &dest_c))
+    tokio::task::spawn_blocking(move || koharu_app::archive::import_khr_bytes(&body, &dest_c))
         .await
         .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
         .map_err(ApiError::internal)?;
 
-    let session = app
-        .open_project(dest, None)
-        .await
-        .map_err(ApiError::internal)?;
+    let session = match app.open_project(dest.clone(), None).await {
+        Ok(session) => session,
+        Err(err) => {
+            // Otherwise the list keeps a project that can't be opened.
+            let _ = std::fs::remove_dir_all(dest.as_std_path());
+            return Err(ApiError::internal(err));
+        }
+    };
     Ok(Json(koharu_app::app::project_summary(&session)))
 }
 
