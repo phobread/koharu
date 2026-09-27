@@ -29,8 +29,10 @@ use koharu_runtime::RuntimeManager;
 use parking_lot::RwLock;
 use petgraph::algo::toposort;
 use petgraph::graph::DiGraph;
+use tokio::sync::SemaphorePermit;
 use tracing::Instrument;
 
+use super::gpu_gate::GpuGate;
 use crate::blobs::BlobStore;
 use crate::llm;
 use crate::pipeline::artifacts::Artifact;
@@ -152,12 +154,14 @@ fn engines_to_evict<'a>(
 
 pub struct Registry {
     engines: RwLock<HashMap<&'static str, Arc<dyn Engine>>>,
+    gpu: GpuGate,
 }
 
 impl Default for Registry {
     fn default() -> Self {
         Self {
             engines: RwLock::new(HashMap::new()),
+            gpu: GpuGate::default(),
         }
     }
 }
@@ -165,6 +169,26 @@ impl Default for Registry {
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Wait for the GPU before loading and running engine `id`: GPU engines
+    /// take turns across pipeline jobs and repair-brush strokes (see
+    /// [`GpuGate`]), while CPU engines and CPU-only runs never wait. Fails
+    /// with [`crate::Cancelled`] if `cancel` is set while waiting. Keep the
+    /// turn until the engine handle from [`Self::get`] has been dropped.
+    pub async fn gpu_turn(
+        &self,
+        id: &str,
+        cpu: bool,
+        cancel: &AtomicBool,
+    ) -> Result<Option<SemaphorePermit<'_>>> {
+        if cpu || CPU_ENGINES.contains(&id) {
+            return Ok(None);
+        }
+        match self.gpu.turn(cancel).await {
+            Some(turn) => Ok(Some(turn)),
+            None => Err(crate::Cancelled.into()),
+        }
     }
 
     /// Get or load an engine instance by id.
@@ -289,7 +313,9 @@ pub fn build_order(infos: &[&EngineInfo]) -> Result<Vec<usize>> {
 
 #[cfg(test)]
 mod tests {
-    use super::engines_to_evict;
+    use std::sync::atomic::AtomicBool;
+
+    use super::{Registry, engines_to_evict};
 
     const DETECT_OCR: [&str; 5] = [
         "comic-text-bubble-detector",
@@ -339,5 +365,42 @@ mod tests {
     fn requested_engine_is_never_evicted() {
         assert!(engines_to_evict(["flux2-klein"], "flux2-klein").is_empty());
         assert!(engines_to_evict(["lama-manga"], "lama-manga").is_empty());
+    }
+
+    #[tokio::test]
+    async fn gpu_engines_take_turns_and_cpu_engines_never_wait() {
+        let registry = Registry::new();
+        let never = AtomicBool::new(false);
+        let held = registry.gpu_turn("flux2-klein", false, &never).await;
+        assert!(held.unwrap().is_some());
+
+        assert!(
+            registry
+                .gpu_turn("llm", false, &never)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            registry
+                .gpu_turn("koharu-renderer", false, &never)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            registry
+                .gpu_turn("lama-manga", true, &never)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let cancelled = AtomicBool::new(true);
+        let err = registry
+            .gpu_turn("lama-manga", false, &cancelled)
+            .await
+            .unwrap_err();
+        assert!(crate::is_cancelled(&err));
     }
 }

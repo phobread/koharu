@@ -594,6 +594,13 @@ async fn put_mask(
         // 3. Run Engine (Synchronously for this request)
         let engine_info = pipeline::Registry::find(engine_id)
             .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+        // Take a GPU turn like pipeline steps do, so a stroke never runs its
+        // engine beside a job's. Declared before `engine` to outlive it.
+        let _gpu_turn = app
+            .registry
+            .gpu_turn(engine_info.id, app.cpu_only(), &cancel)
+            .await
+            .map_err(ApiError::internal)?;
         let engine = app
             .registry
             .get(engine_info.id, &app.runtime, app.cpu_only())

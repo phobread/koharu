@@ -8,6 +8,7 @@
 pub mod artifacts;
 pub mod engine;
 mod engines;
+mod gpu_gate;
 mod plan;
 
 pub use artifacts::Artifact;
@@ -204,6 +205,8 @@ pub async fn run(
             });
         }
 
+        // Declared before `engine`, so the turn outlives the engine handle.
+        let _gpu_turn = registry.gpu_turn(info.id, cpu, &cancel).await?;
         let engine = match registry.get(info.id, &runtime, cpu).await {
             Ok(e) => e,
             Err(err) => {
