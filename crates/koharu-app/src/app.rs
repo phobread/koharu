@@ -21,7 +21,7 @@ use camino::Utf8PathBuf;
 use dashmap::DashMap;
 use koharu_core::{AppEvent, DownloadProgress, JobSummary, LlmStateStatus};
 use koharu_runtime::{ComputePolicy, RuntimeManager};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 use crate::ai::AiManager;
 use crate::autosave::{self, AutosaveSignal};
@@ -168,9 +168,17 @@ impl App {
         let bus = self.bus.clone();
         let downloads = self.downloads.clone();
         tokio::spawn(async move {
-            while let Ok(progress) = rx.recv().await {
-                downloads.insert(progress.id.clone(), progress.clone());
-                bus.publish(AppEvent::DownloadProgress(progress));
+            loop {
+                match rx.recv().await {
+                    Ok(progress) => {
+                        downloads.insert(progress.id.clone(), progress.clone());
+                        bus.publish(AppEvent::DownloadProgress(progress));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("download forwarder skipped {n} download events");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
     }
@@ -187,7 +195,17 @@ impl App {
         let mut rx = self.llm.subscribe();
         let bus = self.bus.clone();
         tokio::spawn(async move {
-            while let Ok(state) = rx.recv().await {
+            loop {
+                // A lagged receiver resumes at the newest retained state, so
+                // the UI still ends on the current one.
+                let state = match rx.recv().await {
+                    Ok(state) => state,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("LLM forwarder skipped {n} state changes");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
                 let event = match state.status {
                     LlmStateStatus::Loading => {
                         state.target.map(|t| AppEvent::LlmLoading { target: t })
