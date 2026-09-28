@@ -67,11 +67,13 @@ struct CropBounds {
 }
 
 /// Overlapping crops are merged only while the result stays below this many
-/// pixels (~2500 Flux2 tokens at 16x16 px each). Larger crops fill the 6 GB
+/// pixels (~2500 Flux2 tokens at 16x16 px each), and a single crop that is
+/// bigger on its own is generated downscaled to it. Larger crops fill the 6 GB
 /// card and run memory-starved: on 926 (2026-09-28) crops of 3400+ tokens
 /// took 26-53 s at ~38 W where ~2500-token ones took 8-10 s at ~60 W, and
-/// page 2's strip of five merged top-row bubbles ran out of memory.
-const MAX_MERGED_CROP_PIXELS: u64 = 640_000;
+/// page 2's strip of five merged top-row bubbles ran out of memory. Single
+/// bubbles of ~3000 tokens (pages 8 and 20) still ran at half speed.
+const MAX_CROP_PIXELS: u64 = 640_000;
 
 /// One Flux2 crop and the mask components (labels from
 /// [`component_labels`]) it repaints.
@@ -424,6 +426,7 @@ impl Flux2Klein {
 
         let bubble_ids =
             bubble_ids.filter(|ids| options.flat_fill && ids.dimensions() == image.dimensions());
+        let crop_options = crop_generation_options(options);
         let mut running_output = image.clone();
         for (crop_index, crop) in plan.into_iter().enumerate() {
             let bounds = crop.bounds;
@@ -469,7 +472,7 @@ impl Flux2Klein {
                     &image_crop,
                     &generation_mask_crop,
                     reference_image,
-                    options,
+                    &crop_options,
                 )?,
             };
             let generation_ms = generation_started.elapsed().as_millis();
@@ -761,13 +764,6 @@ fn component_labels(mask: &GrayImage) -> ComponentLabels {
     connected_components(&binary, Connectivity::Eight, Luma([0]))
 }
 
-fn mask_component_bounds(mask: &GrayImage) -> Vec<RawBounds> {
-    labelled_component_bounds(&component_labels(mask))
-        .into_iter()
-        .map(|(_, bounds)| bounds)
-        .collect()
-}
-
 /// `(label, bounds)` for every component in `labels`.
 fn labelled_component_bounds(labels: &ComponentLabels) -> Vec<(u32, RawBounds)> {
     let component_count = labels.pixels().map(|pixel| pixel.0[0]).max().unwrap_or(0);
@@ -802,6 +798,20 @@ fn labelled_component_bounds(labels: &ComponentLabels) -> Vec<(u32, RawBounds)> 
         .enumerate()
         .filter_map(|(index, bounds)| bounds.map(|bounds| (index as u32 + 1, bounds)))
         .collect()
+}
+
+/// `options` for generating one crop: crops over [`MAX_CROP_PIXELS`] are
+/// generated at that size and scaled back up. A `max_pixels` of 0 (no limit)
+/// is capped too.
+fn crop_generation_options(options: &Flux2InpaintOptions) -> Flux2InpaintOptions {
+    let cap = MAX_CROP_PIXELS as u32;
+    Flux2InpaintOptions {
+        max_pixels: match options.max_pixels {
+            0 => cap,
+            max_pixels => max_pixels.min(cap),
+        },
+        ..options.clone()
+    }
 }
 
 fn padded_snapped_bounds(
@@ -933,7 +943,7 @@ fn plan_inpaint_crops(
             exclude_others: false,
         })
         .collect();
-    let crops = merge_overlapping_crops(crops, MAX_MERGED_CROP_PIXELS);
+    let crops = merge_overlapping_crops(crops, MAX_CROP_PIXELS);
     let labels = crops
         .iter()
         .any(|crop| crop.exclude_others)
@@ -1437,7 +1447,7 @@ mod tests {
         assert!(labels.is_some());
         for crop in &plan {
             let b = crop.bounds;
-            assert!(u64::from(b.width) * u64::from(b.height) <= MAX_MERGED_CROP_PIXELS);
+            assert!(u64::from(b.width) * u64::from(b.height) <= MAX_CROP_PIXELS);
         }
         let mut components: Vec<u32> = plan
             .iter()
@@ -1445,6 +1455,35 @@ mod tests {
             .collect();
         components.sort_unstable();
         assert_eq!(components, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn oversized_single_crops_generate_within_the_cap() {
+        // 926 pages 8 and 20 (single bubbles over the cap), a tall strip, and
+        // the largest crop that ran at full speed.
+        for (width, height, expected) in [
+            (816, 928, (736, 848)),
+            (848, 912, (768, 816)),
+            (608, 2304, (400, 1552)),
+            (720, 880, (720, 880)),
+        ] {
+            let image = DynamicImage::new_rgb8(width, height);
+            for max_pixels in [1024 * 1024, 0] {
+                let options = crop_generation_options(&Flux2InpaintOptions {
+                    max_pixels,
+                    ..Default::default()
+                });
+                let (_, size) = prepare_rgb_image(&image, options.max_pixels);
+                assert_eq!((size.width, size.height), expected);
+                assert!(u64::from(size.width) * u64::from(size.height) <= MAX_CROP_PIXELS);
+            }
+        }
+        // A tighter caller limit still wins.
+        let options = crop_generation_options(&Flux2InpaintOptions {
+            max_pixels: 100_000,
+            ..Default::default()
+        });
+        assert_eq!(options.max_pixels, 100_000);
     }
 
     #[test]
@@ -1462,20 +1501,26 @@ mod tests {
         }
 
         assert_eq!(
-            mask_component_bounds(&mask),
+            labelled_component_bounds(&component_labels(&mask)),
             vec![
-                RawBounds {
-                    min_x: 1,
-                    min_y: 2,
-                    max_x: 3,
-                    max_y: 4,
-                },
-                RawBounds {
-                    min_x: 8,
-                    min_y: 6,
-                    max_x: 9,
-                    max_y: 8,
-                },
+                (
+                    1,
+                    RawBounds {
+                        min_x: 1,
+                        min_y: 2,
+                        max_x: 3,
+                        max_y: 4,
+                    }
+                ),
+                (
+                    2,
+                    RawBounds {
+                        min_x: 8,
+                        min_y: 6,
+                        max_x: 9,
+                        max_y: 8,
+                    }
+                ),
             ]
         );
     }
@@ -1487,19 +1532,22 @@ mod tests {
         mask.put_pixel(3, 3, Luma([255]));
 
         assert_eq!(
-            mask_component_bounds(&mask),
-            vec![RawBounds {
-                min_x: 2,
-                min_y: 2,
-                max_x: 3,
-                max_y: 3,
-            }]
+            labelled_component_bounds(&component_labels(&mask)),
+            vec![(
+                1,
+                RawBounds {
+                    min_x: 2,
+                    min_y: 2,
+                    max_x: 3,
+                    max_y: 3,
+                }
+            )]
         );
     }
 
     #[test]
     fn component_bounds_are_empty_for_empty_mask() {
-        assert!(mask_component_bounds(&GrayImage::new(8, 8)).is_empty());
+        assert!(labelled_component_bounds(&component_labels(&GrayImage::new(8, 8))).is_empty());
     }
 
     #[test]
