@@ -66,6 +66,30 @@ struct CropBounds {
     height: u32,
 }
 
+/// Overlapping crops are merged only while the result stays below this many
+/// pixels (~2500 Flux2 tokens at 16x16 px each). Larger crops fill the 6 GB
+/// card and run memory-starved: on 926 (2026-09-28) crops of 3400+ tokens
+/// took 26-53 s at ~38 W where ~2500-token ones took 8-10 s at ~60 W, and
+/// page 2's strip of five merged top-row bubbles ran out of memory.
+const MAX_MERGED_CROP_PIXELS: u64 = 640_000;
+
+/// One Flux2 crop and the mask components (labels from
+/// [`component_labels`]) it repaints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedCrop {
+    bounds: CropBounds,
+    components: Vec<u32>,
+    /// Another crop overlaps this one because merging them would have been
+    /// too big. Each then repaints only its own components: left to repaint
+    /// every masked pixel in its bounds, it would regenerate the edge of its
+    /// neighbour's area with truncated context and overwrite better output.
+    exclude_others: bool,
+}
+
+/// Labels for the mask components that crops cover, kept only when some crop
+/// has to leave its neighbours' components alone.
+type ComponentLabels = image::ImageBuffer<Luma<u32>, Vec<u32>>;
+
 koharu_runtime::declare_hf_model_package!(
     id: "model:flux2-klein-4b:transformer-q4-k-m",
     repo: FLUX2_REPO,
@@ -376,7 +400,7 @@ impl Flux2Klein {
         }
 
         let gray_mask = generation_mask.to_luma8();
-        let plan = plan_inpaint_crops(
+        let (plan, labels) = plan_inpaint_crops(
             &gray_mask,
             image.width(),
             image.height(),
@@ -390,8 +414,9 @@ impl Flux2Klein {
             crop_count = plan.len(),
             crop_pixels = plan
                 .iter()
-                .map(|bounds| u64::from(bounds.width) * u64::from(bounds.height))
+                .map(|crop| u64::from(crop.bounds.width) * u64::from(crop.bounds.height))
                 .sum::<u64>(),
+            split_overlapping = plan.iter().filter(|crop| crop.exclude_others).count(),
             steps = options.num_inference_steps,
             strength = options.strength,
             "planned Flux2 inpaint crops"
@@ -400,13 +425,21 @@ impl Flux2Klein {
         let bubble_ids =
             bubble_ids.filter(|ids| options.flat_fill && ids.dimensions() == image.dimensions());
         let mut running_output = image.clone();
-        for (crop_index, bounds) in plan.into_iter().enumerate() {
+        for (crop_index, crop) in plan.into_iter().enumerate() {
+            let bounds = crop.bounds;
             let image_crop =
                 running_output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let generation_mask_crop =
-                generation_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let composite_mask_crop =
-                composite_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let (generation_mask_crop, composite_mask_crop) =
+                match labels.as_ref().filter(|_| crop.exclude_others) {
+                    Some(labels) => (
+                        crop_mask_excluding_others(generation_mask, labels, &crop),
+                        crop_mask_excluding_others(composite_mask, labels, &crop),
+                    ),
+                    None => (
+                        generation_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height),
+                        composite_mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height),
+                    ),
+                };
             let generation_started = Instant::now();
             let flat = bubble_ids.and_then(|ids| {
                 let ids_crop =
@@ -719,13 +752,24 @@ fn release_cuda_temporary_memory(device: &Device) -> Result<()> {
     Ok(())
 }
 
-fn mask_component_bounds(mask: &GrayImage) -> Vec<RawBounds> {
+fn component_labels(mask: &GrayImage) -> ComponentLabels {
     // `connected_components` connects equal-valued pixels, so normalize every
     // nonzero mask value first to preserve the inpainter's nonzero-is-masked semantics.
     let binary = GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
         Luma([u8::from(mask.get_pixel(x, y).0[0] != 0) * 255])
     });
-    let labels = connected_components(&binary, Connectivity::Eight, Luma([0]));
+    connected_components(&binary, Connectivity::Eight, Luma([0]))
+}
+
+fn mask_component_bounds(mask: &GrayImage) -> Vec<RawBounds> {
+    labelled_component_bounds(&component_labels(mask))
+        .into_iter()
+        .map(|(_, bounds)| bounds)
+        .collect()
+}
+
+/// `(label, bounds)` for every component in `labels`.
+fn labelled_component_bounds(labels: &ComponentLabels) -> Vec<(u32, RawBounds)> {
     let component_count = labels.pixels().map(|pixel| pixel.0[0]).max().unwrap_or(0);
     let mut bounds: Vec<Option<RawBounds>> = vec![None; component_count as usize];
 
@@ -753,7 +797,11 @@ fn mask_component_bounds(mask: &GrayImage) -> Vec<RawBounds> {
         }
     }
 
-    bounds.into_iter().flatten().collect()
+    bounds
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, bounds)| bounds.map(|bounds| (index as u32 + 1, bounds)))
+        .collect()
 }
 
 fn padded_snapped_bounds(
@@ -792,26 +840,60 @@ fn padded_snapped_bounds(
     }
 }
 
-fn merge_overlapping_crops(mut crops: Vec<CropBounds>) -> Vec<CropBounds> {
+/// Merge overlapping crops while the merged crop stays within `max_pixels`.
+/// Crops still overlapping afterwards are marked to exclude each other's
+/// components.
+fn merge_overlapping_crops(mut crops: Vec<PlannedCrop>, max_pixels: u64) -> Vec<PlannedCrop> {
     let mut changed = true;
     while changed {
         changed = false;
         'search: for i in 0..crops.len() {
             for j in (i + 1)..crops.len() {
-                if !crops_overlap(crops[i], crops[j]) {
+                if !crops_overlap(crops[i].bounds, crops[j].bounds) {
+                    continue;
+                }
+                let union = crop_union(crops[i].bounds, crops[j].bounds);
+                if u64::from(union.width) * u64::from(union.height) > max_pixels {
                     continue;
                 }
 
-                crops[i] = crop_union(crops[i], crops[j]);
-                crops.remove(j);
+                let absorbed = crops.remove(j);
+                crops[i].bounds = union;
+                crops[i].components.extend(absorbed.components);
                 changed = true;
                 break 'search;
             }
         }
     }
 
-    crops.sort_by_key(|bounds| (bounds.y, bounds.x));
+    let all_bounds: Vec<CropBounds> = crops.iter().map(|crop| crop.bounds).collect();
+    for (i, crop) in crops.iter_mut().enumerate() {
+        crop.exclude_others = all_bounds
+            .iter()
+            .enumerate()
+            .any(|(j, other)| i != j && crops_overlap(crop.bounds, *other));
+    }
+    crops.sort_by_key(|crop| (crop.bounds.y, crop.bounds.x));
     crops
+}
+
+/// `mask` cropped to `crop`, without the pixels of mask components that
+/// belong to other crops. Pixels outside every component are kept, as a
+/// merged crop would keep them.
+fn crop_mask_excluding_others(
+    mask: &DynamicImage,
+    labels: &ComponentLabels,
+    crop: &PlannedCrop,
+) -> DynamicImage {
+    let b = crop.bounds;
+    let mut out = mask.crop_imm(b.x, b.y, b.width, b.height).to_luma8();
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let label = labels.get_pixel(b.x + x, b.y + y)[0];
+        if label != 0 && !crop.components.contains(&label) {
+            pixel[0] = 0;
+        }
+    }
+    DynamicImage::ImageLuma8(out)
 }
 
 fn crops_overlap(a: CropBounds, b: CropBounds) -> bool {
@@ -834,17 +916,29 @@ fn crop_union(a: CropBounds, b: CropBounds) -> CropBounds {
     }
 }
 
+/// The crops to run, plus the component labels when some crops must leave
+/// their neighbours' components alone.
 fn plan_inpaint_crops(
     mask: &GrayImage,
     image_w: u32,
     image_h: u32,
     mask_padding: u8,
-) -> Vec<CropBounds> {
-    let crops = mask_component_bounds(mask)
+) -> (Vec<PlannedCrop>, Option<ComponentLabels>) {
+    let labels = component_labels(mask);
+    let crops = labelled_component_bounds(&labels)
         .into_iter()
-        .map(|raw| padded_snapped_bounds(raw, image_w, image_h, mask_padding))
+        .map(|(label, raw)| PlannedCrop {
+            bounds: padded_snapped_bounds(raw, image_w, image_h, mask_padding),
+            components: vec![label],
+            exclude_others: false,
+        })
         .collect();
-    merge_overlapping_crops(crops)
+    let crops = merge_overlapping_crops(crops, MAX_MERGED_CROP_PIXELS);
+    let labels = crops
+        .iter()
+        .any(|crop| crop.exclude_others)
+        .then_some(labels);
+    (crops, labels)
 }
 
 fn composite_inpaint_crop(
@@ -1220,7 +1314,7 @@ mod tests {
             let source = image::open(dir.join(format!("{tag}-source.png")))?;
             let generation = image::open(dir.join(format!("{tag}-generation.png")))?;
             let composite = image::open(dir.join(format!("{tag}-composite.png")))?;
-            let plan = plan_inpaint_crops(
+            let (plan, _) = plan_inpaint_crops(
                 &generation.to_luma8(),
                 source.width(),
                 source.height(),
@@ -1228,7 +1322,7 @@ mod tests {
             );
             let mut output = source.clone();
             let mut bounds_json = Vec::new();
-            for (index, bounds) in plan.into_iter().enumerate() {
+            for (index, bounds) in plan.into_iter().map(|crop| crop.bounds).enumerate() {
                 let crop = output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
                 let gen_mask = generation.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
                 let paste_mask =
@@ -1266,6 +1360,91 @@ mod tests {
             width,
             height,
         }
+    }
+
+    fn planned(bounds: Vec<CropBounds>) -> Vec<PlannedCrop> {
+        bounds
+            .into_iter()
+            .enumerate()
+            .map(|(index, bounds)| PlannedCrop {
+                bounds,
+                components: vec![index as u32 + 1],
+                exclude_others: false,
+            })
+            .collect()
+    }
+
+    /// Merge without a size cap.
+    fn merged_bounds(bounds: Vec<CropBounds>) -> Vec<CropBounds> {
+        merge_overlapping_crops(planned(bounds), u64::MAX)
+            .into_iter()
+            .map(|crop| crop.bounds)
+            .collect()
+    }
+
+    #[test]
+    fn merging_stops_at_the_cap_and_the_overlapping_crops_exclude_each_other() {
+        let pair = vec![crop(0, 0, 96, 96), crop(64, 0, 96, 96)];
+
+        let merged = merge_overlapping_crops(planned(pair.clone()), u64::MAX);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].components, vec![1, 2]);
+        assert!(!merged[0].exclude_others);
+
+        // The union (160x96) is over the cap: both stay, each on its own part.
+        let capped = merge_overlapping_crops(planned(pair.clone()), 160 * 96 - 1);
+        assert_eq!(
+            capped.iter().map(|crop| crop.bounds).collect::<Vec<_>>(),
+            pair
+        );
+        assert!(capped.iter().all(|crop| crop.exclude_others));
+    }
+
+    #[test]
+    fn crop_mask_excluding_others_keeps_own_and_unlabelled_pixels() {
+        let mut labels = ComponentLabels::new(8, 8);
+        labels.put_pixel(1, 1, Luma([1]));
+        labels.put_pixel(2, 2, Luma([2]));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_pixel(8, 8, Luma([255])));
+        let own = PlannedCrop {
+            bounds: crop(0, 0, 4, 4),
+            components: vec![1],
+            exclude_others: true,
+        };
+
+        let out = crop_mask_excluding_others(&mask, &labels, &own).to_luma8();
+        assert_eq!(out.dimensions(), (4, 4));
+        assert_eq!(out.get_pixel(1, 1)[0], 255);
+        assert_eq!(out.get_pixel(2, 2)[0], 0);
+        assert_eq!(out.get_pixel(3, 3)[0], 255);
+    }
+
+    #[test]
+    fn a_row_of_close_bubbles_splits_into_crops_under_the_cap() {
+        // Five 200x400 blobs 50 px apart: their padded crops chain together,
+        // and the whole row (~1300x530) is over the cap, like 926 page 2.
+        let mut mask = GrayImage::new(1600, 800);
+        for i in 0..5 {
+            for y in 100..500 {
+                for x in (i * 250)..(i * 250 + 200) {
+                    mask.put_pixel(x, y, Luma([255]));
+                }
+            }
+        }
+
+        let (plan, labels) = plan_inpaint_crops(&mask, 1600, 800, 16);
+        assert!(plan.len() > 1);
+        assert!(labels.is_some());
+        for crop in &plan {
+            let b = crop.bounds;
+            assert!(u64::from(b.width) * u64::from(b.height) <= MAX_MERGED_CROP_PIXELS);
+        }
+        let mut components: Vec<u32> = plan
+            .iter()
+            .flat_map(|crop| crop.components.clone())
+            .collect();
+        components.sort_unstable();
+        assert_eq!(components, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
@@ -1379,7 +1558,7 @@ mod tests {
     #[test]
     fn merge_overlapping_pair_returns_union() {
         assert_eq!(
-            merge_overlapping_crops(vec![crop(0, 0, 96, 96), crop(64, 64, 96, 96)]),
+            merged_bounds(vec![crop(0, 0, 96, 96), crop(64, 64, 96, 96)]),
             vec![crop(0, 0, 160, 160)]
         );
     }
@@ -1387,7 +1566,7 @@ mod tests {
     #[test]
     fn merge_disjoint_pair_keeps_both() {
         assert_eq!(
-            merge_overlapping_crops(vec![crop(0, 0, 32, 32), crop(64, 64, 32, 32)]),
+            merged_bounds(vec![crop(0, 0, 32, 32), crop(64, 64, 32, 32)]),
             vec![crop(0, 0, 32, 32), crop(64, 64, 32, 32)]
         );
     }
@@ -1399,7 +1578,7 @@ mod tests {
         let newly_intersecting = crop(0, 48, 16, 16);
 
         assert_eq!(
-            merge_overlapping_crops(vec![newly_intersecting, vertical, horizontal]),
+            merged_bounds(vec![newly_intersecting, vertical, horizontal]),
             vec![crop(0, 0, 64, 64)]
         );
     }
@@ -1407,7 +1586,7 @@ mod tests {
     #[test]
     fn merge_disjoint_output_is_sorted_by_y_then_x() {
         assert_eq!(
-            merge_overlapping_crops(vec![
+            merged_bounds(vec![
                 crop(96, 64, 16, 16),
                 crop(64, 0, 16, 16),
                 crop(16, 0, 16, 16),
@@ -1422,7 +1601,11 @@ mod tests {
 
     #[test]
     fn crop_plan_is_empty_for_empty_mask() {
-        assert!(plan_inpaint_crops(&GrayImage::new(512, 512), 512, 512, 16).is_empty());
+        assert!(
+            plan_inpaint_crops(&GrayImage::new(512, 512), 512, 512, 16)
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1439,10 +1622,10 @@ mod tests {
             }
         }
 
-        let plan = plan_inpaint_crops(&mask, 1024, 1024, 16);
+        let (plan, _) = plan_inpaint_crops(&mask, 1024, 1024, 16);
 
         assert_eq!(plan.len(), 2);
-        for bounds in plan {
+        for bounds in plan.into_iter().map(|crop| crop.bounds) {
             assert!(bounds.width < 1024 / 2);
             assert!(bounds.height < 1024 / 2);
             assert!(bounds.width * bounds.height < 1024 * 1024 / 4);
@@ -1455,10 +1638,12 @@ mod tests {
         mask.put_pixel(100, 100, Luma([255]));
         mask.put_pixel(180, 100, Luma([255]));
 
+        let (plan, labels) = plan_inpaint_crops(&mask, 512, 512, 16);
         assert_eq!(
-            plan_inpaint_crops(&mask, 512, 512, 16),
+            plan.into_iter().map(|crop| crop.bounds).collect::<Vec<_>>(),
             vec![crop(32, 32, 224, 144)]
         );
+        assert!(labels.is_none());
     }
 
     #[test]
