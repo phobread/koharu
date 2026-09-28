@@ -64,6 +64,9 @@ pub fn expand_mask_for_inpainting(
     let mut covered = GrayImage::new(width, height);
 
     for block in text_blocks {
+        if !block_on_image(block, width, height) {
+            continue;
+        }
         let block_support = expanded_text_block_crop_bounds(width, height, block);
         let radius = legacy_block_dilate_radius(block);
         let support = expand_rect(block_support, width, height, u32::from(radius));
@@ -130,6 +133,9 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
     let mut covered = GrayImage::new(width, height);
 
     for block in text_blocks {
+        if !block_on_image(block, width, height) {
+            continue;
+        }
         let block_support = expanded_text_block_crop_bounds(width, height, block);
         let radius = modern_block_dilate_radius(block);
         let support = expand_rect(block_support, width, height, u32::from(radius));
@@ -217,6 +223,18 @@ fn expand_residual_components(
             }
         }
     }
+}
+
+/// Whether any part of `block` lies on the image. A box moved entirely off
+/// the page has nothing to erase; clamped onto the page it would erase a strip
+/// along the edge.
+fn block_on_image(block: &TextRegion, width: u32, height: u32) -> bool {
+    width > 0
+        && height > 0
+        && block.x < width as f32
+        && block.y < height as f32
+        && block.x + block.width > 0.0
+        && block.y + block.height > 0.0
 }
 
 fn fill_text_block_region(
@@ -772,6 +790,46 @@ mod tests {
             assert_eq!(expanded.get_pixel(36, 52).0[0], 0);
             // Outside the bubble: untouched.
             assert_eq!(expanded.get_pixel(50, 28).0[0], 0);
+        }
+    }
+
+    #[test]
+    fn off_page_block_erases_nothing() {
+        // 926 page 1: a text box dragged past the right edge of the page. The
+        // bubble reaches the edge, so a box clamped onto the page would take
+        // the fallback and erase a strip of it.
+        let mask = GrayImage::new(64, 64);
+        let mut bubbles = GrayImage::new(64, 64);
+        for y in 8..56 {
+            for x in 32..64 {
+                bubbles.put_pixel(x, y, Luma([5]));
+            }
+        }
+
+        let block = TextRegion {
+            x: 90.0,
+            y: 20.0,
+            width: 20.0,
+            height: 16.0,
+            detected_font_size_px: Some(18.0),
+            ..TextRegion::default()
+        };
+
+        for expanded in [
+            expand_mask_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+                UndetectedBlockFallback::FillBubble,
+            ),
+            expand_mask_to_bubble_region_for_inpainting(
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &DynamicImage::ImageLuma8(bubbles.clone()),
+                std::slice::from_ref(&block),
+                UndetectedBlockFallback::FillBubble,
+            ),
+        ] {
+            assert!(expanded.pixels().all(|pixel| pixel.0[0] == 0));
         }
     }
 

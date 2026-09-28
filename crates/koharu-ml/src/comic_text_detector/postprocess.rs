@@ -514,15 +514,14 @@ pub fn expanded_text_block_crop_bounds(
     block: &TextRegion,
 ) -> [u32; 4] {
     if !has_expanded_crop_bounds(block) {
-        let x1 = block.x.max(0.0).floor() as u32;
-        let y1 = block.y.max(0.0).floor() as u32;
-        let x2 = (block.x + block.width)
-            .ceil()
-            .clamp(x1 as f32 + 1.0, image_width as f32) as u32;
-        let y2 = (block.y + block.height)
-            .ceil()
-            .clamp(y1 as f32 + 1.0, image_height as f32) as u32;
-        return [x1, y1, x2, y2];
+        return clamp_crop_bounds(
+            image_width,
+            image_height,
+            block.x,
+            block.y,
+            block.x + block.width,
+            block.y + block.height,
+        );
     }
 
     let mut min_x = block.x;
@@ -855,6 +854,35 @@ mod tests {
         // The corner glyph pixel sits inset by the margin instead of on the
         // crop border.
         assert_eq!(crop.get_pixel(2, 2).0, [0, 0, 0]);
+    }
+
+    #[test]
+    fn expanded_bounds_keep_off_page_plain_boxes_on_the_image() {
+        let plain = |x: f32, y: f32, width: f32, height: f32| TextRegion {
+            x,
+            y,
+            width,
+            height,
+            detector: Some("comic-text-bubble-detector".to_string()),
+            ..Default::default()
+        };
+
+        // On the page: tight, unchanged.
+        assert_eq!(
+            expanded_text_block_crop_bounds(3000, 4000, &plain(4.5, 5.5, 10.0, 8.0)),
+            [4, 5, 15, 14]
+        );
+        // Past the right edge (926 page 1 had one at x=4033 on a 3000 px page,
+        // which panicked in the clamp) and before the top-left corner: clamped
+        // to a one-pixel strip on the page edge.
+        assert_eq!(
+            expanded_text_block_crop_bounds(3000, 4000, &plain(4033.0, 3550.0, 283.0, 256.0)),
+            [2999, 3550, 3000, 3806]
+        );
+        assert_eq!(
+            expanded_text_block_crop_bounds(3000, 4000, &plain(-500.0, -300.0, 100.0, 50.0)),
+            [0, 0, 1, 1]
+        );
     }
 
     #[test]
