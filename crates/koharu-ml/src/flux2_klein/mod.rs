@@ -3,6 +3,7 @@ mod latents;
 mod precomputed;
 pub mod qwen;
 mod scheduler;
+mod tint;
 mod transformer;
 mod vae;
 
@@ -377,7 +378,8 @@ impl Flux2Klein {
     /// original lettering actually needs replacing.
     #[instrument(level = "debug", skip_all)]
     /// `bubble_ids` is the speech-bubble ID map (0 = no bubble); flat fill
-    /// only runs when it is given and `options.flat_fill` is on.
+    /// only runs when it is given and `options.flat_fill` is on. It also lets
+    /// the paste remove a uniform fill tint over a flat bubble.
     pub fn inpaint_with_reference_and_composite_mask(
         &self,
         image: &DynamicImage,
@@ -424,14 +426,17 @@ impl Flux2Klein {
             "planned Flux2 inpaint crops"
         );
 
-        let bubble_ids =
-            bubble_ids.filter(|ids| options.flat_fill && ids.dimensions() == image.dimensions());
+        let bubble_ids = bubble_ids.filter(|ids| ids.dimensions() == image.dimensions());
         let crop_options = crop_generation_options(options);
         let mut running_output = image.clone();
         for (crop_index, crop) in plan.into_iter().enumerate() {
             let bounds = crop.bounds;
             let image_crop =
                 running_output.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+            let bubbles_crop = bubble_ids.map(|ids| {
+                image::imageops::crop_imm(ids, bounds.x, bounds.y, bounds.width, bounds.height)
+                    .to_image()
+            });
             let (generation_mask_crop, composite_mask_crop) =
                 match labels.as_ref().filter(|_| crop.exclude_others) {
                     Some(labels) => (
@@ -444,20 +449,17 @@ impl Flux2Klein {
                     ),
                 };
             let generation_started = Instant::now();
-            let flat = bubble_ids.and_then(|ids| {
-                let ids_crop =
-                    image::imageops::crop_imm(ids, bounds.x, bounds.y, bounds.width, bounds.height)
-                        .to_image();
+            let flat = bubbles_crop.as_ref().filter(|_| options.flat_fill).and_then(|ids_crop| {
                 match flat_fill::classify_crop(
                     &image_crop.to_rgba8(),
                     &generation_mask_crop.to_luma8(),
                     &composite_mask_crop.to_luma8(),
-                    &ids_crop,
+                    ids_crop,
                 ) {
                     flat_fill::CropFill::Flat(colours) => {
                         tracing::info!(crop_index, bubbles = ?colours, "Flux2 crop filled flat");
                         Some(DynamicImage::ImageRgb8(flat_fill::flat_crop(
-                            &colours, &ids_crop,
+                            &colours, ids_crop,
                         )))
                     }
                     flat_fill::CropFill::Flux(reason) => {
@@ -478,8 +480,13 @@ impl Flux2Klein {
             };
             let generation_ms = generation_started.elapsed().as_millis();
             let composite_started = Instant::now();
-            running_output =
-                composite_inpaint_crop(&running_output, &generated, &composite_mask_crop, bounds)?;
+            running_output = composite_inpaint_crop_in_bubbles(
+                &running_output,
+                &generated,
+                &composite_mask_crop,
+                bubbles_crop.as_ref(),
+                bounds,
+            )?;
             tracing::info!(
                 crop_index,
                 x = bounds.x,
@@ -1073,10 +1080,24 @@ fn plan_inpaint_crops(
     (crops, labels)
 }
 
+#[cfg(test)]
 fn composite_inpaint_crop(
     original: &DynamicImage,
     generated_crop: &DynamicImage,
     mask_crop: &DynamicImage,
+    bounds: CropBounds,
+) -> Result<DynamicImage> {
+    composite_inpaint_crop_in_bubbles(original, generated_crop, mask_crop, None, bounds)
+}
+
+/// Pastes `generated_crop` through `mask_crop` with its colour matched to
+/// the surroundings. `bubbles` (crop-local IDs) lets a uniform fill tint
+/// over a flat bubble be removed as well (see `tint`).
+fn composite_inpaint_crop_in_bubbles(
+    original: &DynamicImage,
+    generated_crop: &DynamicImage,
+    mask_crop: &DynamicImage,
+    bubbles: Option<&GrayImage>,
     bounds: CropBounds,
 ) -> Result<DynamicImage> {
     if generated_crop.dimensions() != (bounds.width, bounds.height) {
@@ -1091,7 +1112,11 @@ fn composite_inpaint_crop(
     let mut output = original.to_rgba8();
     let generated = generated_crop.to_rgba8();
     let mask = mask_crop.to_luma8();
-    let color_offsets = boundary_colour_offset_field(&output, &generated, &mask, bounds);
+    let fill_tint = bubbles.and_then(|bubbles| {
+        tint::uniform_tint(&output, &generated, &mask, bubbles, (bounds.x, bounds.y))
+    });
+    let color_offsets =
+        boundary_colour_offset_field(&output, &generated, &mask, fill_tint.as_deref(), bounds);
     for y in 0..bounds.height {
         for x in 0..bounds.width {
             let alpha = mask.get_pixel(x, y).0[0] as f32 / 255.0;
@@ -1125,10 +1150,32 @@ fn composite_inpaint_crop(
 /// the pixels that will be pasted, then fit a smooth, robust affine offset through the erase mask.
 /// Local drawing edges are not colour bias and must not become directional
 /// streaks inside the reconstructed background.
+///
+/// `tint` (per crop pixel) is a known uniform fill tint: the fit runs on the
+/// generated colours with it removed, and it is part of the returned offsets.
 fn boundary_colour_offset_field(
     original: &RgbaImage,
     generated: &RgbaImage,
     mask: &GrayImage,
+    tint: Option<&[[f32; 3]]>,
+    bounds: CropBounds,
+) -> Vec<[f32; 3]> {
+    let field = residual_colour_offset_field(original, generated, mask, tint, bounds);
+    match tint {
+        Some(tint) => field
+            .into_iter()
+            .zip(tint)
+            .map(|(offset, tint)| std::array::from_fn(|c| offset[c] + tint[c]))
+            .collect(),
+        None => field,
+    }
+}
+
+fn residual_colour_offset_field(
+    original: &RgbaImage,
+    generated: &RgbaImage,
+    mask: &GrayImage,
+    tint: Option<&[[f32; 3]]>,
     bounds: CropBounds,
 ) -> Vec<[f32; 3]> {
     let binary = GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
@@ -1149,11 +1196,12 @@ fn boundary_colour_offset_field(
             }
             let original_pixel = original.get_pixel(bounds.x + x, bounds.y + y).0;
             let generated_pixel = generated.get_pixel(x, y).0;
-            let delta = [
-                i16::from(original_pixel[0]) - i16::from(generated_pixel[0]),
-                i16::from(original_pixel[1]) - i16::from(generated_pixel[1]),
-                i16::from(original_pixel[2]) - i16::from(generated_pixel[2]),
-            ];
+            let tint = tint.map_or([0.0; 3], |tint| tint[(y * bounds.width + x) as usize]);
+            let delta: [i16; 3] = std::array::from_fn(|c| {
+                i16::from(original_pixel[c])
+                    - i16::from(generated_pixel[c])
+                    - tint[c].round() as i16
+            });
             if delta
                 .iter()
                 .any(|value| value.abs() > MAX_COLOR_MATCH_SAMPLE_DELTA)
