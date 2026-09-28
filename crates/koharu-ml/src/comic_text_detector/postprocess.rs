@@ -1,3 +1,4 @@
+use super::lettering::complete_text_lines;
 use crate::types::{TextDirection, TextRegion};
 use image::{
     DynamicImage, GrayImage, Luma, Rgb, RgbImage,
@@ -69,13 +70,26 @@ pub fn refine_segmentation_mask(
 
     // Final clipping pass: Ensure the dilated mask never escapes the block boundaries
     // even if it thickens beyond its original source pixel edges.
-    GrayImage::from_fn(width, height, |x, y| {
+    let mut refined = GrayImage::from_fn(width, height, |x, y| {
         if in_bounds_mask.get_pixel(x, y)[0] != 0 {
             *dilated.get_pixel(x, y)
         } else {
             Luma([0])
         }
-    })
+    });
+
+    // Lettering the mask only partly covers (outlined words, dots, "!").
+    // Added components may reach a few pixels past a box to take their
+    // outline with them.
+    if image.width() == width && image.height() == height {
+        let additions = complete_text_lines(&image.to_rgb8(), &refined, &expanded_bounds);
+        for (pixel, added) in refined.pixels_mut().zip(additions.pixels()) {
+            if added[0] > 0 {
+                *pixel = Luma([255]);
+            }
+        }
+    }
+    refined
 }
 
 /// Complete partially segmented, high-contrast glyph components. The source

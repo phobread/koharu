@@ -1,4 +1,5 @@
 mod dbnet;
+mod lettering;
 mod postprocess;
 mod unet;
 mod yolo_v5;
