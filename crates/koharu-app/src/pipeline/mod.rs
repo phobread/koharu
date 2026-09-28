@@ -120,8 +120,8 @@ pub enum Scope {
 /// returns the total number of per-step warnings that fired, letting callers
 /// flag the run as `CompletedWithErrors`.
 ///
-/// Pages run one after another, except in runs with an engine that can't
-/// share the GPU: those go stage by stage in chunks (see [`chunk_size`]).
+/// Pages run one after another (see [`chunk_size`] for the opt-in
+/// alternative).
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(level = "info", skip_all)]
 pub async fn run(
@@ -172,7 +172,7 @@ pub async fn run(
     // deleted the page since the run started.
     let mut missing = vec![plan::MissingArtifacts::default(); pages.len()];
     let mut deleted = vec![false; pages.len()];
-    let chunk = chunk_size(&steps);
+    let chunk = chunk_size();
     if chunk > 1 {
         tracing::info!(
             chunk,
@@ -213,6 +213,11 @@ pub async fn run(
                 total_pages,
                 overall_percent: percent,
             });
+            // Let the tick go out before the step. Engines compute without
+            // yielding, and the task that streams this event to clients was
+            // woken on this worker thread, where it would otherwise wait for
+            // the whole run (measured: no progress reached the UI for 100 s).
+            tokio::task::yield_now().await;
         }
 
         // Declared before `engine`, so the turn outlives the engine handle.
@@ -309,29 +314,17 @@ pub async fn run(
     Ok(RunOutcome { warning_count })
 }
 
-/// Pages per chunk when a run includes an engine that can't share the GPU
-/// (Flux.2 Klein, which evicts the detection/OCR engines and is evicted by
-/// them): each chunk goes stage by stage, so those engines load once per
-/// chunk instead of once per page, and the chunk's pages still finish early.
-const EXCLUSIVE_RUN_CHUNK: usize = 8;
-
-/// `KOHARU_PIPELINE_CHUNK` overrides the chunk size for any run (`1` = page
-/// by page, the order before chunking).
-fn chunk_size(steps: &[(&EngineInfo, plan::StepIo)]) -> usize {
-    if let Some(chunk) = std::env::var("KOHARU_PIPELINE_CHUNK")
+/// Pages per chunk: 1 (page by page) unless `KOHARU_PIPELINE_CHUNK` says
+/// otherwise. Chunks go stage by stage, so Flux.2 Klein and the
+/// detection/OCR engines, which evict each other, load once per chunk instead
+/// of once per page. Measured on 9 pages of 926 (2026-09-28), chunks of 8 cut
+/// loads 54 -> 12 but saved only ~3% (393-419 s vs 408-423 s, one run 546 s),
+/// and the first page was ready at 62 s instead of 29 s.
+fn chunk_size() -> usize {
+    std::env::var("KOHARU_PIPELINE_CHUNK")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
-    {
-        return chunk.max(1);
-    }
-    if steps
-        .iter()
-        .any(|(info, _)| engine::is_exclusive_engine(info.id))
-    {
-        EXCLUSIVE_RUN_CHUNK
-    } else {
-        1
-    }
+        .map_or(1, |chunk| chunk.max(1))
 }
 
 #[allow(clippy::too_many_arguments)]

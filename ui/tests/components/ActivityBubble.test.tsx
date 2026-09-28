@@ -39,6 +39,25 @@ describe('ActivityBubble', () => {
     renderWithQuery(<ActivityBubble />)
     expect(screen.getByTestId('operation-card')).toBeInTheDocument()
     expect(screen.getByText(/25%/)).toBeInTheDocument()
+    // A multi-page run is labelled as such, not as the current image.
+    expect(screen.getByText('operations.processAll')).toBeInTheDocument()
+  })
+
+  it('labels a single-page run as the current image', () => {
+    useJobsStore.getState().started('job-1', 'pipeline')
+    useJobsStore.getState().progress({
+      jobId: 'job-1',
+      status: { status: 'running' },
+      step: 'ocr',
+      currentPage: 0,
+      totalPages: 1,
+      currentStepIndex: 1,
+      totalSteps: 5,
+      overallPercent: 20,
+    })
+
+    renderWithQuery(<ActivityBubble />)
+    expect(screen.getByText('operations.processCurrent')).toBeInTheDocument()
   })
 
   it('cancelling a job calls DELETE /operations/{id}', async () => {

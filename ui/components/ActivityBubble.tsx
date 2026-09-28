@@ -183,7 +183,9 @@ function JobCard({ job, onCancel, t }: { job: JobEntry; onCancel: () => void; t:
           <div className='flex items-start justify-between gap-2'>
             <div className='flex flex-col gap-1'>
               <div className='text-sm font-semibold text-foreground'>
-                {t('operations.processCurrent')}
+                {totalPages && totalPages > 1
+                  ? t('operations.processAll')
+                  : t('operations.processCurrent')}
               </div>
               <div className='text-xs text-muted-foreground'>{subtitle}</div>
             </div>
