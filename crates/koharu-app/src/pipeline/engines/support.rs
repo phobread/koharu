@@ -360,6 +360,42 @@ pub fn restore_region_from_source(
     DynamicImage::ImageRgba8(out)
 }
 
+/// `base` with `source` restored under `mask` (non-zero pixels) inside
+/// `region`, leaving every other pixel as it was.
+///
+/// A repair stroke repaints exactly these pixels. Flux2 edits what it is
+/// shown: shown an earlier fill that went wrong (for example the white
+/// outline of lettering, kept as if it were part of the bubble), it keeps that
+/// fill; shown the original lettering, it removes it. Restoring only the
+/// repainted pixels, not the stroke's whole rectangle, leaves no seam.
+pub fn restore_masked_from_source(
+    base: &DynamicImage,
+    source: &DynamicImage,
+    mask: &image::GrayImage,
+    region: &Region,
+) -> DynamicImage {
+    let mut out = base.to_rgba8();
+    let src = source.to_rgba8();
+    let (w, h) = out.dimensions();
+    let (sw, sh) = src.dimensions();
+    let (mw, mh) = mask.dimensions();
+    let x1 = region.x.saturating_add(region.width).min(w).min(sw).min(mw);
+    let y1 = region
+        .y
+        .saturating_add(region.height)
+        .min(h)
+        .min(sh)
+        .min(mh);
+    for y in region.y.min(y1)..y1 {
+        for x in region.x.min(x1)..x1 {
+            if mask.get_pixel(x, y)[0] > 0 {
+                out.put_pixel(x, y, *src.get_pixel(x, y));
+            }
+        }
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
 /// Translate the `koharu-ml` `TextDirection` primitive into the scene-layer one.
 pub fn ml_text_direction_to_core(d: koharu_ml::types::TextDirection) -> koharu_core::TextDirection {
     match d {
@@ -657,6 +693,40 @@ mod tests {
         let out = restore_region_from_source(&base, &source, &big).to_rgba8();
         assert_eq!(out.get_pixel(7, 7).0, [10, 20, 30, 255]);
         assert_eq!(out.get_pixel(5, 5).0, [255; 4]);
+    }
+
+    #[test]
+    fn restore_masked_reverts_only_masked_pixels_inside_the_region() {
+        let base = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([255; 4])));
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([10, 20, 30, 255])));
+        let mut mask = image::GrayImage::new(8, 8);
+        for (x, y) in [(2, 2), (3, 3), (6, 6)] {
+            mask.put_pixel(x, y, image::Luma([255]));
+        }
+        let region = Region {
+            x: 1,
+            y: 1,
+            width: 4,
+            height: 4,
+        };
+
+        let out = restore_masked_from_source(&base, &source, &mask, &region).to_rgba8();
+        assert_eq!(out.get_pixel(2, 2).0, [10, 20, 30, 255]);
+        assert_eq!(out.get_pixel(3, 3).0, [10, 20, 30, 255]);
+        // Unmasked pixels in the region and masked ones outside it keep the base.
+        assert_eq!(out.get_pixel(2, 3).0, [255; 4]);
+        assert_eq!(out.get_pixel(6, 6).0, [255; 4]);
+
+        // A region overflowing the image is clamped, not a panic.
+        let big = Region {
+            x: 5,
+            y: 5,
+            width: 100,
+            height: 100,
+        };
+        let out = restore_masked_from_source(&base, &source, &mask, &big).to_rgba8();
+        assert_eq!(out.get_pixel(6, 6).0, [10, 20, 30, 255]);
+        assert_eq!(out.get_pixel(3, 3).0, [255; 4]);
     }
 
     #[test]

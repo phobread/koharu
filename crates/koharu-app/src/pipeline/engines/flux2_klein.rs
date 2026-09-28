@@ -17,7 +17,8 @@ use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
     find_image_node, find_mask_node, image_dimensions, load_source_image,
-    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
+    restore_masked_from_source, restore_region_from_source, text_node_to_region, text_nodes,
+    upsert_image_blob,
 };
 
 pub struct Model(Flux2Klein);
@@ -32,15 +33,19 @@ impl Engine for Model {
         let mask = ctx.blobs.load_image(&mask_ref)?;
         let bubble_mask = ctx.blobs.load_image(&bubble_ref)?;
 
+        // Set when a repair stroke builds on the cleaned image: the original
+        // page, to show Flux2 under the pixels the stroke repaints.
+        let mut repaint_from_source = None;
         let (image, mask, bubble_mask) = match ctx.options.region {
             Some(r) => {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
                     Some((_, blob)) => {
                         let inpainted = ctx.blobs.load_image(&blob)?;
+                        let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
                         if ctx.options.restore_source_region.unwrap_or(true) {
-                            let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
                             restore_region_from_source(&inpainted, &source, &r)
                         } else {
+                            repaint_from_source = Some(source);
                             inpainted
                         }
                     }
@@ -78,14 +83,21 @@ impl Engine for Model {
             expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks, fallback);
         let (generation_mask, composite_mask) = match ctx.options.region {
             Some(r) => (
-                DynamicImage::ImageLuma8(clip_gray_mask_to_region(&generation_mask, &r)),
-                DynamicImage::ImageLuma8(clip_gray_mask_to_region(&composite_mask, &r)),
+                clip_gray_mask_to_region(&generation_mask, &r),
+                clip_gray_mask_to_region(&composite_mask, &r),
             ),
-            None => (
-                DynamicImage::ImageLuma8(generation_mask),
-                DynamicImage::ImageLuma8(composite_mask),
-            ),
+            None => (generation_mask, composite_mask),
         };
+        // Everything the stroke repaints is generated from the original page,
+        // as in a full run, so an earlier fill that went wrong isn't copied.
+        let image = match (repaint_from_source, ctx.options.region) {
+            (Some(source), Some(r)) => {
+                restore_masked_from_source(&image, &source, &composite_mask, &r)
+            }
+            _ => image,
+        };
+        let generation_mask = DynamicImage::ImageLuma8(generation_mask);
+        let composite_mask = DynamicImage::ImageLuma8(composite_mask);
         let options = Flux2InpaintOptions {
             num_inference_steps: ctx.options.flux2_steps.unwrap_or(4).clamp(1, 20) as usize,
             strength: ctx.options.flux2_strength.unwrap_or(1.0).clamp(0.05, 1.0),
