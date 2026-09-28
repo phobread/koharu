@@ -146,17 +146,16 @@ impl Downloads {
 
         if !blob_path.exists() {
             let reporter = self.begin(filename);
-            let mut result = self
-                .ranged_download(&url, &blob_path, &reporter, Some(metadata.size() as u64))
+            let sha256 = pinned.and_then(|(_, file)| pinned_sha256(file));
+            let result = self
+                .ranged_download(
+                    &url,
+                    &blob_path,
+                    &reporter,
+                    Some(metadata.size() as u64),
+                    sha256,
+                )
                 .await;
-            if result.is_ok()
-                && let Some((_, file)) = pinned
-            {
-                result = verify_pinned_download(&blob_path, file).await;
-                if result.is_err() {
-                    tokio::fs::remove_file(&blob_path).await.ok();
-                }
-            }
             if let Err(error) = result {
                 reporter.fail(&error);
                 return Err(error.context(format!("failed to download HF model file `{label}`")));
@@ -229,15 +228,10 @@ impl Downloads {
         }
 
         let reporter = self.begin(file_name);
-        let result = match self
-            .ranged_download(url, &destination, &reporter, None)
+        if let Err(error) = self
+            .ranged_download(url, &destination, &reporter, None, Some(expected))
             .await
         {
-            Ok(()) => verify_file(&destination, expected).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            tokio::fs::remove_file(&destination).await.ok();
             reporter.fail(&error);
             return Err(error);
         }
@@ -251,12 +245,17 @@ impl Downloads {
     /// seek-and-write its range independently. Transient failures surface as
     /// `Err`; the retry middleware on `self.client` retries at the request
     /// level, and when retries are exhausted the whole download fails cleanly.
+    ///
+    /// With `sha256`, the finished temp file must match it before it is
+    /// renamed to `destination`: the cache lookups trust a file under its
+    /// final name on size alone, so unchecked bytes must never get there.
     async fn ranged_download(
         &self,
         url: &str,
         destination: &Path,
         reporter: &TransferReporter,
         total_hint: Option<u64>,
+        sha256: Option<&str>,
     ) -> Result<()> {
         let total = match total_hint {
             Some(t) => t,
@@ -329,6 +328,12 @@ impl Downloads {
             .await;
 
         if let Err(err) = write_result {
+            tokio::fs::remove_file(&temp).await.ok();
+            return Err(err);
+        }
+        if let Some(expected) = sha256
+            && let Err(err) = verify_file(&temp, expected).await
+        {
             tokio::fs::remove_file(&temp).await.ok();
             return Err(err);
         }
@@ -510,14 +515,12 @@ fn validate_pinned_metadata(
     Ok(())
 }
 
-/// A pinned LFS file's oid is its SHA-256, so the downloaded bytes are
-/// checked, not only the metadata the server reports. Git-blob SHA-1 oids
-/// belong to small config files, which stay size-checked.
-async fn verify_pinned_download(path: &Path, file: &ModelFile) -> Result<()> {
-    if file.oid.len() == 64 {
-        verify_file(path, file.oid).await?;
-    }
-    Ok(())
+/// The SHA-256 a pinned file's downloaded bytes must match. A pinned LFS
+/// file's oid is its SHA-256, so the bytes are checked, not only the metadata
+/// the server reports. Git-blob SHA-1 oids belong to small config files,
+/// which stay size-checked.
+fn pinned_sha256(file: &ModelFile) -> Option<&'static str> {
+    (file.oid.len() == 64).then_some(file.oid)
 }
 
 /// [`checksums::verify_file`] off the async runtime; archives can be hundreds
@@ -809,28 +812,39 @@ mod tests {
         assert!(!root.path().join("downloads/model.bin").exists());
     }
 
-    #[tokio::test]
-    async fn pinned_lfs_downloads_are_checked_against_their_sha256() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("model.safetensors");
-        std::fs::write(&path, BODY).unwrap();
+    #[test]
+    fn pinned_lfs_files_are_checked_against_their_sha256() {
         let file = |oid: &'static str| ModelFile {
             filename: "model.safetensors",
             oid,
             size: BODY.len() as u64,
         };
-
         let genuine: &'static str = sha256_hex(BODY).leak();
-        verify_pinned_download(&path, &file(genuine)).await.unwrap();
-        let other: &'static str = sha256_hex(b"other weights").leak();
-        let err = verify_pinned_download(&path, &file(other))
+        assert_eq!(pinned_sha256(&file(genuine)), Some(genuine));
+        // Git-blob SHA-1 oids (small non-LFS files) are size-checked only.
+        assert_eq!(pinned_sha256(&file(TEST_FILE.oid)), None);
+    }
+
+    #[tokio::test]
+    async fn mismatched_bytes_never_reach_the_final_name() {
+        let url = format!("{}/model.safetensors", serve(BODY).await);
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("model.safetensors");
+        let downloads = test_downloads(&root);
+        let reporter = downloads.begin("model.safetensors");
+        let err = downloads
+            .ranged_download(
+                &url,
+                &destination,
+                &reporter,
+                None,
+                Some(sha256_hex(b"other weights").as_str()),
+            )
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("checksum mismatch"), "{err:#}");
-        // Git-blob SHA-1 oids (small non-LFS files) are size-checked only.
-        verify_pinned_download(&path, &file(TEST_FILE.oid))
-            .await
-            .unwrap();
+        assert!(!destination.exists());
+        assert!(!part_path(&destination).unwrap().exists());
     }
 
     #[tokio::test]

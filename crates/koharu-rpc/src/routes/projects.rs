@@ -165,7 +165,7 @@ async fn delete_project(
     // If the active session is the project we are deleting, close it first to release lock files
     if app
         .current_session()
-        .is_some_and(|session| session.dir == path)
+        .is_some_and(|session| project_dirs::same_project_dir(&session.dir, &path))
     {
         app.close_project().await.map_err(ApiError::internal)?;
     }

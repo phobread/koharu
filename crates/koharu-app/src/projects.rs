@@ -40,6 +40,17 @@ pub fn project_path(config: &AppConfig, id: &str) -> Result<Utf8PathBuf> {
     Ok(projects_dir(config)?.join(format!("{id}.{PROJECT_EXT}")))
 }
 
+/// Whether two project paths name the same directory. Ids are used verbatim,
+/// and Windows ignores case, so `BadEnd` and `badend` are one project there;
+/// comparing the text alone would miss that. Falls back to comparing the
+/// text when either path can't be resolved.
+pub fn same_project_dir(a: &Utf8Path, b: &Utf8Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// One path component with no separators, drive or stream colons, or
 /// control characters, and not `.`/`..`.
 fn is_plain_name(id: &str) -> bool {
@@ -222,6 +233,21 @@ mod tests {
         for bad in ["", ".", "..", "../x", "a/b", "a\\b", "C:x", "x\0"] {
             assert!(project_path(&config, bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn same_project_dir_sees_through_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        fs::create_dir(root.join("badend.khrproj")).unwrap();
+        fs::create_dir(root.join("other.khrproj")).unwrap();
+        let open = root.join("badend.khrproj");
+
+        assert!(same_project_dir(&open, &root.join("./badend.khrproj")));
+        assert!(!same_project_dir(&open, &root.join("other.khrproj")));
+        // Windows ignores case, so a differently cased id is the same folder.
+        #[cfg(windows)]
+        assert!(same_project_dir(&open, &root.join("BadEnd.khrproj")));
     }
 
     #[test]

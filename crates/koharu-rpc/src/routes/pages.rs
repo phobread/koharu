@@ -474,6 +474,25 @@ async fn put_mask(
 
     let blob = session.blobs.put_bytes(&body).map_err(ApiError::internal)?;
 
+    // A stroke that runs an engine takes its GPU turn before it reads the
+    // page. A batch may be inpainting this very page meanwhile; a stroke
+    // built on the older scene would replace that work when it lands.
+    // Declared before `engine` below, so the turn outlives the engine handle.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (engine_info, _gpu_turn) = match params.pipeline.as_deref() {
+        Some(engine_id) => {
+            let info = pipeline::Registry::find(engine_id)
+                .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+            let turn = app
+                .registry
+                .gpu_turn(info.id, app.cpu_only(), &cancel)
+                .await
+                .map_err(ApiError::internal)?;
+            (Some(info), turn)
+        }
+        None => (None, None),
+    };
+
     // Find existing mask node of this role, or plan an AddNode.
     let (mut mask_op, node_id, previous_blob) = {
         let scene = session.scene.read();
@@ -527,7 +546,7 @@ async fn put_mask(
         }
     };
 
-    if let Some(engine_id) = params.pipeline.as_ref() {
+    if let Some(engine_info) = engine_info {
         // Atomic Batch: Mask Update + Pipeline Run
         let mut ops = vec![mask_op.clone()];
 
@@ -558,7 +577,6 @@ async fn put_mask(
             }
             None => false,
         };
-        let cancel = Arc::new(AtomicBool::new(false));
         let (flux2_strength, flux2_steps, flux2_flat_fill) = {
             let config = app.config.load();
             (
@@ -587,15 +605,6 @@ async fn put_mask(
         };
 
         // 3. Run Engine (Synchronously for this request)
-        let engine_info = pipeline::Registry::find(engine_id)
-            .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
-        // Take a GPU turn like pipeline steps do, so a stroke never runs its
-        // engine beside a job's. Declared before `engine` to outlive it.
-        let _gpu_turn = app
-            .registry
-            .gpu_turn(engine_info.id, app.cpu_only(), &cancel)
-            .await
-            .map_err(ApiError::internal)?;
         let engine = app
             .registry
             .get(engine_info.id, &app.runtime, app.cpu_only())
@@ -611,7 +620,7 @@ async fn put_mask(
 
         let batch = Op::Batch {
             ops,
-            label: format!("Repair Brush ({})", engine_id),
+            label: format!("Repair Brush ({})", engine_info.id),
         };
         app.apply_to(&session, batch).map_err(ApiError::internal)?;
     } else {
