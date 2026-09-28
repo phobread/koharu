@@ -26,9 +26,9 @@ use crate::{device, inpainting, loading};
 
 use self::{
     latents::{
-        IMAGE_MULTIPLE, expand_mask, image_to_tensor, mask_to_packed_tensor, pack_latents,
-        prepare_latent_ids, prepare_mask, prepare_rgb_image, resize_back_if_needed,
-        tensor_to_rgb_image, unpack_latents,
+        IMAGE_MULTIPLE, bounded_size, expand_mask, image_to_tensor, mask_to_packed_tensor,
+        pack_latents, prepare_latent_ids, prepare_mask, prepare_rgb_image, resize_back_if_needed,
+        round_to_flux_multiple, tensor_to_rgb_image, unpack_latents,
     },
     precomputed::Flux2PromptEmbedder,
     scheduler::FlowMatchScheduler,
@@ -468,11 +468,12 @@ impl Flux2Klein {
             });
             let generated = match flat {
                 Some(generated) => generated,
-                None => self.inpaint_full_frame(
+                None => self.generate_crop(
                     &image_crop,
                     &generation_mask_crop,
                     reference_image,
                     &crop_options,
+                    crop_index,
                 )?,
             };
             let generation_ms = generation_started.elapsed().as_millis();
@@ -493,6 +494,37 @@ impl Flux2Klein {
         Ok(running_output)
     }
 
+    /// Generates one crop, retrying it once at half the pixel area when the
+    /// GPU runs out of memory; crops already done on the page are kept. Only
+    /// allocation failures are retried, and only after the device
+    /// synchronizes cleanly: other CUDA faults can leave the context unusable.
+    fn generate_crop(
+        &self,
+        image: &DynamicImage,
+        mask: &DynamicImage,
+        reference_image: Option<&DynamicImage>,
+        options: &Flux2InpaintOptions,
+        crop_index: usize,
+    ) -> Result<DynamicImage> {
+        let error = match self.inpaint_full_frame(image, mask, reference_image, options) {
+            Err(error) if is_out_of_memory(&error) => error,
+            result => return result,
+        };
+        let retry = half_area_options(image, options);
+        tracing::warn!(
+            crop_index,
+            width = image.width(),
+            height = image.height(),
+            retry_max_pixels = retry.max_pixels,
+            error = %format_args!("{error:#}"),
+            "Flux2 crop ran out of GPU memory; retrying at half the area"
+        );
+        release_cuda_temporary_memory(&self.device)
+            .context("GPU unusable after Flux2 ran out of memory")?;
+        self.inpaint_full_frame(image, mask, reference_image, &retry)
+            .context("Flux2 crop failed again after running out of GPU memory")
+    }
+
     fn inpaint_full_frame(
         &self,
         image: &DynamicImage,
@@ -508,7 +540,9 @@ impl Flux2Klein {
                 &prepare_mask(mask, size.width, size.height),
                 options.mask_padding,
             );
-            let image_latents = self.encode_image_latents(&rgb)?;
+            let image_latents = self
+                .encode_image_latents(&rgb)
+                .context("Flux2 VAE encode")?;
             phases.mark("vae_encode")?;
             let (batch, channels, packed_h, packed_w) = image_latents.dims4()?;
             if batch != 1 || channels != 128 {
@@ -572,13 +606,16 @@ impl Flux2Klein {
                     ],
                     1,
                 )?;
-                let noise_pred = self.transformer.forward(
-                    &latent_model_input,
-                    &img_ids,
-                    &prompt_embeds,
-                    &text_ids,
-                    &timestep,
-                )?;
+                let noise_pred = self
+                    .transformer
+                    .forward(
+                        &latent_model_input,
+                        &img_ids,
+                        &prompt_embeds,
+                        &text_ids,
+                        &timestep,
+                    )
+                    .context("Flux2 transformer step")?;
                 drop(latent_model_input);
                 drop(timestep);
                 let noise_pred = noise_pred
@@ -609,7 +646,9 @@ impl Flux2Klein {
             (latents, packed_h, packed_w, size)
         };
 
-        let rgb = self.decode_packed_latents(latents, packed_h, packed_w)?;
+        let rgb = self
+            .decode_packed_latents(latents, packed_h, packed_w)
+            .context("Flux2 VAE decode")?;
         phases.mark("vae_decode")?;
         phases.finish(size.width, size.height, packed_h * packed_w);
         let mut output = resize_back_if_needed(rgb, size);
@@ -674,6 +713,8 @@ impl<'a> PhaseTimer<'a> {
     }
 
     fn mark(&mut self, phase: &'static str) -> Result<()> {
+        #[cfg(test)]
+        tests::after_phase(phase);
         if self.enabled {
             self.device.synchronize()?;
             self.phases.push((phase, self.last.elapsed().as_millis()));
@@ -812,6 +853,87 @@ fn crop_generation_options(options: &Flux2InpaintOptions) -> Flux2InpaintOptions
         },
         ..options.clone()
     }
+}
+
+/// `options` for retrying `image` at half the pixel area it was generated at
+/// under `options`.
+fn half_area_options(image: &DynamicImage, options: &Flux2InpaintOptions) -> Flux2InpaintOptions {
+    let (width, height) = bounded_size(image.width(), image.height(), options.max_pixels);
+    let (width, height) = round_to_flux_multiple(width, height);
+    let half_area = u64::from(width) * u64::from(height) / 2;
+    Flux2InpaintOptions {
+        max_pixels: u32::try_from(half_area).unwrap_or(u32::MAX).max(1),
+        ..options.clone()
+    }
+}
+
+/// GPU allocation failures as they are named in error text. Some candle paths
+/// (cuDNN convolutions, `?` on driver calls) keep only an error's message.
+const OUT_OF_MEMORY_STATUSES: [&str; 3] = [
+    "CUDA_ERROR_OUT_OF_MEMORY",
+    "CUBLAS_STATUS_ALLOC_FAILED",
+    "CUDNN_STATUS_INTERNAL_ERROR_DEVICE_ALLOCATION_FAILED",
+];
+
+/// Whether `error` is the GPU failing to allocate memory, as opposed to any
+/// other CUDA fault.
+fn is_out_of_memory(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cuda_out_of_memory(cause)
+            || cause
+                .downcast_ref::<candle_core::Error>()
+                .is_some_and(candle_out_of_memory)
+    })
+}
+
+fn candle_out_of_memory(error: &candle_core::Error) -> bool {
+    use candle_core::Error;
+    match error {
+        Error::WithBacktrace { inner, .. }
+        | Error::Context { inner, .. }
+        | Error::WithPath { inner, .. } => candle_out_of_memory(inner),
+        Error::Cuda(source) => cuda_out_of_memory(source.as_ref()),
+        Error::WrappedContext { wrapped, .. } => {
+            cuda_out_of_memory(wrapped.as_ref())
+                || wrapped
+                    .downcast_ref::<Error>()
+                    .is_some_and(candle_out_of_memory)
+        }
+        Error::Wrapped(message) => {
+            let message = message.to_string();
+            OUT_OF_MEMORY_STATUSES
+                .iter()
+                .any(|status| message.contains(status))
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_out_of_memory(error: &(dyn std::error::Error + 'static)) -> bool {
+    use candle_core::cuda::{
+        CudaError,
+        cudarc::{
+            cublas::{result::CublasError, sys::cublasStatus_t},
+            driver::{DriverError, sys::CUresult},
+        },
+    };
+    let driver = |error: &DriverError| error.0 == CUresult::CUDA_ERROR_OUT_OF_MEMORY;
+    let cublas = |error: &CublasError| error.0 == cublasStatus_t::CUBLAS_STATUS_ALLOC_FAILED;
+    match error.downcast_ref::<CudaError>() {
+        Some(CudaError::Cuda(error) | CudaError::Load { cuda: error, .. }) => driver(error),
+        Some(CudaError::Cublas(error)) => cublas(error),
+        Some(_) => false,
+        None => {
+            error.downcast_ref::<DriverError>().is_some_and(driver)
+                || error.downcast_ref::<CublasError>().is_some_and(cublas)
+        }
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn cuda_out_of_memory(_error: &(dyn std::error::Error + 'static)) -> bool {
+    false
 }
 
 fn padded_snapped_bounds(
@@ -1363,6 +1485,233 @@ mod tests {
         Ok(())
     }
 
+    /// Opt-in GPU check of the out-of-memory retry. A ballast allocation
+    /// leaves each amount of VRAM in `KOHARU_FLUX_OOM_LEAVE_MIB` free, so a
+    /// square crop of `KOHARU_FLUX_OOM_SIDE` px runs out of memory in its
+    /// encode or decode phase; with `KOHARU_FLUX_OOM_AFTER_ENCODE_LEAVE_MIB`
+    /// the ballast arrives after the encode, so the transformer runs out.
+    /// Each crop must succeed through the half-area retry or fail with the
+    /// out-of-memory error, and once the ballast is gone the model must
+    /// reproduce its seeded output with its memory released again.
+    ///
+    /// On Windows the driver's sysmem fallback spills over-budget allocations
+    /// into system RAM instead of failing them (2026-09-28: 9 s crops took up
+    /// to 59 s, no error), so set "CUDA - Sysmem Fallback Policy" to "Prefer
+    /// No Sysmem Fallback" for the test binary first. An 800 px crop (the cap)
+    /// needs ~1850 MiB free and ran 13-14 s instead of 10 s with 1750-1800;
+    /// with Flux2 loaded and a quiet desktop ~1930 MiB is free.
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires a CUDA GPU and explicit local Flux2 model paths"]
+    fn out_of_memory_retry_leaves_the_gpu_usable() -> Result<()> {
+        // A thread's cuDNN handle aborts the process when the thread exits
+        // (see AGENTS.md), so the GPU work runs on one that never does.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(std::panic::catch_unwind(check_out_of_memory_retry));
+            loop {
+                std::thread::park();
+            }
+        });
+        match receiver.recv()? {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn check_out_of_memory_retry() -> Result<()> {
+        use std::{cell::RefCell, rc::Rc};
+
+        let model = Flux2Klein::load_from_paths(Flux2KleinPaths {
+            transformer_gguf: PathBuf::from(std::env::var("KOHARU_FLUX_TRANSFORMER")?),
+            vae_safetensors: PathBuf::from(std::env::var("KOHARU_FLUX_VAE")?),
+        })?;
+        let levels = |name: &str, default: &str| -> Result<Vec<usize>> {
+            Ok(std::env::var(name)
+                .unwrap_or_else(|_| default.into())
+                .split(',')
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.trim().parse())
+                .collect::<std::result::Result<_, _>>()?)
+        };
+        // The VAE encode needs more memory than the transformer steps after
+        // it, so the transformer only runs out when the ballast arrives late.
+        let cases: Vec<(usize, bool)> = levels("KOHARU_FLUX_OOM_LEAVE_MIB", "1500,1200,900,300")?
+            .into_iter()
+            .map(|leave| (leave, false))
+            .chain(
+                levels("KOHARU_FLUX_OOM_AFTER_ENCODE_LEAVE_MIB", "800,250")?
+                    .into_iter()
+                    .map(|leave| (leave, true)),
+            )
+            .collect();
+        let side = std::env::var("KOHARU_FLUX_OOM_SIDE").map_or(Ok(640), |side| side.parse())?;
+        let options = crop_generation_options(&Flux2InpaintOptions {
+            num_inference_steps: 2,
+            ..Default::default()
+        });
+        let image = DynamicImage::ImageRgb8(RgbImage::from_fn(side, side, |x, y| {
+            let glyph =
+                (300..500).contains(&x) && (250..550).contains(&y) && (x / 12 + y / 20) % 3 == 0;
+            let shade = 200 + ((x * 7 + y * 13) % 40) as u8;
+            if glyph {
+                Rgb([20, 20, 20])
+            } else {
+                Rgb([shade, shade, shade - 10])
+            }
+        }));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(side, side, |x, y| {
+            Luma([if (280..520).contains(&x) && (230..570).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        }));
+        let seeded = || -> Result<RgbImage> {
+            model.device.set_seed(7)?;
+            Ok(model
+                .inpaint_full_frame(&image, &mask, None, &options)?
+                .to_rgb8())
+        };
+
+        let reference = seeded()?;
+        let idle_mib = free_vram_mib(&model.device)?;
+        println!("idle free {idle_mib} MiB");
+
+        // Phase times of a warm crop that has all the memory it wants.
+        let phases = Rc::new(RefCell::new(Vec::new()));
+        let (device, times) = (model.device.clone(), phases.clone());
+        let mut last = Instant::now();
+        AFTER_PHASE.set(Some(Box::new(move |phase| {
+            device.synchronize().expect("synchronize");
+            times.borrow_mut().push((phase, last.elapsed().as_millis()));
+            last = Instant::now();
+        })));
+        let started = Instant::now();
+        seeded()?;
+        AFTER_PHASE.set(None);
+        println!(
+            "{side} px crop: {:.2} s, phases (ms) {:?}",
+            started.elapsed().as_secs_f32(),
+            phases.borrow()
+        );
+
+        let expect_out_of_memory = !cases.is_empty();
+        let held = Rc::new(RefCell::new(None));
+        let mut ran_out = false;
+        for (leave, after_encode) in cases {
+            // Holds all but `leave` MiB of VRAM from now, or from the end of
+            // the next VAE encode, until `release`.
+            let hold = || -> Result<()> {
+                if after_encode {
+                    let (device, held) = (model.device.clone(), held.clone());
+                    AFTER_PHASE.set(Some(Box::new(move |phase| {
+                        if phase == "vae_encode" && held.borrow().is_none() {
+                            *held.borrow_mut() = Some(ballast(&device, leave).expect("ballast"));
+                        }
+                    })));
+                } else {
+                    *held.borrow_mut() = Some(ballast(&model.device, leave)?);
+                }
+                Ok(())
+            };
+            let release = || {
+                AFTER_PHASE.set(None);
+                held.borrow_mut().take();
+            };
+
+            hold()?;
+            let started = Instant::now();
+            let probe = match model.inpaint_full_frame(&image, &mask, None, &options) {
+                Ok(_) => "fits".to_string(),
+                Err(error) => {
+                    assert!(is_out_of_memory(&error), "{error:#}");
+                    ran_out = true;
+                    format!("{error}")
+                }
+            };
+            let probe_s = started.elapsed().as_secs_f32();
+            release();
+            hold()?;
+            let started = Instant::now();
+            let retried = match model.generate_crop(&image, &mask, None, &options, 0) {
+                Ok(output) => {
+                    assert_eq!(output.dimensions(), image.dimensions());
+                    "ok".to_string()
+                }
+                Err(error) => {
+                    assert!(is_out_of_memory(&error), "{error:#}");
+                    "out of memory".to_string()
+                }
+            };
+            let retried_s = started.elapsed().as_secs_f32();
+
+            release();
+            release_cuda_temporary_memory(&model.device)?;
+            let after = seeded()?;
+            let max_diff = reference
+                .as_raw()
+                .iter()
+                .zip(after.as_raw())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            let after_mib = free_vram_mib(&model.device)?;
+            let when = if after_encode { " after encode" } else { "" };
+            println!(
+                "leave {leave} MiB{when}: full size {probe} ({probe_s:.1} s); \
+                 with retry {retried} ({retried_s:.1} s); afterwards max diff {max_diff}, \
+                 free {after_mib} MiB"
+            );
+            assert_eq!(max_diff, 0, "output changed after running out of memory");
+            assert!(
+                after_mib + 64 >= idle_mib,
+                "{after_mib} MiB free, was {idle_mib}"
+            );
+        }
+        assert!(
+            ran_out || !expect_out_of_memory,
+            "nothing ran out of memory; did sysmem fallback spill it?"
+        );
+        Ok(())
+    }
+
+    /// A GPU allocation that leaves `leave_mib` of VRAM free once the memory
+    /// pool has returned its cached blocks, which the free reading ignores.
+    #[cfg(feature = "cuda")]
+    fn ballast(device: &Device, leave_mib: usize) -> Result<Tensor> {
+        release_cuda_temporary_memory(device)?;
+        let free_mib = free_vram_mib(device)?;
+        Ok(Tensor::zeros(
+            free_mib.saturating_sub(leave_mib) << 20,
+            DType::U8,
+            device,
+        )?)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn free_vram_mib(device: &Device) -> Result<usize> {
+        device.synchronize()?;
+        Ok(candle_core::cuda::cudarc::driver::result::mem_get_info()?.0 >> 20)
+    }
+
+    type PhaseHook = Box<dyn FnMut(&'static str)>;
+
+    thread_local! {
+        /// Called after each phase of the Flux2 crops this thread generates.
+        static AFTER_PHASE: std::cell::RefCell<Option<PhaseHook>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn after_phase(phase: &'static str) {
+        AFTER_PHASE.with_borrow_mut(|hook| {
+            if let Some(hook) = hook {
+                hook(phase);
+            }
+        });
+    }
+
     fn crop(x: u32, y: u32, width: u32, height: u32) -> CropBounds {
         CropBounds {
             x,
@@ -1484,6 +1833,64 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(options.max_pixels, 100_000);
+    }
+
+    #[test]
+    fn out_of_memory_retries_generate_at_half_the_area() {
+        for (width, height) in [(800, 800), (816, 928), (608, 2304), (320, 160)] {
+            let image = DynamicImage::new_rgb8(width, height);
+            let options = crop_generation_options(&Flux2InpaintOptions::default());
+            let area = |max_pixels| {
+                let (_, size) = prepare_rgb_image(&image, max_pixels);
+                u64::from(size.width) * u64::from(size.height)
+            };
+            let first = area(options.max_pixels);
+            let retry = area(half_area_options(&image, &options).max_pixels);
+            assert!(retry * 2 <= first, "{width}x{height}: {retry} of {first}");
+            assert!(
+                retry * 5 >= first * 2,
+                "{width}x{height}: {retry} of {first}"
+            );
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn out_of_memory_is_recognised_only_for_allocation_failures() {
+        use candle_core::cuda::{
+            CudaError,
+            cudarc::{
+                cublas::{result::CublasError, sys::cublasStatus_t},
+                driver::{DriverError, sys::CUresult},
+            },
+        };
+        let driver = |code| candle_core::Error::from(CudaError::Cuda(DriverError(code)));
+
+        let typed = anyhow::Error::from(
+            driver(CUresult::CUDA_ERROR_OUT_OF_MEMORY).context("dequantize weight"),
+        )
+        .context("Flux2 transformer step");
+        let cublas = anyhow::Error::from(candle_core::Error::from(CudaError::Cublas(CublasError(
+            cublasStatus_t::CUBLAS_STATUS_ALLOC_FAILED,
+        ))));
+        // cuDNN convolutions keep only the message.
+        let message_only = anyhow::Error::from(candle_core::Error::wrap(DriverError(
+            CUresult::CUDA_ERROR_OUT_OF_MEMORY,
+        )))
+        .context("Flux2 VAE decode");
+        for error in [typed, cublas, message_only] {
+            assert!(is_out_of_memory(&error), "{error:#}");
+        }
+
+        for error in [
+            anyhow::Error::from(driver(CUresult::CUDA_ERROR_ILLEGAL_ADDRESS)),
+            anyhow::Error::from(candle_core::Error::wrap(DriverError(
+                CUresult::CUDA_ERROR_LAUNCH_FAILED,
+            ))),
+            anyhow::anyhow!("out of memory"),
+        ] {
+            assert!(!is_out_of_memory(&error), "{error:#}");
+        }
     }
 
     #[test]
