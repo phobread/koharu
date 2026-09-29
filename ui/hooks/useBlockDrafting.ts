@@ -142,14 +142,14 @@ export function useBlockDrafting({
       if (last || !active) finalize()
     },
     {
-      pointer: { buttons: 1, touch: true },
+      // Pointer-only gesture: use-gesture's default arrow-key "keyboard drag"
+      // would otherwise preventDefault arrow keydowns bubbling up from the
+      // quick editor's textareas, freezing the caret there. The switch lives
+      // under `pointer` (a top-level `keys` is silently ignored).
+      pointer: { buttons: 1, touch: true, keys: false },
       preventDefault: true,
       filterTaps: true,
       eventOptions: { passive: false },
-      // Pointer-only gesture: use-gesture's default arrow-key "keyboard drag"
-      // would otherwise preventDefault arrow keydowns bubbling up from the
-      // quick editor's textareas, freezing the caret there.
-      keys: false,
     },
   )
 

@@ -331,8 +331,9 @@ export function Workspace() {
       eventOptions: { passive: false },
       // Panning is pointer-only. Keyboard dragging makes use-gesture consume
       // arrow keydowns bubbling from the selected block's quick-editor
-      // textareas, preventing their native caret movement.
-      drag: { filterTaps: true, keys: false, pointer: { mouse: true, buttons: [1, 4] } },
+      // textareas, preventing their native caret movement. (The switch lives
+      // under `pointer`; a top-level `keys` is silently ignored.)
+      drag: { filterTaps: true, pointer: { mouse: true, buttons: [1, 4], keys: false } },
       wheel: { preventDefault: false },
       pinch: {
         threshold: 0.1,
