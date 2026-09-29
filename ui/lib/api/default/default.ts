@@ -3661,6 +3661,137 @@ export const useDeleteProject = <TError = void, TContext = unknown>(
 > => {
   return useMutation(getDeleteProjectMutationOptions(options), queryClient)
 }
+export const getGetProjectThumbnailUrl = (id: string) => {
+  return `/api/v1/projects/${id}/thumbnail`
+}
+
+/**
+ * @summary Cover for the project list: the thumbnail of the project's first page,
+read without opening the project.
+ */
+export const getProjectThumbnail = async (id: string, options?: RequestInit): Promise<Blob> => {
+  return fetchApi<Blob>(getGetProjectThumbnailUrl(id), {
+    ...options,
+    method: 'GET',
+  })
+}
+
+export const getGetProjectThumbnailQueryKey = (id: string) => {
+  return [`/api/v1/projects/${id}/thumbnail`] as const
+}
+
+export const getGetProjectThumbnailQueryOptions = <
+  TData = Awaited<ReturnType<typeof getProjectThumbnail>>,
+  TError = unknown,
+>(
+  id: string,
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData>>
+    request?: SecondParameter<typeof fetchApi>
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {}
+
+  const queryKey = queryOptions?.queryKey ?? getGetProjectThumbnailQueryKey(id)
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getProjectThumbnail>>> = ({ signal }) =>
+    getProjectThumbnail(id, { signal, ...requestOptions })
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: id !== null && id !== undefined,
+    gcTime: 300000,
+    retry: 1,
+    ...queryOptions,
+  } as UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData> & {
+    queryKey: DataTag<QueryKey, TData, TError>
+  }
+}
+
+export type GetProjectThumbnailQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getProjectThumbnail>>
+>
+export type GetProjectThumbnailQueryError = unknown
+
+export function useGetProjectThumbnail<
+  TData = Awaited<ReturnType<typeof getProjectThumbnail>>,
+  TError = unknown,
+>(
+  id: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectThumbnail>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectThumbnail>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProjectThumbnail<
+  TData = Awaited<ReturnType<typeof getProjectThumbnail>>,
+  TError = unknown,
+>(
+  id: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectThumbnail>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectThumbnail>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProjectThumbnail<
+  TData = Awaited<ReturnType<typeof getProjectThumbnail>>,
+  TError = unknown,
+>(
+  id: string,
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData>>
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Cover for the project list: the thumbnail of the project's first page,
+read without opening the project.
+ */
+
+export function useGetProjectThumbnail<
+  TData = Awaited<ReturnType<typeof getProjectThumbnail>>,
+  TError = unknown,
+>(
+  id: string,
+  options?: {
+    query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getProjectThumbnail>>, TError, TData>>
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+  const queryOptions = getGetProjectThumbnailQueryOptions(id, options)
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<TData, TError> & {
+    queryKey: DataTag<QueryKey, TData, TError>
+  }
+
+  return withQueryKey(query, queryOptions.queryKey)
+}
+
 export const getGetSceneBinUrl = () => {
   return `/api/v1/scene.bin`
 }

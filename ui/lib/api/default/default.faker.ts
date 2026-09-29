@@ -844,6 +844,9 @@ export const getImportProjectResponseMock = (
   ...overrideResponse,
 })
 
+export const getGetProjectThumbnailResponseMock = (): ArrayBuffer =>
+  new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
+
 export const getGetSceneBinResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
 

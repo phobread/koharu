@@ -846,6 +846,9 @@ export const getImportProjectResponseMock = (
   ...overrideResponse,
 })
 
+export const getGetProjectThumbnailResponseMock = (): ArrayBuffer =>
+  new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
+
 export const getGetSceneBinResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
 
@@ -2206,6 +2209,30 @@ export const getDeleteProjectMockHandler = (
   )
 }
 
+export const getGetProjectThumbnailMockHandler = (
+  overrideResponse?:
+    | ArrayBuffer
+    | ((info: Parameters<Parameters<typeof http.get>[1]>[0]) => Promise<ArrayBuffer> | ArrayBuffer),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    '*/projects/:id/thumbnail',
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      const binaryBody =
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProjectThumbnailResponseMock()
+      return HttpResponse.arrayBuffer(
+        binaryBody instanceof ArrayBuffer ? binaryBody : new ArrayBuffer(0),
+        { status: 200, headers: { 'Content-Type': 'image/webp' } },
+      )
+    },
+    options,
+  )
+}
+
 export const getGetSceneBinMockHandler = (
   overrideResponse?:
     | ArrayBuffer
@@ -2341,6 +2368,7 @@ export const getDefaultMock = () => [
   getExportCurrentProjectMockHandler(),
   getImportProjectMockHandler(),
   getDeleteProjectMockHandler(),
+  getGetProjectThumbnailMockHandler(),
   getGetSceneBinMockHandler(),
   getGetSceneJsonMockHandler(),
   getCreateFolderMockHandler(),

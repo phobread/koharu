@@ -24,7 +24,7 @@ use atomicwrites::{AtomicFile, OverwriteBehavior};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
 use fs4::FileExt;
-use koharu_core::{Scene, op::Op};
+use koharu_core::{BlobRef, ImageRole, NodeKind, PageId, Scene, op::Op};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -229,6 +229,27 @@ impl ProjectSession {
 // ---------------------------------------------------------------------------
 // Snapshot loading / TOML metadata
 // ---------------------------------------------------------------------------
+
+/// The first page of a project on disk and its source image, read from the
+/// saved snapshot without opening (locking) the project. For the project
+/// list's covers: edits not yet compacted into `scene.bin` are not seen.
+/// `None` when there is no snapshot or the first page has no source image.
+pub fn first_page_source(dir: &Utf8Path) -> Result<Option<(PageId, BlobRef)>> {
+    let scene_path = dir.join(SCENE_FILE);
+    let bytes = match std::fs::read(scene_path.as_std_path()) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow::Error::new(e).context(format!("read {scene_path}"))),
+    };
+    let snap = decode_snapshot(&bytes).with_context(|| format!("decode {scene_path}"))?;
+    let Some(page) = snap.scene.pages.values().next() else {
+        return Ok(None);
+    };
+    Ok(page.nodes.values().find_map(|n| match &n.kind {
+        NodeKind::Image(img) if img.role == ImageRole::Source => Some((page.id, img.blob.clone())),
+        _ => None,
+    }))
+}
 
 fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
     let scene_path = dir.join(SCENE_FILE);
@@ -1538,6 +1559,50 @@ mod tests {
         let session = ProjectSession::open(&path).unwrap();
         assert_eq!(session.scene.read().pages.len(), 1);
         assert!(session.scene.read().pages.contains_key(&page_id));
+    }
+
+    #[test]
+    fn first_page_source_reads_the_saved_snapshot_without_opening() {
+        let (_tmp, path) = tmp_dir();
+        // No project yet: nothing to show.
+        assert!(first_page_source(&path).unwrap().is_none());
+
+        let session = ProjectSession::create(&path, "covers").unwrap();
+        let mut first = Page::new("001.jpg", 800, 600);
+        let image = NodeId::new();
+        first.nodes.insert(
+            image,
+            Node {
+                id: image,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob: BlobRef::new("cover"),
+                    opacity: 1.0,
+                    natural_width: 800,
+                    natural_height: 600,
+                    name: None,
+                }),
+            },
+        );
+        let first_id = first.id;
+        session.apply(Op::AddPage { page: first, at: 0 }).unwrap();
+        session
+            .apply(Op::AddPage {
+                page: Page::new("002.jpg", 800, 600),
+                at: 1,
+            })
+            .unwrap();
+        // Not compacted yet: the snapshot has no pages.
+        assert!(first_page_source(&path).unwrap().is_none());
+        session.compact().unwrap();
+
+        // Readable while the project is open (and locked) elsewhere.
+        assert_eq!(
+            first_page_source(&path).unwrap(),
+            Some((first_id, BlobRef::new("cover")))
+        );
     }
 
     #[test]

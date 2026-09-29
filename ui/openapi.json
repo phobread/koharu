@@ -1028,6 +1028,31 @@
         }
       }
     },
+    "/projects/{id}/thumbnail": {
+      "get": {
+        "summary": "Cover for the project list: the thumbnail of the project's first page,\nread without opening the project.",
+        "operationId": "get_project_thumbnail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "image/webp": {}
+            }
+          }
+        }
+      }
+    },
     "/scene.bin": {
       "get": {
         "operationId": "get_scene_bin",

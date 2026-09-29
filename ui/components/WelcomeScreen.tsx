@@ -5,6 +5,7 @@ import {
   ArrowRightIcon,
   ClockIcon,
   FileArchiveIcon,
+  ImageIcon,
   PlusIcon,
   TrashIcon,
   XIcon,
@@ -22,7 +23,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -33,10 +33,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useDeleteProject, useListProjects } from '@/lib/api/default/default'
+import {
+  getGetProjectThumbnailUrl,
+  useDeleteProject,
+  useListProjects,
+} from '@/lib/api/default/default'
 import type { ProjectSummary } from '@/lib/api/schemas'
 import { importKhrFile } from '@/lib/io/pagesIo'
 import { createAndOpenProject, switchProject } from '@/lib/io/scene'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 
 type Busy = false | 'new' | 'open' | 'import'
@@ -53,6 +58,7 @@ export function WelcomeScreen() {
     const all = projectsData?.projects ?? []
     return [...all].sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
   }, [projectsData])
+  const lastProjectId = useEditorUiStore((s) => s.lastProjectId)
 
   const [busy, setBusy] = useState<Busy | 'delete'>(false)
   const [error, setError] = useState<string | null>(null)
@@ -115,85 +121,82 @@ export function WelcomeScreen() {
   }, [refetchProjects])
 
   return (
-    <div className='relative flex min-h-0 flex-1 items-start justify-center overflow-hidden bg-background'>
+    <div className='relative flex min-h-0 flex-1 overflow-hidden bg-background'>
       <div
         aria-hidden
         className='pointer-events-none absolute -top-40 left-1/2 h-80 w-[720px] -translate-x-1/2 rounded-full bg-primary/10 blur-3xl'
       />
 
-      <div className='relative z-10 mx-auto flex w-full max-w-md flex-col gap-8 px-6 pt-24 pb-10'>
-        <header className='flex flex-col items-center gap-2 text-center'>
-          <Image src='/icon.png' alt='Koharu' width={56} height={56} priority />
-          <div className='mt-1 flex flex-col gap-0.5'>
-            <h1 className='text-2xl font-semibold tracking-tight text-foreground'>
-              {t('welcome.title')}
-            </h1>
-            <p className='text-xs text-muted-foreground'>{t('welcome.subtitle')}</p>
-          </div>
-        </header>
-
-        {error && (
-          <div className='flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive'>
-            <AlertCircleIcon className='mt-0.5 h-3.5 w-3.5 shrink-0' />
-            <div className='flex-1'>{error}</div>
-            <button
-              type='button'
-              onClick={() => setError(null)}
-              className='cursor-pointer text-destructive/70 hover:text-destructive'
-              aria-label='dismiss'
+      <ScrollArea className='relative z-10 min-h-0 flex-1'>
+        <div className='mx-auto flex w-full max-w-5xl flex-col gap-8 px-8 pt-14 pb-12'>
+          <header className='flex flex-wrap items-center gap-x-4 gap-y-3'>
+            <Image src='/icon.png' alt='Koharu' width={44} height={44} priority />
+            <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
+              <h1 className='text-2xl font-semibold tracking-tight text-foreground'>
+                {t('welcome.title')}
+              </h1>
+              <p className='text-xs text-muted-foreground'>{t('welcome.subtitle')}</p>
+            </div>
+            <Button
+              variant='ghost'
+              onClick={() => void importKhr()}
+              disabled={!!busy}
+              className='text-muted-foreground'
             >
-              <XIcon className='h-3.5 w-3.5' />
-            </button>
-          </div>
-        )}
+              <FileArchiveIcon className='size-4' />
+              {t('welcome.importKhr')}
+            </Button>
+            <Button onClick={() => setNewDialogOpen(true)} disabled={!!busy}>
+              <PlusIcon className='size-4' />
+              {t('welcome.new')}
+            </Button>
+          </header>
 
-        <div className='mt-4 flex flex-col gap-2.5'>
-          <PrimaryAction
-            onClick={() => setNewDialogOpen(true)}
-            disabled={!!busy}
-            loading={busy === 'new'}
-            title={t('welcome.new')}
-            description={t('welcome.newDescription')}
-          />
-          <SecondaryAction
-            onClick={importKhr}
-            disabled={!!busy}
-            loading={busy === 'import'}
-            icon={<FileArchiveIcon className='h-4 w-4' />}
-            label={t('welcome.importKhr')}
-          />
-        </div>
+          {error && (
+            <div className='flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive'>
+              <AlertCircleIcon className='mt-0.5 h-3.5 w-3.5 shrink-0' />
+              <div className='flex-1'>{error}</div>
+              <button
+                type='button'
+                onClick={() => setError(null)}
+                className='cursor-pointer text-destructive/70 hover:text-destructive'
+                aria-label='dismiss'
+              >
+                <XIcon className='h-3.5 w-3.5' />
+              </button>
+            </div>
+          )}
 
-        <section className='flex flex-col gap-2'>
-          <div className='flex items-baseline justify-between px-0.5'>
-            <h2 className='text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase'>
-              {t('welcome.projects')}
-            </h2>
-            {projects.length > 0 && (
-              <span className='text-[10px] text-muted-foreground tabular-nums'>
-                {projects.length}
-              </span>
-            )}
-          </div>
-          {projects.length > 0 ? (
-            <ScrollArea className='h-48 rounded-lg border border-border/60 bg-card/30'>
-              <ul className='flex flex-col divide-y divide-border/40'>
+          <section className='flex flex-col gap-3'>
+            <div className='flex items-baseline justify-between px-0.5'>
+              <h2 className='text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase'>
+                {t('welcome.projects')}
+              </h2>
+              {projects.length > 0 && (
+                <span className='text-[10px] text-muted-foreground tabular-nums'>
+                  {projects.length}
+                </span>
+              )}
+            </div>
+            {projects.length > 0 ? (
+              <ul className='grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-4 gap-y-5'>
                 {projects.map((p) => (
-                  <ProjectRow
+                  <ProjectCard
                     key={p.id}
                     project={p}
+                    last={p.id === lastProjectId}
                     onOpen={openById}
                     onDeleteRequest={setProjectToDelete}
                     disabled={!!busy}
                   />
                 ))}
               </ul>
-            </ScrollArea>
-          ) : (
-            <RecentSkeleton />
-          )}
-        </section>
-      </div>
+            ) : (
+              <EmptyProjects />
+            )}
+          </section>
+        </div>
+      </ScrollArea>
 
       <NewProjectDialog
         open={newDialogOpen}
@@ -234,154 +237,103 @@ export function WelcomeScreen() {
 
 // ---------------------------------------------------------------------------
 
-function PrimaryAction({
-  onClick,
-  disabled,
-  loading,
-  title,
-  description,
-}: {
-  onClick: () => void
-  disabled?: boolean
-  loading?: boolean
-  title: string
-  description: string
-}) {
-  return (
-    <button
-      type='button'
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        'group relative cursor-pointer overflow-hidden rounded-xl text-left outline-none',
-        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        'disabled:cursor-not-allowed disabled:opacity-60',
-      )}
-    >
-      <Card
-        className={cn(
-          'relative flex-row items-center gap-3 overflow-hidden rounded-xl border-primary/30 px-4 py-3',
-          'bg-gradient-to-br from-primary/10 via-primary/5 to-transparent',
-          loading && 'border-primary/70',
-        )}
-      >
-        <div className='flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm shadow-primary/30'>
-          <PlusIcon className='h-4 w-4' />
-        </div>
-        <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
-          <div className='text-base leading-tight font-semibold tracking-tight text-foreground'>
-            {title}
-          </div>
-          <div className='text-xs leading-snug text-muted-foreground'>{description}</div>
-        </div>
-        <ArrowRightIcon className='h-4 w-4 shrink-0 text-muted-foreground' />
-      </Card>
-    </button>
-  )
-}
-
-function SecondaryAction({
-  onClick,
-  disabled,
-  loading,
-  icon,
-  label,
-}: {
-  onClick: () => void
-  disabled?: boolean
-  loading?: boolean
-  icon: React.ReactNode
-  label: string
-}) {
-  return (
-    <button
-      type='button'
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        'flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent px-3 py-2.5 text-sm text-muted-foreground outline-none',
-        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        'disabled:cursor-not-allowed disabled:opacity-60',
-        loading && 'border-primary/40 text-foreground',
-      )}
-    >
-      <span className='text-muted-foreground'>{icon}</span>
-      <span className='font-medium'>{label}</span>
-    </button>
-  )
-}
-
-function RecentSkeleton() {
+function EmptyProjects() {
   const { t } = useTranslation()
-  const widths = ['w-32', 'w-40', 'w-28']
   return (
-    <div className='relative h-48 overflow-hidden rounded-lg border border-dashed border-border/60 bg-card/20'>
-      <ul aria-hidden className='flex flex-col divide-y divide-border/30'>
-        {widths.map((w, i) => (
-          <li key={i} className='flex items-center gap-3 px-3 py-2'>
-            <div className='h-9 w-9 shrink-0 rounded-md bg-muted/60' />
-            <div className='flex min-w-0 flex-1 flex-col gap-1.5'>
-              <div className={cn('h-3 rounded bg-muted/70', w)} />
-              <div className='h-2 w-20 rounded bg-muted/40' />
-            </div>
-            <div className='h-2 w-10 rounded bg-muted/40' />
-          </li>
-        ))}
-      </ul>
-      <div className='absolute inset-0 flex items-center justify-center bg-gradient-to-t from-background/95 via-background/60 to-transparent'>
-        <p className='text-center text-[11px] text-muted-foreground'>{t('welcome.emptyHint')}</p>
-      </div>
+    <div className='flex h-48 items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/20'>
+      <p className='text-center text-[11px] text-muted-foreground'>{t('welcome.emptyHint')}</p>
     </div>
   )
 }
 
-function ProjectRow({
+/** A project in the grid: its first page as the cover, name and last edit. */
+function ProjectCard({
   project,
+  last,
   onOpen,
   onDeleteRequest,
   disabled,
 }: {
   project: ProjectSummary
+  /** Opened last: the mouse forward button reopens it. */
+  last: boolean
   onOpen: (id: string) => void
   onDeleteRequest: (project: ProjectSummary) => void
   disabled?: boolean
 }) {
   const { t } = useTranslation()
+  const [coverFailed, setCoverFailed] = useState(false)
   const when = project.updatedAtMs && project.updatedAtMs > 0 ? new Date(project.updatedAtMs) : null
+  // The folder's modified time changes when the project is saved, so a new
+  // first page gets a fresh request.
+  const cover = `${getGetProjectThumbnailUrl(project.id)}?v=${project.updatedAtMs ?? 0}`
+  const deleteLabel = t('welcome.deleteProject', {
+    defaultValue: 'Delete {{name}}',
+    name: project.name,
+  })
+
   return (
-    <li className='group relative flex items-center justify-between transition-colors hover:bg-accent/20'>
+    <li className='group relative'>
       <button
         type='button'
+        data-testid={`welcome-project-${project.id}`}
         onClick={() => onOpen(project.id)}
         disabled={disabled}
-        className='flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-3 py-2 text-left outline-none focus-visible:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-60'
+        title={project.name}
+        className='flex w-full cursor-pointer flex-col gap-2 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-60'
       >
-        <div className='flex min-w-0 flex-1 flex-col'>
-          <div className='truncate text-sm font-medium text-foreground'>{project.name}</div>
-          <div className='truncate text-[11px] text-muted-foreground'>{project.id}</div>
+        <div
+          className={cn(
+            'relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/60 bg-muted/40 shadow-sm transition',
+            'group-hover:-translate-y-0.5 group-hover:border-primary/50 group-hover:shadow-md',
+            last && 'border-primary/40',
+          )}
+        >
+          {coverFailed ? (
+            <div className='flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground'>
+              <ImageIcon className='size-6' />
+              <span className='text-[11px]'>{t('welcome.noPages', 'No pages yet')}</span>
+            </div>
+          ) : (
+            <img
+              src={cover}
+              alt=''
+              loading='lazy'
+              draggable={false}
+              onError={() => setCoverFailed(true)}
+              className='h-full w-full object-cover object-top'
+            />
+          )}
+          {last && (
+            <span
+              data-testid='welcome-last-opened'
+              title={t('welcome.lastOpenedHint', 'The mouse forward button reopens it')}
+              className='absolute bottom-2 left-2 flex items-center gap-1 rounded-full bg-background/85 px-2 py-0.5 text-[10px] font-medium text-foreground shadow-sm backdrop-blur'
+            >
+              <ArrowRightIcon className='size-3' />
+              {t('welcome.lastOpened', 'Last opened')}
+            </span>
+          )}
         </div>
-        {when && (
-          <div className='mr-2 flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground'>
-            <ClockIcon className='h-3 w-3' />
-            {formatRelative(when)}
-          </div>
-        )}
+        <div className='flex min-w-0 flex-col gap-0.5 px-0.5'>
+          <div className='truncate text-sm font-medium text-foreground'>{project.name}</div>
+          {when && (
+            <div className='flex items-center gap-1 text-[11px] text-muted-foreground'>
+              <ClockIcon className='h-3 w-3' />
+              {formatRelative(when)}
+            </div>
+          )}
+        </div>
       </button>
 
       <Button
         data-testid={`welcome-delete-project-${project.id}`}
         variant='ghost'
         size='icon-xs'
-        className='mr-2 h-7 w-7 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive'
+        className='absolute top-2 right-2 h-7 w-7 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100'
         disabled={disabled}
-        aria-label={t('welcome.deleteProject', {
-          defaultValue: 'Delete {{name}}',
-          name: project.name,
-        })}
-        title={t('welcome.deleteProject', {
-          defaultValue: 'Delete {{name}}',
-          name: project.name,
-        })}
+        aria-label={deleteLabel}
+        title={deleteLabel}
         onClick={() => onDeleteRequest(project)}
       >
         <TrashIcon className='h-3.5 w-3.5' />

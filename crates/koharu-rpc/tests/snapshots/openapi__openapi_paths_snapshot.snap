@@ -234,6 +234,12 @@ expression: paths
         ],
     ),
     (
+        "/projects/{id}/thumbnail",
+        [
+            "get",
+        ],
+    ),
+    (
         "/scene.bin",
         [
             "get",

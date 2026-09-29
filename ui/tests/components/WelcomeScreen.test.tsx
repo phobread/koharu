@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { getGetSceneJsonQueryKey, getListProjectsQueryKey } from '@/lib/api/default/default'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 
 import { renderWithQuery } from '../helpers'
 import { server } from '../msw/server'
@@ -44,6 +45,28 @@ function isInvalidated(key: readonly unknown[]): boolean {
 }
 
 describe('WelcomeScreen', () => {
+  it("shows each project's first page as its cover, and marks the one opened last", async () => {
+    withProjects([
+      { id: 'badend', name: 'BadEnd' },
+      { id: 'empty', name: 'Empty' },
+    ])
+    useEditorUiStore.setState({ lastProjectId: 'badend' })
+    renderWithQuery(<WelcomeScreen />)
+
+    const card = await screen.findByTestId('welcome-project-badend')
+    const cover = card.querySelector('img')!
+    expect(cover.getAttribute('src')).toBe('/api/v1/projects/badend/thumbnail?v=0')
+    expect(card).toContainElement(screen.getByTestId('welcome-last-opened'))
+    expect(screen.getAllByTestId('welcome-last-opened')).toHaveLength(1)
+
+    // A project without pages has no cover: a placeholder instead.
+    const empty = screen.getByTestId('welcome-project-empty')
+    fireEvent.error(empty.querySelector('img')!)
+    await waitFor(() => expect(empty).toHaveTextContent('welcome.noPages'))
+    expect(empty.querySelector('img')).toBeNull()
+    useEditorUiStore.setState({ lastProjectId: undefined })
+  })
+
   it('renders primary New project and Import buttons', async () => {
     withProjects([])
     renderWithQuery(<WelcomeScreen />)
