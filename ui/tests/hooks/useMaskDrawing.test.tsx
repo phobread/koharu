@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanvasDims, CanvasDrawingConfig } from '@/hooks/useCanvasDrawing'
 import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import type { Page } from '@/lib/api/schemas'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import type { ToolMode } from '@/lib/types'
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
@@ -45,6 +47,7 @@ describe('useMaskDrawing', () => {
   })
 
   afterEach(() => {
+    usePreferencesStore.setState({ repairWithLama: false })
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     mocks.drawingOptions = null
@@ -70,5 +73,36 @@ describe('useMaskDrawing', () => {
 
     expect(mocks.invalidateScene).toHaveBeenCalledOnce()
     expect(mocks.queueAutoRender).toHaveBeenCalledWith('page-8')
+  })
+
+  async function strokeEngine(mode: ToolMode) {
+    const page = { id: 'page-3', width: 100, height: 100, nodes: {} } as Page
+    renderHook(() =>
+      useMaskDrawing({ mode, page, pointerToDocument: vi.fn(), showMask: true, enabled: true }),
+    )
+    await act(async () => {
+      await mocks.drawingOptions?.onFinalizeFullCanvas?.(new Uint8Array([1]), {
+        x: 1,
+        y: 2,
+        width: 3,
+        height: 4,
+      })
+    })
+    const url = String(vi.mocked(fetch).mock.calls[0]?.[0])
+    return new URL(url, 'http://localhost').searchParams.get('pipeline')
+  }
+
+  it('repairs with the pipeline inpainter by default', async () => {
+    expect(await strokeEngine('repairBrush')).toBe('flux2-klein')
+  })
+
+  it('repairs with LaMa when the repair brush is switched to it', async () => {
+    usePreferencesStore.setState({ repairWithLama: true })
+    expect(await strokeEngine('repairBrush')).toBe('lama-manga')
+  })
+
+  it('keeps the pipeline inpainter for eraser strokes', async () => {
+    usePreferencesStore.setState({ repairWithLama: true })
+    expect(await strokeEngine('eraser')).toBe('flux2-klein')
   })
 })

@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { ColorPicker } from '@/components/ui/color-picker'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
@@ -16,6 +17,8 @@ export function SubToolRail() {
 
   const brushConfig = usePreferencesStore((state) => state.brushConfig)
   const setBrushConfig = usePreferencesStore((state) => state.setBrushConfig)
+  const repairWithLama = usePreferencesStore((state) => state.repairWithLama)
+  const setRepairWithLama = usePreferencesStore((state) => state.setRepairWithLama)
   const { t } = useTranslation()
 
   // Local state for live updates
@@ -70,6 +73,29 @@ export function SubToolRail() {
                 </div>
               </div>
             </div>
+
+            {/* Repair engine */}
+            {mode === 'repairBrush' && (
+              <div className='space-y-1.5 border-t border-border/30 pt-2'>
+                <div className='flex items-center justify-between gap-2'>
+                  <label
+                    htmlFor='repair-with-lama'
+                    className='text-[11px] font-medium text-muted-foreground'
+                  >
+                    {t('toolbar.repairWithLama')}
+                  </label>
+                  <Switch
+                    id='repair-with-lama'
+                    size='sm'
+                    checked={repairWithLama}
+                    onCheckedChange={setRepairWithLama}
+                  />
+                </div>
+                <p className='text-[10px] leading-snug text-muted-foreground/80'>
+                  {t('toolbar.repairWithLamaHint')}
+                </p>
+              </div>
+            )}
 
             {/* Color Picker Section */}
             <AnimatePresence initial={false}>

@@ -12,6 +12,9 @@ type PreferencesState = {
     color: string
   }
   setBrushConfig: (config: Partial<PreferencesState['brushConfig']>) => void
+  /** Repair-brush strokes use LaMa instead of the pipeline's inpainter. */
+  repairWithLama: boolean
+  setRepairWithLama: (enabled: boolean) => void
   defaultFont?: string
   setDefaultFont: (font?: string) => void
   /** Global default text size (px). Caps render auto-fit; undefined = auto. */
@@ -63,6 +66,7 @@ const initialPreferences = {
     size: 36,
     color: '#ffffff',
   },
+  repairWithLama: false,
   boxPadding: 0,
   favoriteFonts: [],
   shortcuts: {
@@ -101,6 +105,7 @@ export const usePreferencesStore = create<PreferencesState>()(
             ...config,
           },
         })),
+      setRepairWithLama: (enabled) => set({ repairWithLama: enabled }),
       setDefaultFont: (font) => set({ defaultFont: font }),
       setDefaultFontSize: (size) =>
         set({
@@ -191,6 +196,7 @@ export const usePreferencesStore = create<PreferencesState>()(
       },
       partialize: (state) => ({
         brushConfig: state.brushConfig,
+        repairWithLama: state.repairWithLama,
         defaultFont: state.defaultFont,
         defaultFontSize: state.defaultFontSize,
         boxPadding: state.boxPadding,

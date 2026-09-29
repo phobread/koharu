@@ -94,7 +94,12 @@ export function useMaskDrawing({
       inpaintQueueRef.current = inpaintQueueRef.current.then(async () => {
         try {
           const config = await getConfig()
-          const inpainter = config.pipeline?.inpainter || 'lama-manga'
+          // LaMa fills from the surroundings only, so it can't redraw what
+          // the stroke covers (Flux.2 sees the page and keeps some symbols).
+          const inpainter =
+            mode === 'repairBrush' && usePreferencesStore.getState().repairWithLama
+              ? 'lama-manga'
+              : config.pipeline?.inpainter || 'lama-manga'
 
           const params = new URLSearchParams({
             pipeline: inpainter,

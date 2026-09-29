@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SubToolRail } from '@/components/canvas/SubToolRail'
@@ -28,6 +28,7 @@ describe('SubToolRail', () => {
         size: 36,
         color: '#ffffff',
       },
+      repairWithLama: false,
     })
   })
 
@@ -70,6 +71,27 @@ describe('SubToolRail', () => {
     useEditorUiStore.setState({ mode: 'repairBrush' })
     rerender(<SubToolRail />)
     expect(screen.queryByText('toolbar.brushColor')).not.toBeInTheDocument()
+  })
+
+  it('offers the LaMa switch only for the repair brush', () => {
+    useEditorUiStore.setState({ mode: 'brush' })
+    const { rerender } = renderWithQuery(<SubToolRail />)
+    expect(screen.queryByRole('switch', { name: 'toolbar.repairWithLama' })).toBeNull()
+
+    useEditorUiStore.setState({ mode: 'eraser' })
+    rerender(<SubToolRail />)
+    expect(screen.queryByRole('switch', { name: 'toolbar.repairWithLama' })).toBeNull()
+
+    useEditorUiStore.setState({ mode: 'repairBrush' })
+    rerender(<SubToolRail />)
+    const lama = screen.getByRole('switch', { name: 'toolbar.repairWithLama' })
+    expect(lama).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(lama)
+    expect(usePreferencesStore.getState().repairWithLama).toBe(true)
+    expect(screen.getByRole('switch', { name: 'toolbar.repairWithLama' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
   })
 
   it('displays the correct brush size', () => {
