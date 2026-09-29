@@ -449,25 +449,27 @@ impl Flux2Klein {
                     ),
                 };
             let generation_started = Instant::now();
-            let flat = bubbles_crop.as_ref().filter(|_| options.flat_fill).and_then(|ids_crop| {
-                match flat_fill::classify_crop(
-                    &image_crop.to_rgba8(),
-                    &generation_mask_crop.to_luma8(),
-                    &composite_mask_crop.to_luma8(),
-                    ids_crop,
-                ) {
-                    flat_fill::CropFill::Flat(colours) => {
-                        tracing::info!(crop_index, bubbles = ?colours, "Flux2 crop filled flat");
-                        Some(DynamicImage::ImageRgb8(flat_fill::flat_crop(
-                            &colours, ids_crop,
-                        )))
-                    }
-                    flat_fill::CropFill::Flux(reason) => {
-                        tracing::info!(crop_index, ?reason, "Flux2 crop needs generation");
+            let flat = bubbles_crop
+                .as_ref()
+                .filter(|_| options.flat_fill)
+                .and_then(|ids_crop| {
+                    let current = image_crop.to_rgba8();
+                    let fill = flat_fill::classify_crop(
+                        &current,
+                        &generation_mask_crop.to_luma8(),
+                        &composite_mask_crop.to_luma8(),
+                        ids_crop,
+                    );
+                    if fill.is_all_flat() {
+                        let blocks = fill.flat_blocks();
+                        tracing::info!(crop_index, ?blocks, "Flux2 crop filled flat");
+                        Some(DynamicImage::ImageRgb8(fill.flat_crop(&current)))
+                    } else {
+                        let reasons = fill.rejections();
+                        tracing::info!(crop_index, ?reasons, "Flux2 crop needs generation");
                         None
                     }
-                }
-            });
+                });
             let generated = match flat {
                 Some(generated) => generated,
                 None => self.generate_crop(
@@ -2313,5 +2315,65 @@ mod tests {
         }
         assert_eq!(*output.get_pixel(9, 16), Rgb([82; 3]));
         assert_eq!(*output.get_pixel(38, 16), Rgb([169; 3]));
+    }
+
+    #[test]
+    fn flat_blocks_of_different_colours_keep_their_own_colour_through_the_paste() {
+        // A grey bubble on the left, a darker plain panel on the right whose
+        // text is pasted over exactly its generation region, so the colour
+        // match's ring around it lies outside every block.
+        let (width, height) = (160u32, 80u32);
+        let letter = |x: u32, y: u32| {
+            (20..60).contains(&y) && [30, 50, 110, 130].iter().any(|&g| (g..g + 8).contains(&x))
+        };
+        let image = RgbImage::from_fn(width, height, |x, y| {
+            if letter(x, y) {
+                Rgb([0; 3])
+            } else if x < 80 {
+                Rgb([200; 3])
+            } else {
+                Rgb([150; 3])
+            }
+        });
+        let paste = dilate(
+            &GrayImage::from_fn(width, height, |x, y| {
+                Luma([if letter(x, y) { 255 } else { 0 }])
+            }),
+            Norm::LInf,
+            2,
+        );
+        let generation = GrayImage::from_fn(width, height, |x, y| {
+            let left_block = (20..70).contains(&x) && (10..70).contains(&y);
+            Luma([if left_block || paste.get_pixel(x, y).0[0] > 0 {
+                255
+            } else {
+                0
+            }])
+        });
+        let bubbles = GrayImage::from_fn(width, height, |x, _| Luma([u8::from(x < 80)]));
+        let fill = flat_fill::classify_crop(
+            &DynamicImage::ImageRgb8(image.clone()).to_rgba8(),
+            &generation,
+            &paste,
+            &bubbles,
+        );
+        assert!(fill.is_all_flat(), "{:?}", fill.rejections());
+
+        let output = composite_inpaint_crop_in_bubbles(
+            &DynamicImage::ImageRgb8(image.clone()),
+            &DynamicImage::ImageRgb8(fill.flat_crop(&DynamicImage::ImageRgb8(image).to_rgba8())),
+            &DynamicImage::ImageLuma8(paste),
+            Some(&bubbles),
+            crop(0, 0, width, height),
+        )
+        .unwrap()
+        .to_rgb8();
+        for (x, expected) in [(33, 200), (53, 200), (113, 150), (133, 150)] {
+            let actual = output.get_pixel(x, 40).0[0];
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "x={x}: expected {expected}, got {actual}"
+            );
+        }
     }
 }
