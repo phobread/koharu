@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use image::DynamicImage;
+use image::{DynamicImage, RgbImage};
 use koharu_core::{NodeDataPatch, NodePatch, Op, TextDataPatch};
 use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlGenerateOptions, PaddleOcrVlTask};
 use koharu_ml::{
@@ -18,6 +18,7 @@ use koharu_ml::{
     korean_ocr::{
         KoreanOcr, contains_lexical_hangul, is_dark_panel, repair_hangul, space_at_line_breaks,
     },
+    outlined_text::{clean_outlined_text, outline_window},
 };
 use koharu_runtime::RuntimeManager;
 use tokio::sync::OnceCell;
@@ -60,12 +61,40 @@ impl Engine for Model {
             return Ok(Vec::new());
         }
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-        let regions: Vec<_> = texts
+        // Each box is read from its own view of the page: outlined lettering
+        // cleaned into black-on-white (see `outlined_text`), else the page.
+        let page_rgb = image.to_rgb8();
+        let sources: Vec<_> = texts
             .iter()
             .map(|(_, transform, text)| {
                 let region = text_node_to_region(transform, text);
-                crop_text_block_deskewed(&image, &region)
+                outline_cleaned_source(&page_rgb, &region)
+                    .map_or((None, region), |(view, moved)| (Some(view), moved))
             })
+            .collect();
+        let cleaned = sources.iter().filter(|(view, _)| view.is_some()).count();
+        if cleaned > 0 {
+            tracing::info!(
+                cleaned,
+                total = sources.len(),
+                "reading outlined lettering from cleaned crops"
+            );
+        }
+        let regions: Vec<_> = texts
+            .iter()
+            .zip(&sources)
+            .map(|((_, transform, text), (view, moved))| match view {
+                Some(view) => crop_text_block_deskewed(view, moved),
+                _ => crop_text_block_deskewed(&image, &text_node_to_region(transform, text)),
+            })
+            .collect();
+        // The verifier's inverted-polarity retry follows the crop it reads: a
+        // cleaned crop is black-on-white; otherwise the page crop decides, as
+        // before.
+        let dark_panels: Vec<bool> = sources
+            .iter()
+            .zip(&regions)
+            .map(|((view, _), region)| view.is_none() && is_dark_panel(region))
             .collect();
 
         let options = PaddleOcrVlGenerateOptions {
@@ -103,9 +132,10 @@ impl Engine for Model {
         let korean_hint = options.language.as_deref().is_some_and(is_korean_language);
         let verification_regions = texts
             .iter()
-            .map(|(_, transform, text)| {
-                let region = text_node_to_region(transform, text);
-                korean_verification_crop(&image, &region)
+            .zip(&sources)
+            .map(|((_, transform, text), (view, moved))| match view {
+                Some(view) => korean_verification_crop(view, moved),
+                _ => korean_verification_crop(&image, &text_node_to_region(transform, text)),
             })
             .collect::<Vec<_>>();
         // Once a page is explicitly Korean or any block is recognized as
@@ -143,7 +173,7 @@ impl Engine for Model {
                         .map_err(|_| anyhow::anyhow!("Korean OCR mutex poisoned"))?;
                     let lines = korean.recognize_block_with_fallback(
                         &verification_regions[index],
-                        is_dark_panel(&regions[index]),
+                        dark_panels[index],
                         KOREAN_REPAIR_MIN_CONFIDENCE,
                     )?;
                     let repaired = repair_hangul(&text, &lines, KOREAN_REPAIR_MIN_CONFIDENCE);
@@ -192,6 +222,79 @@ fn is_korean_language(language: &str) -> bool {
     )
 }
 
+/// When `region` holds thick-outlined lettering, a small view of the page
+/// around it with the lettering redrawn black-on-white, and `region` moved
+/// into that view's coordinates. The view extends well past the cleaned
+/// window so the readers' own crop margins and deskew see the same pixels
+/// they would on the page; other boxes are unaffected.
+fn outline_cleaned_source(
+    page: &RgbImage,
+    region: &TextRegion,
+) -> Option<(DynamicImage, TextRegion)> {
+    let (page_width, page_height) = page.dimensions();
+    let [min_x, min_y, max_x, max_y] = region_bounds(region);
+    let (window, rect) = outline_window(page_width, page_height, min_x, min_y, max_x, max_y);
+    let [wx0, wy0, wx1, wy1] = window;
+    if wx1 <= wx0 || wy1 <= wy0 {
+        return None;
+    }
+    let crop = image::imageops::crop_imm(page, wx0, wy0, wx1 - wx0, wy1 - wy0).to_image();
+    let cleaned = clean_outlined_text(
+        &crop,
+        [rect[0] - wx0, rect[1] - wy0, rect[2] - wx0, rect[3] - wy0],
+    )?;
+
+    let margin = (wx1 - wx0).max(wy1 - wy0) / 2 + 32;
+    let vx0 = wx0.saturating_sub(margin);
+    let vy0 = wy0.saturating_sub(margin);
+    let vx1 = (wx1 + margin).min(page_width);
+    let vy1 = (wy1 + margin).min(page_height);
+    let mut view = image::imageops::crop_imm(page, vx0, vy0, vx1 - vx0, vy1 - vy0).to_image();
+    image::imageops::replace(
+        &mut view,
+        &cleaned,
+        i64::from(wx0 - vx0),
+        i64::from(wy0 - vy0),
+    );
+    let (dx, dy) = (vx0 as f32, vy0 as f32);
+    let mut moved = region.clone();
+    moved.x -= dx;
+    moved.y -= dy;
+    for point in moved.line_polygons.iter_mut().flatten().flatten() {
+        point[0] -= dx;
+        point[1] -= dy;
+    }
+    Some((DynamicImage::ImageRgb8(view), moved))
+}
+
+/// Axis-aligned bounds `[min_x, min_y, max_x, max_y]` of a (possibly
+/// rotated) region.
+fn region_bounds(region: &TextRegion) -> [f32; 4] {
+    let angle = region.rotation_deg.unwrap_or(0.0);
+    if !angle.is_finite() || angle.abs() < 0.05 {
+        return [
+            region.x,
+            region.y,
+            region.x + region.width,
+            region.y + region.height,
+        ];
+    }
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let cx = region.x + region.width * 0.5;
+    let cy = region.y + region.height * 0.5;
+    let (hw, hh) = (region.width * 0.5, region.height * 0.5);
+    let corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]
+        .map(|[lx, ly]| [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly]);
+    let xs = corners.map(|c| c[0]);
+    let ys = corners.map(|c| c[1]);
+    [
+        xs.iter().copied().fold(f32::MAX, f32::min),
+        ys.iter().copied().fold(f32::MAX, f32::min),
+        xs.iter().copied().fold(f32::MIN, f32::max),
+        ys.iter().copied().fold(f32::MIN, f32::max),
+    ]
+}
+
 fn korean_verification_crop(image: &DynamicImage, region: &TextRegion) -> DynamicImage {
     let mut tight = region.clone();
     let pad = (tight.width.min(tight.height) * 0.03).max(2.0);
@@ -226,8 +329,70 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use super::is_korean_language;
+    use super::{is_korean_language, outline_cleaned_source, region_bounds};
     use crate::pipeline::engine::Registry;
+    use image::{Rgb, RgbImage};
+    use koharu_ml::TextRegion;
+
+    fn region(x: f32, y: f32, width: f32, height: f32) -> TextRegion {
+        TextRegion {
+            x,
+            y,
+            width,
+            height,
+            confidence: 1.0,
+            line_polygons: None,
+            source_direction: None,
+            rotation_deg: None,
+            detected_font_size_px: None,
+            detector: None,
+        }
+    }
+
+    #[test]
+    fn rotated_region_bounds_cover_the_turned_box() {
+        let mut r = region(100.0, 100.0, 40.0, 20.0);
+        assert_eq!(region_bounds(&r), [100.0, 100.0, 140.0, 120.0]);
+        r.rotation_deg = Some(90.0);
+        let [x0, y0, x1, y1] = region_bounds(&r);
+        assert!((x0 - 110.0).abs() < 1e-3 && (x1 - 130.0).abs() < 1e-3);
+        assert!((y0 - 90.0).abs() < 1e-3 && (y1 - 130.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_cleaned_view_moves_the_box_and_its_line_polygons_with_it() {
+        // Purple bar with a thick white outline on grey artwork.
+        let page = RgbImage::from_fn(400, 300, |x, y| {
+            if (180..220).contains(&x) && (140..160).contains(&y) {
+                Rgb([110, 90, 220])
+            } else if (176..224).contains(&x) && (136..164).contains(&y) {
+                Rgb([255, 255, 255])
+            } else {
+                Rgb([120, 120, 120])
+            }
+        });
+        let mut r = region(170.0, 130.0, 60.0, 40.0);
+        r.line_polygons = Some(vec![[
+            [180.0, 140.0],
+            [220.0, 140.0],
+            [220.0, 160.0],
+            [180.0, 160.0],
+        ]]);
+        let (view, moved) = outline_cleaned_source(&page, &r).expect("outlined lettering");
+        let (dx, dy) = (r.x - moved.x, r.y - moved.y);
+        assert!(dx > 0.0 && dy > 0.0);
+        assert_eq!(moved.line_polygons.unwrap()[0][0], [180.0 - dx, 140.0 - dy]);
+        let view = view.to_rgb8();
+        let at = |x: f32, y: f32| *view.get_pixel((x - dx) as u32, (y - dy) as u32);
+        assert_eq!(at(200.0, 150.0), Rgb([0, 0, 0]), "fill is black");
+        assert_eq!(at(178.0, 138.0), Rgb([255, 255, 255]), "outline is white");
+
+        let bubble = RgbImage::from_pixel(400, 300, Rgb([255, 255, 255]));
+        assert!(
+            outline_cleaned_source(&bubble, &r).is_none(),
+            "plain white left alone"
+        );
+    }
 
     #[test]
     fn recognizes_korean_language_hints() {
