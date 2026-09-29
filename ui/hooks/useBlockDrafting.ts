@@ -5,6 +5,7 @@ import { useRef, useState } from 'react'
 
 import type { DocumentPointer, PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import type { Page } from '@/lib/api/schemas'
+import { useSelectionStore } from '@/lib/stores/selectionStore'
 import type { ToolMode } from '@/lib/types'
 
 /**
@@ -21,6 +22,8 @@ export type BlockDraft = {
 type BlockDraftingOptions = {
   mode: ToolMode
   page: Page | null
+  /** Select mode: a drag across the picture selects every box it touches. */
+  areaSelect: boolean
   pointerToDocument: PointerToDocumentFn
   clearSelection: () => void
   onCreateBlock: (draft: BlockDraft) => void
@@ -29,6 +32,7 @@ type BlockDraftingOptions = {
 export function useBlockDrafting({
   mode,
   page,
+  areaSelect,
   pointerToDocument,
   clearSelection,
   onCreateBlock,
@@ -36,6 +40,46 @@ export function useBlockDrafting({
   const dragStartRef = useRef<DocumentPointer | null>(null)
   const draftRef = useRef<BlockDraft | null>(null)
   const [draft, setDraft] = useState<BlockDraft | null>(null)
+  const areaStartRef = useRef<{ point: DocumentPointer; base: string[] } | null>(null)
+  const [area, setArea] = useState<BlockDraft | null>(null)
+
+  const endArea = () => {
+    if (!areaStartRef.current) return
+    areaStartRef.current = null
+    setArea(null)
+  }
+
+  // Drag-to-select: live selection of every box the rectangle touches.
+  // Shift keeps the boxes that were already selected. Ctrl+drag pans the
+  // view instead, and presses on a box belong to the box.
+  const trackArea = (
+    event: PointerEvent | MouseEvent,
+    first: boolean,
+    done: boolean,
+    tap: boolean,
+  ) => {
+    if (first) {
+      const target = event.target
+      const onBox = target instanceof Element && !!target.closest('[data-text-block-layer]')
+      const start = pointerToDocument(event)
+      if (!tap && !onBox && !event.ctrlKey && !event.metaKey && start) {
+        const base = event.shiftKey ? [...useSelectionStore.getState().nodeIds] : []
+        areaStartRef.current = { point: start, base }
+      }
+    }
+    const start = areaStartRef.current
+    if (!start || !page) return
+    const point = pointerToDocument(event)
+    if (point) {
+      const rect = rectBetween(start.point, point)
+      setArea(rect)
+      const hits = textNodesTouching(page, rect)
+      useSelectionStore
+        .getState()
+        .selectMany([...new Set([...start.base, ...hits])], { quickEdit: false })
+    }
+    if (done) endArea()
+  }
 
   const reset = () => {
     dragStartRef.current = null
@@ -62,8 +106,13 @@ export function useBlockDrafting({
   }
 
   const bind = useDrag(
-    ({ first, last, event, active }) => {
-      if (!page || mode !== 'block') return
+    ({ first, last, event, active, tap }) => {
+      if (!page) return
+      if (mode === 'select' && areaSelect) {
+        trackArea(event as PointerEvent, first, last || !active, tap)
+        return
+      }
+      if (mode !== 'block') return
       const sourceEvent = event as MouseEvent
       const point = pointerToDocument(sourceEvent)
       if (!point) {
@@ -104,5 +153,39 @@ export function useBlockDrafting({
     },
   )
 
-  return { draftBlock: draft, bind, resetDraft: reset }
+  return { draftBlock: draft, selectionArea: area, bind, resetDraft: reset }
+}
+
+function rectBetween(a: DocumentPointer, b: DocumentPointer): BlockDraft {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(b.x - a.x),
+    height: Math.abs(b.y - a.y),
+  }
+}
+
+/** Ids of the page's text boxes whose (rotated) bounds overlap `rect`. */
+export function textNodesTouching(page: Page, rect: BlockDraft): string[] {
+  const ids: string[] = []
+  for (const [id, node] of Object.entries(page.nodes)) {
+    if (!node?.transform || !('text' in node.kind)) continue
+    const { x, y, width, height, rotationDeg } = node.transform
+    const rad = ((rotationDeg ?? 0) * Math.PI) / 180
+    const cos = Math.abs(Math.cos(rad))
+    const sin = Math.abs(Math.sin(rad))
+    const halfW = (width * cos + height * sin) / 2
+    const halfH = (width * sin + height * cos) / 2
+    const cx = x + width / 2
+    const cy = y + height / 2
+    if (
+      cx + halfW > rect.x &&
+      cx - halfW < rect.x + rect.width &&
+      cy + halfH > rect.y &&
+      cy - halfH < rect.y + rect.height
+    ) {
+      ids.push(id)
+    }
+  }
+  return ids
 }

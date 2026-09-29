@@ -106,4 +106,28 @@ describe('selectionStore', () => {
       expect(useSelectionStore.getState().selectedPageIds.size).toBe(0)
     })
   })
+
+  describe('quick editor', () => {
+    it('stays closed while a selection is built with Ctrl/Shift or drag-select', () => {
+      const store = useSelectionStore.getState()
+      store.setPage('p')
+      store.select('a', true)
+      expect(useSelectionStore.getState().quickEdit).toBe(false)
+      store.selectMany(['a', 'b'], { quickEdit: false })
+      expect(useSelectionStore.getState().quickEdit).toBe(false)
+    })
+
+    it('opens again on a plain click, a new box or a cleared selection', () => {
+      const store = useSelectionStore.getState()
+      store.select('a', true)
+      store.select('b')
+      expect(useSelectionStore.getState().quickEdit).toBe(true)
+      store.select('a', true)
+      store.selectMany(['new'])
+      expect(useSelectionStore.getState().quickEdit).toBe(true)
+      store.select('a', true)
+      store.clear()
+      expect(useSelectionStore.getState().quickEdit).toBe(true)
+    })
+  })
 })

@@ -2,7 +2,6 @@
 
 import { useDrag } from '@use-gesture/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useHotkeys } from 'react-hotkeys-hook'
 
 import { BlockQuickEditor } from '@/components/canvas/BlockQuickEditor'
 import { useBlobImage } from '@/hooks/useBlobData'
@@ -14,7 +13,7 @@ import {
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
-import { applyOp, queueAutoRender } from '@/lib/io/scene'
+import { applyOp, deleteTextNodes, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import {
   cornerScaleFactor,
@@ -44,31 +43,23 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
   const selectedIds = useSelectionStore((s) => s.nodeIds)
   const select = useSelectionStore((s) => s.select)
   const mode = useEditorUiStore((s) => s.mode)
+  const quickEditAllowed = useSelectionStore((s) => s.quickEdit)
   const interactive = mode === 'select' || mode === 'block'
+  const pageId = page?.id
 
-  const hasSelection = useMemo(() => {
-    for (const id of selectedIds) if (id) return true
-    return false
-  }, [selectedIds])
-
-  const removeNode = async (id: string) => {
-    if (!page) return
-    const node = page.nodes[id]
-    if (!node) return
-    const idx = Object.keys(page.nodes).indexOf(id)
-    await applyOp(ops.removeNode(page.id, id, node, idx < 0 ? 0 : idx))
-    if ('text' in node.kind) queueAutoRender(page.id)
-  }
-
-  const removeSelected = async () => {
-    if (!page) return
-    // Snapshot selection now: each op invalidates the page state by removing a
-    // node, so we can't iterate against a stale closure mid-loop.
-    const ids = Array.from(selectedIds).filter((id): id is string => !!id)
-    for (const id of ids) {
-      await removeNode(id)
+  // Delete / Backspace removes every selected box as one undo step.
+  useEffect(() => {
+    if (!interactive || !pageId) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isDeleteSelectionKey(event)) return
+      const ids = useSelectionStore.getState().nodeIds
+      if (ids.size === 0) return
+      event.preventDefault()
+      void deleteTextNodes(pageId, ids)
     }
-  }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [interactive, pageId])
 
   // Live sprite preview while a corner drag scales a block (Canva-style).
   const [spritePreview, setSpritePreview] = useState<{ id: string; factor: number } | null>(null)
@@ -81,7 +72,8 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     () => nodes.filter((n) => selectedIds.has(n.id)),
     [nodes, selectedIds],
   )
-  const quickEditNode = interactive && selectedTextNodes.length === 1 ? selectedTextNodes[0] : null
+  const quickEditNode =
+    interactive && quickEditAllowed && selectedTextNodes.length === 1 ? selectedTextNodes[0] : null
   const quickEditNodeId = quickEditNode?.id ?? null
   useEffect(() => {
     if (!quickEditNodeId) setQuickEditorHiddenFor(null)
@@ -113,15 +105,6 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
     await applyOp(ops.updateNode(page.id, id, { transform: t, data: patch }))
     queueAutoRender(page.id)
   }
-
-  useHotkeys(
-    'delete',
-    () => {
-      if (hasSelection && interactive) void removeSelected()
-    },
-    { enabled: hasSelection && interactive },
-    [selectedIds, interactive],
-  )
 
   return (
     <div
@@ -199,6 +182,29 @@ type TextBlockItemProps = {
   onScalePreview: (factor: number | null) => void
 }
 
+/**
+ * A Delete/Backspace meant for the selected boxes: not typed into a text
+ * field (or mid-way through an IME syllable), not a shortcut chord, and not
+ * aimed at the page list, a dialog or an open menu, which handle their own.
+ */
+export const isDeleteSelectionKey = (event: KeyboardEvent): boolean => {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return false
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return false
+  if (event.ctrlKey || event.metaKey || event.altKey) return false
+  const target = event.target
+  if (target instanceof HTMLElement) {
+    if (target.isContentEditable) return false
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return false
+    if (
+      target.closest(
+        '[data-testid="navigator-panel"], [role="dialog"], [role="menu"], [role="listbox"]',
+      )
+    )
+      return false
+  }
+  return true
+}
+
 const isAdditiveEvent = (event: unknown): boolean => {
   if (!event || typeof event !== 'object') return false
   const e = event as { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }
@@ -224,6 +230,7 @@ function TextBlockItem({
   const edgeRef = useRef<ResizeEdge | null>(null)
   const isResizeRef = useRef(false)
   const isRotateRef = useRef(false)
+  const toggleRef = useRef(false)
   const rotateStart = useRef({ cx: 0, cy: 0, pointerDeg: 0, boxDeg: 0 })
 
   const t = node.transform
@@ -263,6 +270,18 @@ function TextBlockItem({
         isResizeRef.current = false
         edgeRef.current = null
         onSelect(node.id, additive)
+        return
+      }
+      if (first) {
+        // Ctrl/Shift + press toggles the box in the selection and never
+        // moves it: a hand that wobbles while clicking must not nudge the box.
+        toggleRef.current = additive && !isRotateRef.current && !isResizeRef.current
+      }
+      if (toggleRef.current) {
+        if (last) {
+          toggleRef.current = false
+          onSelect(node.id, true)
+        }
         return
       }
       if (isRotateRef.current) {
@@ -309,9 +328,8 @@ function TextBlockItem({
           width: t.width * scale,
           height: t.height * scale,
         }
-        // Keep multi-selection intact when dragging a node that's already selected;
-        // otherwise this click is a single-select (unless the modifier is held).
-        if (additive || !selected) onSelect(node.id, additive)
+        // Keep multi-selection intact when dragging a node that's already selected.
+        if (!selected) onSelect(node.id, false)
       }
       const start = dragStart.current
       const edge = edgeRef.current

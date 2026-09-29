@@ -34,6 +34,7 @@ import type {
 } from '@/lib/api/schemas'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
+import { ops } from '@/lib/ops'
 import { queryClient } from '@/lib/queryClient'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -151,6 +152,43 @@ async function runAutoRender(pageId: string): Promise<void> {
     // always run Render manually from the toolbar / menu.
     console.error('Auto-render failed:', err)
   }
+}
+
+/**
+ * Delete text boxes as one undo step. Built from the latest saved scene, so
+ * boxes already gone are skipped and queued edits land first. Returns how
+ * many boxes were removed; they also leave the selection.
+ */
+export async function deleteTextNodes(pageId: string, ids: Iterable<string>): Promise<number> {
+  const wanted = new Set(ids)
+  if (wanted.size === 0) return 0
+  let removed: string[] = []
+  await applyOpFromScene((scene) => {
+    const page = scene.pages[pageId]
+    if (!page) return null
+    // Removal indices track the shrinking node list so undo re-inserts each
+    // box where it was.
+    const keys = Object.keys(page.nodes)
+    const batch: Op[] = []
+    removed = []
+    for (const id of [...keys]) {
+      const node = page.nodes[id]
+      if (!wanted.has(id) || !node || !('text' in node.kind)) continue
+      const idx = keys.indexOf(id)
+      batch.push(ops.removeNode(pageId, id, node, idx))
+      keys.splice(idx, 1)
+      removed.push(id)
+    }
+    if (batch.length === 0) return null
+    return batch.length === 1 ? batch[0] : ops.batch('Delete text boxes', batch)
+  })
+  if (removed.length === 0) return 0
+  const selection = useSelectionStore.getState()
+  if (selection.pageId === pageId) {
+    selection.selectMany([...selection.nodeIds].filter((id) => !removed.includes(id)))
+  }
+  queueAutoRender(pageId)
+  return removed.length
 }
 
 /** Select every text node on the active page. No-op if no project/page open. */

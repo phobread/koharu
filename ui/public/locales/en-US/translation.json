@@ -104,6 +104,13 @@
   "project": {
     "back": "Back to projects"
   },
+  "selection": {
+    "count_one": "{{count}} box selected",
+    "count_other": "{{count}} boxes selected",
+    "delete": "Delete",
+    "deleteHint": "Delete the selected boxes (Delete)",
+    "clear": "Clear selection"
+  },
   "navigator": {
     "title": "Navigator",
     "show": "Show Navigator",
@@ -313,6 +320,8 @@
     "splitBlock": "Split block",
     "mergeBlocks": "Merge blocks",
     "deleteBlock": "Delete block",
+    "deleteBlocks_one": "Delete {{count}} box",
+    "deleteBlocks_other": "Delete {{count}} boxes",
     "uninpaintBlock": "Restore original art (un-inpaint)"
   },
   "statusBar": {

@@ -7,6 +7,7 @@ import type React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CanvasToolbar } from '@/components/canvas/CanvasToolbar'
+import { SelectionBar } from '@/components/canvas/SelectionBar'
 import {
   fitCanvasToViewport,
   setCanvasDocumentSize,
@@ -39,7 +40,7 @@ import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import type { Node, Transform } from '@/lib/api/schemas'
-import { applyOp } from '@/lib/io/scene'
+import { applyOp, deleteTextNodes } from '@/lib/io/scene'
 import { mergeBlocks, splitBlock } from '@/lib/io/splitNode'
 import { uninpaintBlocks } from '@/lib/io/uninpaintBlock'
 import { ops } from '@/lib/ops'
@@ -134,17 +135,6 @@ export function Workspace() {
     [page],
   )
 
-  const removeTextNode = useCallback(
-    async (nodeId: string) => {
-      if (!page) return
-      const node = page.nodes[nodeId]
-      if (!node) return
-      const idx = Object.keys(page.nodes).indexOf(nodeId)
-      await applyOp(ops.removeNode(page.id, nodeId, node, idx < 0 ? 0 : idx))
-    },
-    [page],
-  )
-
   // Split a text block into two halves along its longer side, dividing the
   // text between them (see `applyBlockSplit` for how the halves land in the
   // scene).
@@ -178,9 +168,14 @@ export function Workspace() {
     }
   }, [page, segmentData])
 
-  const { draftBlock, bind: bindBlockDraft } = useBlockDrafting({
+  const {
+    draftBlock,
+    selectionArea,
+    bind: bindBlockDraft,
+  } = useBlockDrafting({
     mode,
     page,
+    areaSelect: showTextBlocksOverlay,
     pointerToDocument,
     clearSelection,
     onCreateBlock: (draft) => {
@@ -250,7 +245,10 @@ export function Workspace() {
       }
     },
     onRemove: (nodeId) => {
-      void removeTextNode(nodeId)
+      if (!page) return
+      // Deleting a box inside a multi-selection deletes the whole selection.
+      const selected = useSelectionStore.getState().nodeIds
+      void deleteTextNodes(page.id, selected.has(nodeId) ? selected : [nodeId])
     },
     onSplit: (nodeId) => {
       void splitTextNode(nodeId)
@@ -266,8 +264,11 @@ export function Workspace() {
         if (first) {
           // Pan with ctrl+drag or a middle-button drag; a plain left drag
           // belongs to selection/drafting, so hand the gesture back untouched.
+          // Ctrl on a box is a selection toggle, never a pan.
           const middle = 'buttons' in event && ((event.buttons as number) & 4) !== 0
-          if (!ctrlKey && !middle) {
+          const onBox =
+            event.target instanceof Element && !!event.target.closest('[data-text-block-layer]')
+          if ((!ctrlKey && !middle) || (onBox && !middle)) {
             if (cancel) cancel()
             return memo
           }
@@ -345,12 +346,20 @@ export function Workspace() {
   )
 
   const handleCanvasPointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+    // The canvas gestures cancel the pointerdown, which also stops the
+    // browser moving focus here. Move it ourselves, so a page left focused in
+    // the page list can't take a Delete meant for the selected boxes.
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && !canvasRef.current?.contains(focused)) {
+      focused.blur()
+    }
     // Clicking the artwork deselects. Anything interactive for blocks (the
     // boxes, their handles, the quick editor) lives inside the
     // `data-text-block-layer` subtree, so a pointerdown outside it is the
     // picture itself. Other modes keep their own semantics: block mode
     // clears via drafting, brush strokes shouldn't drop the selection.
-    if (mode !== 'select') return
+    // Shift starts a drag-select that adds to the selection; Ctrl pans.
+    if (mode !== 'select' || event.shiftKey || event.ctrlKey || event.metaKey) return
     const target = event.target instanceof Element ? event.target : null
     if (!target?.closest('[data-text-block-layer]')) {
       clearSelection()
@@ -495,6 +504,18 @@ export function Workspace() {
                           />
                         )}
                       </div>
+                      {selectionArea && (
+                        <div
+                          data-testid='selection-area'
+                          className='pointer-events-none absolute z-[60] border border-dashed border-primary bg-primary/10'
+                          style={{
+                            left: selectionArea.x * scaleRatio,
+                            top: selectionArea.y * scaleRatio,
+                            width: selectionArea.width * scaleRatio,
+                            height: selectionArea.height * scaleRatio,
+                          }}
+                        />
+                      )}
                       {draftBlock && (
                         <div
                           className='pointer-events-none absolute rounded-md border-2 border-dashed border-primary bg-primary/10'
@@ -532,7 +553,14 @@ export function Workspace() {
                     disabled={contextMenuNodeId === null}
                     onSelect={handleDeleteBlock}
                   >
-                    {t('workspace.deleteBlock')}
+                    {contextMenuNodeId !== null &&
+                    selectedCount > 1 &&
+                    useSelectionStore.getState().nodeIds.has(contextMenuNodeId)
+                      ? t('workspace.deleteBlocks', {
+                          count: selectedCount,
+                          defaultValue: 'Delete {{count}} boxes',
+                        })
+                      : t('workspace.deleteBlock')}
                   </ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
@@ -555,6 +583,9 @@ export function Workspace() {
             <ScrollAreaPrimitive.Thumb className='rounded bg-muted-foreground/40' />
           </ScrollAreaPrimitive.Scrollbar>
         </ScrollAreaPrimitive.Root>
+        {page && showTextBlocksOverlay && (mode === 'select' || mode === 'block') && (
+          <SelectionBar pageId={page.id} />
+        )}
       </div>
     </div>
   )
