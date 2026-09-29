@@ -14,6 +14,7 @@ import {
   getGetSceneJsonQueryKey,
   importProject,
   listOperations,
+  listProjects,
   patchConfig,
   putCurrentProject,
   redo,
@@ -37,6 +38,7 @@ import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
 import { ops } from '@/lib/ops'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 /**
@@ -254,8 +256,12 @@ export function selectAllTextNodesOnCurrentPage(): void {
  * selection, or the UI keeps acting on ids from the previous scene. */
 const resetSelection = () => useSelectionStore.getState().setPage(null)
 
+/** Remember the opened project for the mouse forward button. */
+const rememberProject = (id: string) => useEditorUiStore.getState().setLastProjectId(id)
+
 export async function createAndOpenProject(req: CreateProjectRequest): Promise<ProjectSummary> {
   const summary = await createProject(req)
+  rememberProject(summary.id)
   resetSelection()
   await invalidateScene()
   return summary
@@ -263,8 +269,30 @@ export async function createAndOpenProject(req: CreateProjectRequest): Promise<P
 
 export async function switchProject(req: OpenProjectRequest): Promise<void> {
   await putCurrentProject(req)
+  rememberProject(req.id)
   resetSelection()
   await invalidateScene()
+}
+
+let reopening = false
+
+/**
+ * Open the project opened last (the mouse forward button). Does nothing when
+ * there is none, it was deleted, or a reopen is already under way. Returns
+ * whether a project was opened.
+ */
+export async function reopenLastProject(): Promise<boolean> {
+  const id = useEditorUiStore.getState().lastProjectId
+  if (!id || reopening) return false
+  reopening = true
+  try {
+    const { projects } = await listProjects()
+    if (!projects.some((p) => p.id === id)) return false
+    await switchProject({ id })
+    return true
+  } finally {
+    reopening = false
+  }
 }
 
 export async function closeProject(): Promise<void> {
@@ -303,6 +331,7 @@ export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
   // The generated `importProject` takes the archive as a `Blob` and sets the
   // `application/zip` content type itself; a `File` is already a `Blob`.
   const summary = await importProject(file)
+  rememberProject(summary.id)
   resetSelection()
   await invalidateScene()
   return summary

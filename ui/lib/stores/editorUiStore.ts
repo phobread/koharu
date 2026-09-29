@@ -80,6 +80,10 @@ type EditorUiState = {
   // reading order
   readingOrder: 'rtl' | 'ltr' | 'custom'
   setReadingOrder: (order: 'rtl' | 'ltr' | 'custom') => void
+
+  // the project opened last, for the mouse forward button
+  lastProjectId: string | undefined
+  setLastProjectId: (id: string | undefined) => void
 }
 
 const initialState = {
@@ -99,6 +103,7 @@ const initialState = {
   showNavigator: true,
   settingsTab: null as string | null,
   readingOrder: 'rtl' as const,
+  lastProjectId: undefined as string | undefined,
 }
 
 export const useEditorUiStore = create<EditorUiState>()(
@@ -169,6 +174,8 @@ export const useEditorUiStore = create<EditorUiState>()(
       setShowNavigator: (show) => set({ showNavigator: show }),
 
       setReadingOrder: (readingOrder) => set({ readingOrder }),
+
+      setLastProjectId: (lastProjectId) => set({ lastProjectId }),
     }),
     {
       name: 'koharu-editor',
@@ -192,6 +199,8 @@ export const useEditorUiStore = create<EditorUiState>()(
         selectedTarget: state.selectedTarget,
         selectedLanguage: state.selectedLanguage,
         readingOrder: state.readingOrder,
+        // Not a view setting, but the forward button reopens it after a restart.
+        lastProjectId: state.lastProjectId,
         renderEffect: state.renderEffect,
         renderStroke: state.renderStroke,
       }),

@@ -16,6 +16,7 @@ import { Workspace, StatusBar } from '@/components/Canvas'
 import { Navigator } from '@/components/Navigator'
 import { Panels } from '@/components/Panels'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
+import { useMouseNavigation } from '@/hooks/useMouseNavigation'
 import { useScene } from '@/hooks/useScene'
 import { useGetMeta } from '@/lib/api/default/default'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -25,6 +26,7 @@ const LAYOUT_ID = 'koharu-main-layout-v4'
 
 export default function Page() {
   const hasProject = useScene().scene !== null
+  useMouseNavigation(hasProject)
   const showNavigator = useEditorUiStore((s) => s.showNavigator)
   const setShowNavigator = useEditorUiStore((s) => s.setShowNavigator)
   const leftPanelRef = useRef<PanelImperativeHandle>(null)

@@ -29,7 +29,11 @@ export function ProjectTitle({ className }: { className?: string }) {
         data-testid='project-back'
         className='h-6 w-6 shrink-0'
         onClick={() => void closeProject()}
-        title={shortcut ? `${label} (${shortcut})` : label}
+        title={t('project.backTooltip', {
+          label,
+          shortcut: shortcut || '—',
+          defaultValue: '{{label}} ({{shortcut}} or the mouse back button)',
+        })}
         aria-label={label}
       >
         <ArrowLeftIcon className='size-4' />

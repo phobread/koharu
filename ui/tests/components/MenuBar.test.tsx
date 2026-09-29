@@ -207,7 +207,7 @@ describe('MenuBar', () => {
     renderWithQuery(<MenuBar />)
     expect(await screen.findByTestId('project-name')).toHaveTextContent('P')
     const back = screen.getByTestId('project-back')
-    expect(back).toHaveAttribute('title', 'project.back (Ctrl+W)')
+    expect(back).toHaveAttribute('title', 'project.backTooltip')
     await userEvent.click(back)
     await waitFor(() => expect(deleted).toBe(1))
   })

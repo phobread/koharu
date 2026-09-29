@@ -131,7 +131,8 @@
     "cancelling": "Stopping..."
   },
   "project": {
-    "back": "Back to projects"
+    "back": "Back to projects",
+    "backTooltip": "{{label}} ({{shortcut}} or the mouse back button)"
   },
   "process": {
     "nothingToDo": "Nothing to process: those pages already have every step.",
