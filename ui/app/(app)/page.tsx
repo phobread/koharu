@@ -65,7 +65,9 @@ export default function Page() {
   }
 
   return (
-    <div className='flex min-h-0 flex-1 flex-col bg-[var(--surface-sidebar)]'>
+    // Opening a project fades the workspace in. Opacity only: a transform
+    // here would skew the canvas fit and pointer maths while it runs.
+    <div className='flex min-h-0 flex-1 animate-in flex-col bg-[var(--surface-sidebar)] duration-200 ease-out fade-in-0 motion-reduce:animate-none'>
       <ActivityBubble />
       <Group
         orientation='horizontal'

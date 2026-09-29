@@ -129,7 +129,8 @@ export function WelcomeScreen() {
       />
 
       <ScrollArea className='relative z-10 min-h-0 flex-1'>
-        <div className='mx-auto flex w-full max-w-5xl flex-col gap-8 px-8 pt-14 pb-12'>
+        {/* Coming back from a project: the page fades in, the cards rise in turn. */}
+        <div className='mx-auto flex w-full max-w-5xl animate-in flex-col gap-8 px-8 pt-14 pb-12 duration-300 ease-out fade-in-0 motion-reduce:animate-none'>
           <header className='flex flex-wrap items-center gap-x-4 gap-y-3'>
             <Image src='/icon.png' alt='Koharu' width={44} height={44} priority />
             <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
@@ -188,9 +189,10 @@ export function WelcomeScreen() {
             </div>
             {projects.length > 0 ? (
               <ul className='grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-4 gap-y-5'>
-                {projects.map((p) => (
+                {projects.map((p, index) => (
                   <ProjectCard
                     key={p.id}
+                    index={index}
                     project={p}
                     last={p.id === lastProjectId}
                     onOpen={openById}
@@ -256,12 +258,15 @@ function EmptyProjects() {
 
 /** A project in the grid: its first page as the cover, name and last edit. */
 function ProjectCard({
+  index,
   project,
   last,
   onOpen,
   onDeleteRequest,
   disabled,
 }: {
+  /** Position in the grid, for the staggered entrance. */
+  index: number
   project: ProjectSummary
   /** Opened last: the mouse forward button reopens it. */
   last: boolean
@@ -281,7 +286,10 @@ function ProjectCard({
   })
 
   return (
-    <li className='group relative'>
+    <li
+      className='group relative animate-in duration-300 ease-out fade-in-0 fill-mode-both slide-in-from-bottom-2 motion-reduce:animate-none'
+      style={{ animationDelay: `${Math.min(index, 10) * 35}ms` }}
+    >
       <button
         type='button'
         data-testid={`welcome-project-${project.id}`}
