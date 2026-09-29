@@ -309,14 +309,14 @@ async fn export_current_project(
             let default_font_c = req.default_font.clone();
             let files = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let mut out = Vec::with_capacity(page_ids_c.len());
-                for (number, id) in &page_ids_c {
+                for (stem, id) in &page_ids_c {
                     let bytes = crate::psd_export::psd_bytes_for_page(
                         &session_c,
                         &renderer_c,
                         default_font_c.clone(),
                         *id,
                     )?;
-                    out.push((format!("page-{number:03}-{id}.psd"), bytes));
+                    out.push((format!("{stem}.psd"), bytes));
                 }
                 Ok(out)
             })
@@ -371,9 +371,9 @@ async fn export_image_role(
     let page_ids_c = page_ids.clone();
     let files = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-        for (number, id) in &page_ids_c {
+        for (stem, id) in &page_ids_c {
             if let Some(bytes) = crate::psd_export::png_bytes_for_page(&session_c, *id, roles)? {
-                out.push((format!("page-{number:03}-{id}.png"), bytes));
+                out.push((format!("{stem}.png"), bytes));
             }
         }
         Ok(out)
@@ -390,21 +390,81 @@ async fn export_image_role(
     files_to_response(files, project_name, "png")
 }
 
-/// The requested pages (every page when `None`) with their 1-based number
-/// in the project, which names their exported files.
+/// The requested pages (every page when `None`) with the file name stem
+/// their exports get: the page's original file name, see [`export_stems`].
 fn resolve_page_ids(
     session: &koharu_app::ProjectSession,
     requested: Option<&[PageId]>,
-) -> ApiResult<Vec<(usize, PageId)>> {
+) -> ApiResult<Vec<(String, PageId)>> {
     let scene = session.scene.read();
-    let numbered = |id: &PageId| scene.pages.get_index_of(id).map(|i| (i + 1, *id));
-    match requested {
-        None => Ok(scene.pages.keys().filter_map(numbered).collect()),
-        Some(ids) => ids
-            .iter()
-            .map(|id| numbered(id).ok_or_else(|| ApiError::not_found(format!("page {id}"))))
-            .collect(),
-    }
+    let ids: Vec<PageId> = match requested {
+        None => scene.pages.keys().copied().collect(),
+        Some(ids) => {
+            for id in ids {
+                if !scene.pages.contains_key(id) {
+                    return Err(ApiError::not_found(format!("page {id}")));
+                }
+            }
+            ids.to_vec()
+        }
+    };
+    // Stems are made unique over the whole project, so a page keeps the same
+    // name whether it's exported alone or with the others.
+    let stems = export_stems(scene.pages.values().map(|p| p.name.as_str()));
+    Ok(ids
+        .into_iter()
+        .map(|id| {
+            let index = scene.pages.get_index_of(&id).unwrap_or_default();
+            (stems[index].clone(), id)
+        })
+        .collect())
+}
+
+/// One export file stem per page, in order: the original file name without
+/// its extension, made safe for Windows. Pages without a usable name get
+/// `page-NNN`; repeats get ` (2)`, ` (3)`… (compared case-insensitively).
+fn export_stems<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut used = std::collections::HashSet::new();
+    names
+        .enumerate()
+        .map(|(i, name)| {
+            // Plain string split: `Path` on Windows reads `a:b` as a drive.
+            let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+            let stem = match file.rsplit_once('.') {
+                Some((stem, _)) if !stem.is_empty() => stem,
+                _ => file,
+            };
+            let mut base: String = stem
+                .chars()
+                .map(|c| {
+                    if c.is_control() || "\\/:*?\"<>|".contains(c) {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            base = base.trim().trim_end_matches('.').to_string();
+            if base.is_empty() {
+                base = format!("page-{:03}", i + 1);
+            }
+            const RESERVED: [&str; 22] = [
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+                "LPT9",
+            ];
+            if RESERVED.contains(&base.to_ascii_uppercase().as_str()) {
+                base.push('_');
+            }
+            let mut stem = base.clone();
+            let mut n = 2;
+            while !used.insert(stem.to_lowercase()) {
+                stem = format!("{base} ({n})");
+                n += 1;
+            }
+            stem
+        })
+        .collect()
 }
 
 fn files_to_response(
@@ -438,7 +498,29 @@ fn bytes_response(bytes: Vec<u8>, base: &str, ext: &str, content_type: &str) -> 
 }
 
 fn bytes_response_with_filename(bytes: Vec<u8>, filename: &str, content_type: &str) -> Response {
-    let cd = format!("attachment; filename=\"{filename}\"");
+    // Plain `filename` must be ASCII for the header to be valid; the real
+    // (possibly Korean/Japanese) name travels percent-encoded in `filename*`.
+    let ascii: String = filename
+        .chars()
+        .map(|c| {
+            if (c.is_ascii_graphic() && c != '"') || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = filename
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    let cd = format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}");
     let mut resp = Response::new(Body::from(bytes));
     let headers = resp.headers_mut();
     headers.insert(
@@ -461,5 +543,47 @@ fn sanitize(name: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_stems_keep_original_names() {
+        let names = [
+            "003.jpg",
+            "004.png",
+            "003.png",
+            "COM1.jpg",
+            "a:b?.webp",
+            "",
+            "뱃엔드 12.jpg",
+        ];
+        assert_eq!(
+            export_stems(names.into_iter()),
+            [
+                "003",
+                "004",
+                "003 (2)",
+                "COM1_",
+                "a_b_",
+                "page-006",
+                "뱃엔드 12"
+            ]
+        );
+    }
+
+    #[test]
+    fn filename_header_carries_unicode_names() {
+        let resp = bytes_response_with_filename(vec![], "뱃 1.png", "image/png");
+        let cd = resp.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            cd,
+            "attachment; filename=\"_ 1.png\"; filename*=UTF-8''%EB%B1%83%201.png"
+        );
     }
 }
