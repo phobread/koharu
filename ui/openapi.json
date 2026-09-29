@@ -1058,6 +1058,27 @@
         }
       }
     },
+    "/storage/folders": {
+      "post": {
+        "summary": "Create the folder an export's save dialog opens in (the project's folder\nunder the export folder). The window may only write inside\nPictures/Koharu and folders the user picks in a dialog, so it cannot make\nthis folder under an export folder chosen in an earlier session. Only\ncreates folders: the files are still written where the user confirms.",
+        "operationId": "create_folder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/storage/project-cache/clear": {
       "post": {
         "operationId": "clear_project_cache",
@@ -1565,6 +1586,16 @@
           }
         }
       },
+      "CreateFolderRequest": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the folder; missing parents are created too."
+          }
+        }
+      },
       "CreatePagesFromPathsRequest": {
         "type": "object",
         "required": ["paths"],
@@ -1793,7 +1824,7 @@
       },
       "ExportFormat": {
         "type": "string",
-        "enum": ["khr", "psd", "rendered", "inpainted"]
+        "enum": ["khr", "psd", "rendered", "inpainted", "best"]
       },
       "ExportProjectRequest": {
         "type": "object",

@@ -16,13 +16,8 @@ export type PageStatus =
  * that was detected but has no boxes left is not "not started".
  */
 export function pageStatus(page: Page): PageStatus {
-  const nodes = Object.values(page.nodes)
-  const texts = nodes.flatMap((n) => ('text' in n.kind ? [n.kind.text] : []))
-  const has = (kind: 'image' | 'mask', role: string) =>
-    nodes.some((n) => {
-      const k = (n.kind as Record<string, { role?: string } | undefined>)[kind]
-      return k?.role === role
-    })
+  const texts = pageTexts(page)
+  const has = (kind: 'image' | 'mask', role: string) => hasLayer(page, kind, role)
 
   if (texts.length === 0 && !has('mask', 'segment')) return { kind: 'notStarted' }
 
@@ -32,4 +27,50 @@ export function pageStatus(page: Page): PageStatus {
   if (!has('image', 'inpainted')) steps.push('clean')
   if (!has('image', 'rendered')) steps.push('render')
   return steps.length === 0 ? { kind: 'done' } : { kind: 'needs', steps }
+}
+
+function pageTexts(page: Page) {
+  return Object.values(page.nodes).flatMap((n) => ('text' in n.kind ? [n.kind.text] : []))
+}
+
+function hasLayer(page: Page, kind: 'image' | 'mask', role: string): boolean {
+  return Object.values(page.nodes).some((n) => {
+    const k = (n.kind as Record<string, { role?: string } | undefined>)[kind]
+    return k?.role === role
+  })
+}
+
+/** What an image export sent out, by 1-based page number. */
+export type ExportSummary = {
+  count: number
+  /** Translated, but not rendered yet: the image has no translation. */
+  unrendered: number[]
+  /** No translation: the cleaned image went out. */
+  cleaned: number[]
+  /** Not cleaned yet: the original went out. */
+  original: number[]
+}
+
+/**
+ * Summarise an export of `ids` (every page when omitted), taking from each
+ * page what the server does (crates/koharu-rpc/src/routes/projects.rs,
+ * `ExportFormat::Best`): the rendered image, else the cleaned one, else the
+ * original.
+ */
+export function exportSummary(pages: Record<string, Page>, ids?: string[]): ExportSummary {
+  const wanted = ids ? new Set(ids) : undefined
+  const summary: ExportSummary = { count: 0, unrendered: [], cleaned: [], original: [] }
+  Object.entries(pages).forEach(([id, page], index) => {
+    if (wanted && !wanted.has(id)) return
+    const number = index + 1
+    const rendered = hasLayer(page, 'image', 'rendered')
+    const cleaned = hasLayer(page, 'image', 'inpainted')
+    if (!rendered && !cleaned && !hasLayer(page, 'image', 'source')) return
+    summary.count += 1
+    if (rendered) return
+    if (pageTexts(page).some((t) => !!t.translation?.trim())) summary.unrendered.push(number)
+    else if (cleaned) summary.cleaned.push(number)
+    else summary.original.push(number)
+  })
+  return summary
 }

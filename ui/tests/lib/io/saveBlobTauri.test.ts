@@ -7,9 +7,11 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   writeFile: vi.fn(),
   join: vi.fn(async (...parts: string[]) => parts.join('/')),
+  createFolder: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({ isTauri: () => true }))
+vi.mock('@/lib/api/default/default', () => ({ createFolder: mocks.createFolder }))
 vi.mock('@tauri-apps/api/path', () => ({
   join: mocks.join,
   pictureDir: mocks.pictureDir,
@@ -23,11 +25,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: mocks.writeFile,
 }))
 
-import { defaultRenderedExportDirectory, pickSaveDirectory, saveBlob } from '@/lib/io/saveBlob'
+import { pickSaveDirectory, prepareExportDirectory, saveBlob } from '@/lib/io/saveBlob'
 
 beforeEach(() => {
   mocks.pictureDir.mockResolvedValue('C:/Users/Test/Pictures')
   mocks.mkdir.mockResolvedValue(undefined)
+  mocks.createFolder.mockReset().mockResolvedValue(undefined)
   mocks.open.mockResolvedValue(undefined)
   mocks.save.mockResolvedValue(undefined)
   mocks.writeFile.mockResolvedValue(undefined)
@@ -35,10 +38,29 @@ beforeEach(() => {
 
 describe('Tauri rendered export defaults', () => {
   it('creates Pictures/Koharu/<project>/Rendered using the OS known folder', async () => {
-    const folder = await defaultRenderedExportDirectory('Bad: End')
+    const folder = await prepareExportDirectory(undefined, 'Bad: End', 'Rendered')
 
     expect(folder).toBe('C:/Users/Test/Pictures/Koharu/Bad_ End/Rendered')
-    expect(mocks.mkdir).toHaveBeenCalledWith(folder, { recursive: true })
+    // Made by the backend: the window may not write outside Pictures/Koharu.
+    expect(mocks.createFolder).toHaveBeenCalledWith({ path: folder })
+    expect(mocks.mkdir).not.toHaveBeenCalled()
+  })
+
+  it('uses the export folder from Settings, with a folder per project', async () => {
+    await expect(prepareExportDirectory('D:/Manga/Done', 'BadEnd', 'Rendered')).resolves.toBe(
+      'D:/Manga/Done/BadEnd/Rendered',
+    )
+    await expect(prepareExportDirectory('D:/Manga/Done', 'BadEnd')).resolves.toBe(
+      'D:/Manga/Done/BadEnd',
+    )
+  })
+
+  it('still saves (dialog at its last folder) when the folder cannot be made', async () => {
+    mocks.createFolder.mockRejectedValue(new Error('denied'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(prepareExportDirectory('Z:/gone', 'P', 'Rendered')).resolves.toBeUndefined()
+    warn.mockRestore()
   })
 
   it('opens the folder picker at the supplied default directory', async () => {

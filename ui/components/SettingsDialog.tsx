@@ -34,6 +34,7 @@ import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ExportFolderSetting } from '@/components/ExportFolderSetting'
 import { TranslationSettings } from '@/components/TranslationSettings'
 import {
   Accordion,
@@ -1749,6 +1750,11 @@ function StoragePane({
 
   return (
     <>
+      {isTauri() && (
+        <Section title={t('settings.export', 'Export')}>
+          <ExportFolderSetting />
+        </Section>
+      )}
       <Section
         title={t('settings.projectCache')}
         description={t('settings.projectCacheDescription')}

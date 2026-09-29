@@ -15,6 +15,7 @@
  * Returns `true` if the save completed, `false` if the user cancelled.
  */
 
+import { createFolder } from '@/lib/api/default/default'
 import { isTauri } from '@/lib/backend'
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
@@ -34,29 +35,45 @@ export function sanitiseExportDirectoryName(name: string | undefined | null): st
 }
 
 /**
- * Resolve and create the user-facing default for rendered images.
+ * The export folder when none is set in Settings: Pictures/Koharu.
  * `pictureDir()` uses the OS known folder, so redirected/OneDrive Pictures
  * directories work without guessing from `%USERPROFILE%`.
  */
-export async function defaultRenderedExportDirectory(
-  projectName: string | undefined | null,
-): Promise<string | undefined> {
+export async function defaultExportFolder(): Promise<string | undefined> {
   if (!isTauri()) return undefined
   try {
     const { join, pictureDir } = await import('@tauri-apps/api/path')
-    const { mkdir } = await import('@tauri-apps/plugin-fs')
-    const folder = await join(
-      await pictureDir(),
-      'Koharu',
-      sanitiseExportDirectoryName(projectName),
-      'Rendered',
-    )
-    await mkdir(folder, { recursive: true })
+    return await join(await pictureDir(), 'Koharu')
+  } catch (err) {
+    console.warn('Could not resolve the Pictures folder:', err)
+    return undefined
+  }
+}
+
+/**
+ * Create `<exportFolder>/<project>/<subfolder>` for an export's save dialog
+ * to open in (Pictures/Koharu when no export folder is set). The backend
+ * creates it: the window may only write inside Pictures/Koharu and folders
+ * picked in a dialog.
+ */
+export async function prepareExportDirectory(
+  exportFolder: string | undefined,
+  projectName: string | undefined | null,
+  subfolder?: string,
+): Promise<string | undefined> {
+  if (!isTauri()) return undefined
+  try {
+    const { join } = await import('@tauri-apps/api/path')
+    const base = exportFolder ?? (await defaultExportFolder())
+    if (!base) return undefined
+    const project = sanitiseExportDirectoryName(projectName)
+    const folder = subfolder ? await join(base, project, subfolder) : await join(base, project)
+    await createFolder({ path: folder })
     return folder
   } catch (err) {
-    // Saving should still work if the OS cannot resolve/create Pictures.
-    // The native dialog will fall back to its normal last-used directory.
-    console.warn('Could not prepare the default rendered export directory:', err)
+    // Saving should still work if the folder cannot be made. The native
+    // dialog then falls back to its normal last-used directory.
+    console.warn('Could not prepare the export directory:', err)
     return undefined
   }
 }

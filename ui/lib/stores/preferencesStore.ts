@@ -59,6 +59,9 @@ type PreferencesState = {
   }
   setShortcuts: (shortcuts: Partial<PreferencesState['shortcuts']>) => void
   resetShortcuts: () => void
+  /** Where exports go (a folder per project inside); undefined = Pictures/Koharu. */
+  exportFolder?: string
+  setExportFolder: (folder?: string) => void
   /** Steps the Process actions run (each only where it's still missing). */
   processSteps: ProcessSteps
   setProcessSteps: (steps: Partial<ProcessSteps>) => void
@@ -147,6 +150,7 @@ export const usePreferencesStore = create<PreferencesState>()(
             ...initialPreferences.shortcuts,
           },
         })),
+      setExportFolder: (folder) => set({ exportFolder: folder || undefined }),
       setProcessSteps: (steps) =>
         set((state) => ({
           processSteps: {
@@ -218,6 +222,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         codexImageModel: state.codexImageModel,
         shortcuts: state.shortcuts,
         processSteps: state.processSteps,
+        exportFolder: state.exportFolder,
       }),
     },
   ),

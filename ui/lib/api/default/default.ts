@@ -31,6 +31,7 @@ import type {
   CodexImageGenerationOptions,
   CodexImageGenerationResponse,
   ConfigPatch,
+  CreateFolderRequest,
   CreatePagesFromPathsRequest,
   CreatePagesResponse,
   CreateProjectRequest,
@@ -3846,6 +3847,92 @@ export function useGetSceneJson<TData = Awaited<ReturnType<typeof getSceneJson>>
   return withQueryKey(query, queryOptions.queryKey)
 }
 
+export const getCreateFolderUrl = () => {
+  return `/api/v1/storage/folders`
+}
+
+/**
+ * @summary Create the folder an export's save dialog opens in (the project's folder
+under the export folder). The window may only write inside
+Pictures/Koharu and folders the user picks in a dialog, so it cannot make
+this folder under an export folder chosen in an earlier session. Only
+creates folders: the files are still written where the user confirms.
+ */
+export const createFolder = async (
+  createFolderRequest: CreateFolderRequest,
+  options?: RequestInit,
+): Promise<void> => {
+  return fetchApi<void>(getCreateFolderUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(createFolderRequest),
+  })
+}
+
+export const getCreateFolderMutationOptions = <TError = unknown, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createFolder>>,
+    TError,
+    { data: CreateFolderRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createFolder>>,
+  TError,
+  { data: CreateFolderRequest },
+  TContext
+> => {
+  const mutationKey = ['createFolder']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createFolder>>,
+    { data: CreateFolderRequest }
+  > = (props) => {
+    const { data } = props ?? {}
+
+    return createFolder(data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type CreateFolderMutationResult = NonNullable<Awaited<ReturnType<typeof createFolder>>>
+export type CreateFolderMutationBody = CreateFolderRequest
+export type CreateFolderMutationError = unknown
+
+/**
+ * @summary Create the folder an export's save dialog opens in (the project's folder
+under the export folder). The window may only write inside
+Pictures/Koharu and folders the user picks in a dialog, so it cannot make
+this folder under an export folder chosen in an earlier session. Only
+creates folders: the files are still written where the user confirms.
+ */
+export const useCreateFolder = <TError = unknown, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof createFolder>>,
+      TError,
+      { data: CreateFolderRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof createFolder>>,
+  TError,
+  { data: CreateFolderRequest },
+  TContext
+> => {
+  return useMutation(getCreateFolderMutationOptions(options), queryClient)
+}
 export const getClearProjectCacheUrl = () => {
   return `/api/v1/storage/project-cache/clear`
 }

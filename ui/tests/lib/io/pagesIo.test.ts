@@ -22,13 +22,23 @@ vi.mock('@/lib/io/saveBlob', async () => {
     ...actual,
     saveBlob: vi.fn().mockResolvedValue(true),
     saveBlobToDirectory: vi.fn().mockResolvedValue(true),
+    prepareExportDirectory: vi.fn(async (base: string | undefined, project: string, sub?: string) =>
+      [base ?? 'Pictures/Koharu', project, sub].filter(Boolean).join('/'),
+    ),
   }
 })
 
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
-import { exportCurrentProjectAs, importKhrFile, importPages } from '@/lib/io/pagesIo'
-import { saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
+import {
+  exportCurrentProjectAs,
+  exportPageImages,
+  importKhrFile,
+  importPages,
+} from '@/lib/io/pagesIo'
+import { prepareExportDirectory, saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
+import { queueAutoRender } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 const asMock = <T extends (...args: never) => unknown>(fn: T) =>
   fn as unknown as ReturnType<typeof vi.fn>
@@ -246,7 +256,7 @@ describe('exportCurrentProjectAs', () => {
 
     expect(saveBlob).not.toHaveBeenCalled()
     expect(useEditorUiStore.getState().error?.message).toBe(
-      'No rendered images to export yet — run Process → Process All first to generate them, then try exporting again.',
+      'No rendered images to export yet — run Process first to make them, then export again.',
     )
   })
 
@@ -263,5 +273,118 @@ describe('exportCurrentProjectAs', () => {
     expect(useEditorUiStore.getState().error?.message).toBe(
       'No pages selected to export — add or select a page first.',
     )
+  })
+})
+
+describe('export folders', () => {
+  it("opens each export's dialog in the project's folder under the export folder", async () => {
+    server.use(
+      http.post('/api/v1/projects/current/export', () =>
+        HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
+          headers: { 'content-type': 'application/zip' },
+        }),
+      ),
+    )
+    queryClient.setQueryData(getGetSceneJsonQueryKey(), {
+      epoch: 0,
+      scene: { pages: {}, project: { name: 'BadEnd' } as never },
+    })
+    usePreferencesStore.setState({ exportFolder: 'D:/Manga' })
+    const dialogFolder = async (format: Parameters<typeof exportCurrentProjectAs>[0]) => {
+      asMock(saveBlob).mockClear()
+      await exportCurrentProjectAs(format)
+      return asMock(saveBlob).mock.calls[0][2].defaultDirectory
+    }
+
+    expect(await dialogFolder('best')).toBe('D:/Manga/BadEnd/Rendered')
+    expect(await dialogFolder('inpainted')).toBe('D:/Manga/BadEnd/Cleaned')
+    expect(await dialogFolder('psd')).toBe('D:/Manga/BadEnd/PSD')
+    expect(await dialogFolder('khr')).toBe('D:/Manga/BadEnd')
+
+    usePreferencesStore.setState({ exportFolder: undefined })
+    expect(await dialogFolder('best')).toBe('Pictures/Koharu/BadEnd/Rendered')
+    expect(prepareExportDirectory).toHaveBeenLastCalledWith(undefined, 'BadEnd', 'Rendered')
+  })
+})
+
+describe('exporting page images', () => {
+  const zip = () =>
+    HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
+      headers: { 'content-type': 'application/zip' },
+    })
+  const layer = (role: string) => ({ id: role, visible: true, kind: { image: { role } } })
+  const page = (id: string, ...nodes: Record<string, unknown>[]) => ({
+    id,
+    name: id,
+    width: 10,
+    height: 10,
+    nodes: Object.fromEntries(nodes.map((n, i) => [`${id}-${i}`, n])),
+  })
+
+  it('waits for the render of an edit made just before exporting', async () => {
+    const events: string[] = []
+    let polls = 0
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+      ),
+      http.post('/api/v1/pipelines', () => {
+        events.push('render started')
+        return HttpResponse.json({ operationId: 'render-1', pageCount: 1 })
+      }),
+      http.get('/api/v1/operations', () => {
+        polls += 1
+        const status = polls < 2 ? 'running' : 'completed'
+        events.push(`render ${status}`)
+        return HttpResponse.json({
+          operations: [{ id: 'render-1', kind: 'pipeline', status }],
+        })
+      }),
+      http.post('/api/v1/projects/current/export', () => {
+        events.push('export')
+        return zip()
+      }),
+    )
+
+    // The edit's render is still in its debounce window.
+    queueAutoRender('p1')
+    await exportCurrentProjectAs('best')
+
+    expect(events).toEqual(['render started', 'render running', 'render completed', 'export'])
+  })
+
+  it('exports every page as far as it got and says what went out', async () => {
+    const seen: Array<Record<string, unknown>> = []
+    server.use(
+      http.post('/api/v1/projects/current/export', async ({ request }) => {
+        seen.push((await request.json()) as Record<string, unknown>)
+        return zip()
+      }),
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json({
+          epoch: 1,
+          scene: {
+            project: { name: 'P' },
+            pages: {
+              a: page('a', layer('source'), layer('inpainted'), layer('rendered')),
+              b: page('b', layer('source'), layer('inpainted')),
+              c: page('c', layer('source')),
+            },
+          },
+        }),
+      ),
+    )
+
+    const summary = await exportPageImages()
+
+    expect(seen).toEqual([{ format: 'best' }])
+    expect(summary).toEqual({ count: 3, unrendered: [], cleaned: [2], original: [3] })
+  })
+
+  it('says nothing when the save is cancelled', async () => {
+    server.use(http.post('/api/v1/projects/current/export', () => zip()))
+    asMock(saveBlob).mockResolvedValueOnce(false)
+
+    expect(await exportPageImages(['a'])).toBeUndefined()
   })
 })

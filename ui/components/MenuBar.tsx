@@ -1,5 +1,6 @@
 'use client'
 
+import type { TFunction } from 'i18next'
 import { CopyIcon, MinusIcon, SquareIcon, XIcon } from 'lucide-react'
 import Image from 'next/image'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -35,7 +36,7 @@ import {
 import { useScene } from '@/hooks/useScene'
 import { getConfig, startPipeline } from '@/lib/api/default/default'
 import { isTauri, openExternalUrl } from '@/lib/backend'
-import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
+import { exportCurrentProjectAs, exportPageImages, importPages } from '@/lib/io/pagesIo'
 import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import {
@@ -45,6 +46,7 @@ import {
   selectAllTextNodesOnCurrentPage,
   undoOp,
 } from '@/lib/io/scene'
+import type { ExportSummary } from '@/lib/pageStatus'
 import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
@@ -113,6 +115,9 @@ export function MenuBar() {
     [scene?.pages, selectedPageIds],
   )
   const [redoAllConfirmOpen, setRedoAllConfirmOpen] = useState(false)
+  // Controlled so "Export all pages", a submenu trigger that also acts on
+  // click, can close the menu.
+  const [openMenu, setOpenMenu] = useState('')
 
   const requirePageId = () => {
     const id = useSelectionStore.getState().pageId
@@ -144,32 +149,16 @@ export function MenuBar() {
     }
   }
 
-  const exportItems: MenuItem[] = [
-    {
-      label: t('menu.export'),
-      onSelect: () => void exportCurrentProjectAs('rendered', [requirePageId()]),
-      disabled: !hasPage,
-      testId: 'menu-file-export',
-    },
-    {
-      label: t('menu.exportPsd'),
-      onSelect: () => void exportCurrentProjectAs('psd', [requirePageId()]),
-      disabled: !hasPage,
-      testId: 'menu-file-export-psd',
-    },
-    {
-      label: t('menu.exportAllInpainted'),
-      onSelect: () => void exportCurrentProjectAs('inpainted'),
-      disabled: !hasScene,
-      testId: 'menu-file-export-all-inpainted',
-    },
-    {
-      label: t('menu.exportAllRendered'),
-      onSelect: () => void exportCurrentProjectAs('rendered'),
-      disabled: !hasScene,
-      testId: 'menu-file-export-all-rendered',
-    },
-  ]
+  const exportImages = async (pages?: string[]) => {
+    const summary = await exportPageImages(pages)
+    if (summary) useEditorUiStore.getState().showNotice(exportNotice(summary, t))
+  }
+
+  const exportAllPages = () => {
+    if (!hasScene) return
+    setOpenMenu('')
+    void exportImages()
+  }
 
   const helpMenuItems: MenuItem[] = [
     { label: t('menu.discord'), onSelect: () => openExternalUrl('https://discord.gg/mHvHkxGnUY') },
@@ -193,7 +182,11 @@ export function MenuBar() {
           <ProjectTitle />
         </div>
       )}
-      <Menubar className='h-auto gap-1 border-none bg-transparent p-0 px-1.5 shadow-none'>
+      <Menubar
+        value={openMenu}
+        onValueChange={setOpenMenu}
+        className='h-auto gap-1 border-none bg-transparent p-0 px-1.5 shadow-none'
+      >
         <MenubarMenu>
           <MenubarTrigger
             data-testid='menu-file-trigger'
@@ -219,26 +212,69 @@ export function MenuBar() {
               {t('menu.openFolder')}
             </MenubarItem>
             <MenubarSeparator />
-            <MenubarItem
-              data-testid='menu-file-save-as'
-              className='text-[13px]'
-              disabled={!hasScene}
-              onSelect={() => void exportCurrentProjectAs('khr')}
-            >
-              {t('menu.saveAs')}
-            </MenubarItem>
-            <MenubarSeparator />
-            {exportItems.map((item) => (
-              <MenubarItem
-                key={item.label}
-                data-testid={item.testId}
-                className='text-[13px]'
-                disabled={item.disabled}
-                onSelect={item.onSelect ? () => void item.onSelect?.() : undefined}
+            {/* Click exports every page as far as it got; hover (or the right
+                arrow key) opens the other kinds of export. */}
+            <MenubarSub>
+              <MenubarSubTrigger
+                data-testid='menu-file-export'
+                className='text-[13px] data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
+                disabled={!hasScene}
+                onClick={(e) => {
+                  e.preventDefault()
+                  exportAllPages()
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  exportAllPages()
+                }}
               >
-                {item.label}
-              </MenubarItem>
-            ))}
+                {t('menu.exportAllPages', 'Export all pages')}
+              </MenubarSubTrigger>
+              <MenubarSubContent className='min-w-52'>
+                <p className='max-w-64 px-2 py-1.5 text-xs text-muted-foreground'>
+                  {t(
+                    'menu.exportAllPagesHint',
+                    'Each page as far as it got: translated, else cleaned, else the original.',
+                  )}
+                </p>
+                <MenubarItem
+                  data-testid='menu-export-page'
+                  className='text-[13px]'
+                  disabled={!hasPage}
+                  onSelect={() => void exportImages([requirePageId()])}
+                >
+                  {t('menu.exportThisPage', 'This page')}
+                </MenubarItem>
+                <MenubarItem
+                  data-testid='menu-export-psd'
+                  className='text-[13px]'
+                  disabled={!hasPage}
+                  onSelect={() => void exportCurrentProjectAs('psd', [requirePageId()])}
+                >
+                  {t('menu.exportThisPagePsd', 'This page as PSD')}
+                </MenubarItem>
+                <MenubarItem
+                  data-testid='menu-export-cleaned'
+                  className='text-[13px]'
+                  onSelect={() => void exportCurrentProjectAs('inpainted')}
+                >
+                  {t('menu.exportAllCleaned', 'All pages, cleaned (no text)')}
+                </MenubarItem>
+                <MenubarSeparator />
+                <MenubarItem
+                  data-testid='menu-export-khr'
+                  className='text-[13px]'
+                  title={t(
+                    'menu.exportKhrHint',
+                    'The whole project in one file, to back it up or open it on another computer.',
+                  )}
+                  onSelect={() => void exportCurrentProjectAs('khr')}
+                >
+                  {t('menu.exportKhr', 'Project archive (.khr)')}
+                </MenubarItem>
+              </MenubarSubContent>
+            </MenubarSub>
             <MenubarSeparator />
             <MenubarItem
               data-testid='menu-file-close-project'
@@ -520,6 +556,47 @@ export function MenuBar() {
       </AlertDialog>
     </div>
   )
+}
+
+/** The notice after an image export: how many pages, and which went out
+ * without their translation. */
+export function exportNotice(summary: ExportSummary, t: TFunction): string {
+  const pages = (numbers: number[]) =>
+    numbers.length > 10
+      ? t('menu.exportPagesMore', {
+          pages: numbers.slice(0, 10).join(', '),
+          more: numbers.length - 10,
+          defaultValue: '{{pages}} and {{more}} more',
+        })
+      : numbers.join(', ')
+  const parts = [
+    t('menu.exportDone', { count: summary.count, defaultValue: 'Exported {{count}} pages.' }),
+  ]
+  if (summary.unrendered.length > 0)
+    parts.push(
+      t('menu.exportUnrendered', {
+        count: summary.unrendered.length,
+        pages: pages(summary.unrendered),
+        defaultValue: 'Not rendered yet, so without the translation: pages {{pages}}.',
+      }),
+    )
+  if (summary.cleaned.length > 0)
+    parts.push(
+      t('menu.exportCleaned', {
+        count: summary.cleaned.length,
+        pages: pages(summary.cleaned),
+        defaultValue: 'No translation yet, exported cleaned: pages {{pages}}.',
+      }),
+    )
+  if (summary.original.length > 0)
+    parts.push(
+      t('menu.exportOriginal', {
+        count: summary.original.length,
+        pages: pages(summary.original),
+        defaultValue: 'Not cleaned yet, exported as the original: pages {{pages}}.',
+      }),
+    )
+  return parts.join(' ')
 }
 
 function MacOSControls() {

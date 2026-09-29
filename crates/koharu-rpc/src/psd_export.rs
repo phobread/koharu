@@ -174,13 +174,13 @@ fn resolve_page_blobs(
     })
 }
 
-/// Encode a single page's image for `role` as PNG bytes. Returns `None` if
-/// the page doesn't have that role layer. Used by `Rendered` / `Inpainted`
-/// export formats.
+/// Encode a single page's image as PNG bytes, taking the first of `roles`
+/// the page has. Returns `None` if it has none of them. Used by the
+/// `Rendered` / `Inpainted` / `Best` export formats.
 pub fn png_bytes_for_page(
     session: &Arc<ProjectSession>,
     page_id: PageId,
-    role: ImageRole,
+    roles: &[ImageRole],
 ) -> Result<Option<Vec<u8>>> {
     let scene: Scene = session.scene_snapshot();
     let page = scene
@@ -188,9 +188,11 @@ pub fn png_bytes_for_page(
         .get(&page_id)
         .ok_or_else(|| anyhow::anyhow!("page {page_id} not found"))?;
 
-    let blob = page.nodes.values().find_map(|n| match &n.kind {
-        NodeKind::Image(img) if img.role == role => Some(img.blob.clone()),
-        _ => None,
+    let blob = roles.iter().find_map(|role| {
+        page.nodes.values().find_map(|n| match &n.kind {
+            NodeKind::Image(img) if img.role == *role => Some(img.blob.clone()),
+            _ => None,
+        })
     });
     let Some(blob_ref) = blob else {
         return Ok(None);

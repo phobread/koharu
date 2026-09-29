@@ -1,9 +1,10 @@
 //! Remove only regenerable thumbnails, never saved project content or history.
+//! Also creates the folder an export's save dialog opens in.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -13,7 +14,45 @@ use crate::{
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::default().routes(routes!(clear_project_cache))
+    OpenApiRouter::default()
+        .routes(routes!(clear_project_cache))
+        .routes(routes!(create_folder))
+}
+
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFolderRequest {
+    /// Absolute path of the folder; missing parents are created too.
+    pub path: String,
+}
+
+/// Create the folder an export's save dialog opens in (the project's folder
+/// under the export folder). The window may only write inside
+/// Pictures/Koharu and folders the user picks in a dialog, so it cannot make
+/// this folder under an export folder chosen in an earlier session. Only
+/// creates folders: the files are still written where the user confirms.
+#[utoipa::path(
+    post,
+    path = "/storage/folders",
+    request_body = CreateFolderRequest,
+    responses((status = 204))
+)]
+async fn create_folder(Json(req): Json<CreateFolderRequest>) -> ApiResult<StatusCode> {
+    let path = export_folder_path(&req.path)
+        .ok_or_else(|| ApiError::bad_request("folder path must be absolute, without '..'"))?;
+    tokio::task::spawn_blocking(move || fs::create_dir_all(path))
+        .await
+        .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
+        .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn export_folder_path(path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    let plain = path
+        .components()
+        .all(|c| !matches!(c, Component::ParentDir | Component::CurDir));
+    (path.is_absolute() && plain).then_some(path)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -116,6 +155,36 @@ fn clear_thumbnails(root: &Path) -> anyhow::Result<ClearProjectCacheResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn creates_nested_export_folders_from_absolute_paths_only() {
+        let root =
+            std::env::temp_dir().join(format!("koharu-folder-test-{}", uuid::Uuid::new_v4()));
+        let folder = root.join("Bad_ End").join("Rendered");
+        let request = |path: &Path| {
+            Json(CreateFolderRequest {
+                path: path.to_string_lossy().into_owned(),
+            })
+        };
+
+        assert_eq!(
+            create_folder(request(&folder)).await.unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(folder.is_dir());
+        // Already there: still fine.
+        assert!(create_folder(request(&folder)).await.is_ok());
+
+        assert!(
+            create_folder(request(Path::new("relative/Rendered")))
+                .await
+                .is_err()
+        );
+        let escape = root.join("..").join("escaped");
+        assert!(create_folder(request(&escape)).await.is_err());
+        assert!(!root.parent().unwrap().join("escaped").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn clears_only_generated_thumbnails_and_is_repeatable() {

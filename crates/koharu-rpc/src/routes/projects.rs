@@ -252,6 +252,9 @@ pub enum ExportFormat {
     Rendered,
     /// One `.png` per page (the Inpainted layer).
     Inpainted,
+    /// One `.png` for every page: the Rendered layer, else the Inpainted
+    /// layer, else the source image.
+    Best,
 }
 
 #[utoipa::path(
@@ -306,14 +309,14 @@ async fn export_current_project(
             let default_font_c = req.default_font.clone();
             let files = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let mut out = Vec::with_capacity(page_ids_c.len());
-                for (i, id) in page_ids_c.iter().enumerate() {
+                for (number, id) in &page_ids_c {
                     let bytes = crate::psd_export::psd_bytes_for_page(
                         &session_c,
                         &renderer_c,
                         default_font_c.clone(),
                         *id,
                     )?;
-                    out.push((format!("page-{:03}-{id}.psd", i + 1), bytes));
+                    out.push((format!("page-{number:03}-{id}.psd"), bytes));
                 }
                 Ok(out)
             })
@@ -326,7 +329,7 @@ async fn export_current_project(
             export_image_role(
                 &session,
                 req.pages.as_deref(),
-                ImageRole::Rendered,
+                &[ImageRole::Rendered],
                 &project_name,
             )
             .await
@@ -335,7 +338,16 @@ async fn export_current_project(
             export_image_role(
                 &session,
                 req.pages.as_deref(),
-                ImageRole::Inpainted,
+                &[ImageRole::Inpainted],
+                &project_name,
+            )
+            .await
+        }
+        ExportFormat::Best => {
+            export_image_role(
+                &session,
+                req.pages.as_deref(),
+                &[ImageRole::Rendered, ImageRole::Inpainted, ImageRole::Source],
                 &project_name,
             )
             .await
@@ -343,10 +355,12 @@ async fn export_current_project(
     }
 }
 
+/// One `.png` per page from the first of `roles` the page has; pages with
+/// none of them are left out.
 async fn export_image_role(
     session: &std::sync::Arc<koharu_app::ProjectSession>,
     pages: Option<&[PageId]>,
-    role: ImageRole,
+    roles: &'static [ImageRole],
     project_name: &str,
 ) -> ApiResult<Response> {
     let page_ids = resolve_page_ids(session, pages)?;
@@ -357,9 +371,9 @@ async fn export_image_role(
     let page_ids_c = page_ids.clone();
     let files = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-        for (i, id) in page_ids_c.iter().enumerate() {
-            if let Some(bytes) = crate::psd_export::png_bytes_for_page(&session_c, *id, role)? {
-                out.push((format!("page-{:03}-{id}.png", i + 1), bytes));
+        for (number, id) in &page_ids_c {
+            if let Some(bytes) = crate::psd_export::png_bytes_for_page(&session_c, *id, roles)? {
+                out.push((format!("page-{number:03}-{id}.png"), bytes));
             }
         }
         Ok(out)
@@ -373,33 +387,23 @@ async fn export_image_role(
             "no pages have the requested layer populated",
         ));
     }
-    files_to_response(files, project_name, role_ext(role))
+    files_to_response(files, project_name, "png")
 }
 
+/// The requested pages (every page when `None`) with their 1-based number
+/// in the project, which names their exported files.
 fn resolve_page_ids(
     session: &koharu_app::ProjectSession,
     requested: Option<&[PageId]>,
-) -> ApiResult<Vec<PageId>> {
+) -> ApiResult<Vec<(usize, PageId)>> {
     let scene = session.scene.read();
+    let numbered = |id: &PageId| scene.pages.get_index_of(id).map(|i| (i + 1, *id));
     match requested {
-        None => Ok(scene.pages.keys().copied().collect()),
-        Some(ids) => {
-            for id in ids {
-                if !scene.pages.contains_key(id) {
-                    return Err(ApiError::not_found(format!("page {id}")));
-                }
-            }
-            Ok(ids.to_vec())
-        }
-    }
-}
-
-fn role_ext(role: ImageRole) -> &'static str {
-    match role {
-        ImageRole::Rendered => "png",
-        ImageRole::Inpainted => "png",
-        ImageRole::Source => "png",
-        ImageRole::Custom => "png",
+        None => Ok(scene.pages.keys().filter_map(numbered).collect()),
+        Some(ids) => ids
+            .iter()
+            .map(|id| numbered(id).ok_or_else(|| ApiError::not_found(format!("page {id}"))))
+            .collect(),
     }
 }
 

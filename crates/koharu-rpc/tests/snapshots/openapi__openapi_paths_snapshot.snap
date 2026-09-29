@@ -246,6 +246,12 @@ expression: paths
         ],
     ),
     (
+        "/storage/folders",
+        [
+            "post",
+        ],
+    ),
+    (
         "/storage/project-cache/clear",
         [
             "post",

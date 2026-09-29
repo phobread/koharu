@@ -1,15 +1,18 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { MenuBar } from '@/components/MenuBar'
+import { exportNotice, MenuBar } from '@/components/MenuBar'
 import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import { saveBlob } from '@/lib/io/saveBlob'
+import type { ExportSummary } from '@/lib/pageStatus'
 import { queryClient } from '@/lib/queryClient'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+import enUS from '@/public/locales/en-US/translation.json'
 
 import { renderWithQuery } from '../helpers'
 import { server } from '../msw/server'
@@ -49,6 +52,94 @@ beforeEach(() => {
 })
 
 describe('MenuBar', () => {
+  describe('export', () => {
+    it('the notice names the pages that went out without their translation', async () => {
+      const i18n = i18next.createInstance()
+      await i18n.init({ lng: 'en-US', resources: { 'en-US': { translation: enUS } } })
+      const notice = (summary: Partial<ExportSummary>) =>
+        exportNotice({ count: 1, unrendered: [], cleaned: [], original: [], ...summary }, i18n.t)
+
+      expect(notice({})).toBe('Exported 1 page.')
+      expect(notice({ count: 24, unrendered: [7], cleaned: [5, 9], original: [12] })).toBe(
+        'Exported 24 pages. Not rendered yet, so without the translation: page 7.' +
+          ' No translation yet, exported cleaned: pages 5, 9.' +
+          ' Not cleaned yet, exported as the original: page 12.',
+      )
+      expect(notice({ count: 30, original: Array.from({ length: 12 }, (_, i) => i + 1) })).toBe(
+        'Exported 30 pages. Not cleaned yet, exported as the original: pages 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 2 more.',
+      )
+    })
+
+    let exports: Array<Record<string, unknown>>
+    const layer = (role: string) => ({ id: role, visible: true, kind: { image: { role } } })
+    const scene = {
+      epoch: 0,
+      scene: {
+        project: { name: 'P' },
+        pages: {
+          p1: { id: 'p1', name: '1', width: 1, height: 1, nodes: { r: layer('rendered') } },
+          p2: { id: 'p2', name: '2', width: 1, height: 1, nodes: { s: layer('source') } },
+        },
+      },
+    }
+
+    beforeEach(() => {
+      exports = []
+      server.use(
+        http.get('/api/v1/scene.json', () => HttpResponse.json(scene)),
+        http.post('/api/v1/projects/current/export', async ({ request }) => {
+          exports.push((await request.json()) as Record<string, unknown>)
+          return HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
+            headers: { 'content-type': 'application/zip' },
+          })
+        }),
+      )
+      queryClient.setQueryData(getGetSceneJsonQueryKey(), scene)
+      useSelectionStore.getState().setPage('p2')
+      useEditorUiStore.getState().clearError()
+    })
+
+    it('a click on Export all pages exports every page and says what went out', async () => {
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-file-trigger'))
+      await userEvent.click(await screen.findByTestId('menu-file-export'))
+
+      await waitFor(() => expect(exports).toEqual([{ format: 'best' }]))
+      await waitFor(() =>
+        expect(useEditorUiStore.getState().error).toMatchObject({
+          notice: true,
+          message: 'menu.exportDone menu.exportOriginal',
+        }),
+      )
+      // The menu closed instead of opening the submenu.
+      expect(screen.queryByTestId('menu-export-page')).not.toBeInTheDocument()
+      useEditorUiStore.getState().clearError()
+    })
+
+    it('the submenu exports this page, a PSD, the cleaned pages or the project archive', async () => {
+      renderWithQuery(<MenuBar />)
+      const pick = async (item: string) => {
+        await userEvent.click(screen.getByTestId('menu-file-trigger'))
+        await userEvent.hover(await screen.findByTestId('menu-file-export'))
+        await userEvent.click(await screen.findByTestId(item))
+      }
+      await pick('menu-export-page')
+      await pick('menu-export-psd')
+      await pick('menu-export-cleaned')
+      await pick('menu-export-khr')
+
+      await waitFor(() => expect(exports).toHaveLength(4))
+      expect(exports).toEqual([
+        { format: 'best', pages: ['p2'] },
+        { format: 'psd', pages: ['p2'] },
+        { format: 'inpainted' },
+        { format: 'khr' },
+      ])
+      expect(saveBlob).toHaveBeenCalled()
+      useEditorUiStore.getState().clearError()
+    })
+  })
+
   it('rebuilds masks using kept boxes without rerunning detection, OCR, or translation', async () => {
     const pipeline = {
       detector: 'detect',

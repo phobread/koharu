@@ -13,6 +13,7 @@ import {
   getGetCurrentLlmQueryKey,
   getGetSceneJsonQueryKey,
   importProject,
+  listOperations,
   patchConfig,
   putCurrentProject,
   redo,
@@ -141,16 +142,58 @@ export function queueAutoRender(pageId: string): void {
   )
 }
 
-async function runAutoRender(pageId: string): Promise<void> {
-  try {
-    const cfg = await getConfig()
-    const renderer = cfg.pipeline?.renderer
-    if (!renderer) return
-    await startPipeline({ steps: [renderer], pages: [pageId], ...renderDefaultsForPipeline() })
-  } catch (err) {
-    // Auto-render failures shouldn't disturb the editing flow; users can
-    // always run Render manually from the toolbar / menu.
-    console.error('Auto-render failed:', err)
+// Auto-renders being started, and the jobs of started ones, so an export can
+// wait for the render of an edit made just before it.
+const autoRenderStarts = new Set<Promise<void>>()
+const autoRenderJobs = new Set<string>()
+
+function runAutoRender(pageId: string): Promise<void> {
+  const start = (async () => {
+    try {
+      const cfg = await getConfig()
+      const renderer = cfg.pipeline?.renderer
+      if (!renderer) return
+      const { operationId } = await startPipeline({
+        steps: [renderer],
+        pages: [pageId],
+        ...renderDefaultsForPipeline(),
+      })
+      autoRenderJobs.add(operationId)
+    } catch (err) {
+      // Auto-render failures shouldn't disturb the editing flow; users can
+      // always run Render manually from the toolbar / menu.
+      console.error('Auto-render failed:', err)
+    }
+  })()
+  autoRenderStarts.add(start)
+  void start.finally(() => autoRenderStarts.delete(start))
+  return start
+}
+
+/**
+ * Start the debounced auto-renders now and wait for every auto-render to
+ * finish, so what comes next (an export) sees the latest edits rendered.
+ * Asks the server rather than the event stream (a job is registered before
+ * its start request returns). Gives up waiting after `timeoutMs`.
+ */
+export async function settleAutoRenders(timeoutMs = 60_000, pollMs = 250): Promise<void> {
+  for (const [pageId, timer] of [...autoRenderTimers]) {
+    clearTimeout(timer)
+    autoRenderTimers.delete(pageId)
+    void runAutoRender(pageId)
+  }
+  await Promise.all([...autoRenderStarts])
+  const deadline = Date.now() + timeoutMs
+  while (autoRenderJobs.size > 0) {
+    const operations = await listOperations().then(
+      (r) => r.operations,
+      () => null,
+    )
+    if (!operations) return
+    const running = new Set(operations.filter((j) => j.status === 'running').map((j) => j.id))
+    for (const id of autoRenderJobs) if (!running.has(id)) autoRenderJobs.delete(id)
+    if (autoRenderJobs.size === 0 || Date.now() >= deadline) return
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }
 
