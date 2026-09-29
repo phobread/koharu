@@ -3,7 +3,8 @@
 import { useDrag } from '@use-gesture/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { BlockQuickEditor } from '@/components/canvas/BlockQuickEditor'
+import { BlockQuickEditor, QUICK_EDITOR_RESERVE } from '@/components/canvas/BlockQuickEditor'
+import { zoomCanvasToBox } from '@/components/canvas/canvasViewport'
 import { useBlobImage } from '@/hooks/useBlobData'
 import {
   findImageBlob,
@@ -56,6 +57,48 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       if (ids.size === 0) return
       event.preventDefault()
       void deleteTextNodes(pageId, ids)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [interactive, pageId])
+
+  // Tab / Shift+Tab steps through the page's boxes in their numbered order.
+  // Zoomed in, the view follows the box; from a box editor's text field,
+  // the cursor moves on to the same field of the next box.
+  const nodesRef = useRef(nodes)
+  nodesRef.current = nodes
+  useEffect(() => {
+    if (!interactive || !pageId) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      const field = boxStepField(event)
+      if (field === null) return
+      const list = nodesRef.current
+      if (list.length === 0) return
+      event.preventDefault()
+      const ids = useSelectionStore.getState().nodeIds
+      const selected = list.flatMap((n, i) => (ids.has(n.id) ? [i] : []))
+      const back = event.shiftKey
+      let index: number
+      if (selected.length === 0) index = back ? list.length - 1 : 0
+      else if (back) index = (selected[0] - 1 + list.length) % list.length
+      else index = (selected[selected.length - 1] + 1) % list.length
+      const next = list[index]
+      // Blurring first saves an edit the field still holds.
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+      useSelectionStore.getState().select(next.id, false)
+      if (!useEditorUiStore.getState().autoFitEnabled) {
+        zoomCanvasToBox(next.transform, QUICK_EDITOR_RESERVE)
+      }
+      if (field) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const target = document.querySelector<HTMLElement>(
+              `[data-testid="block-quick-editor"] [data-testid="${field}"]`,
+            )
+            target?.focus()
+          }),
+        )
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -203,6 +246,31 @@ export const isDeleteSelectionKey = (event: KeyboardEvent): boolean => {
       return false
   }
   return true
+}
+
+/**
+ * Whether a Tab steps to another box. Returns `null` for a Tab (or other key)
+ * left to the browser, `''` from the canvas, or the test id of the box
+ * editor's text field it came from, so the cursor can follow. Tab elsewhere
+ * (side panel, menus, dialogs, mid-IME syllable) keeps its usual meaning.
+ */
+export const boxStepField = (event: KeyboardEvent): string | null => {
+  if (event.key !== 'Tab') return null
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return null
+  if (event.ctrlKey || event.metaKey || event.altKey) return null
+  const target = event.target
+  if (!(target instanceof HTMLElement) || target === document.body) return ''
+  if (target.tagName === 'TEXTAREA') {
+    if (!target.closest('[data-testid="block-quick-editor"]')) return null
+    return target.dataset.testid ?? null
+  }
+  if (target.closest('[role="dialog"], [role="menu"], [role="listbox"]')) return null
+  return target.closest('[data-testid="workspace-viewport"]') &&
+    !target.closest('[data-testid="block-quick-editor"]') &&
+    !['INPUT', 'SELECT'].includes(target.tagName) &&
+    !target.isContentEditable
+    ? ''
+    : null
 }
 
 const isAdditiveEvent = (event: unknown): boolean => {

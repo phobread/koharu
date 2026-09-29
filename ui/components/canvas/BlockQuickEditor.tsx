@@ -27,6 +27,8 @@ import { effectiveTextColor, mergeTextStyle } from '@/lib/textStyle'
 
 const EDITOR_WIDTH = 240
 const EDITOR_GAP = 10
+/** Room to keep free beside a zoomed-to box so the editor doesn't cover it. */
+export const QUICK_EDITOR_RESERVE = EDITOR_WIDTH + EDITOR_GAP * 2
 const EDITOR_APPROX_HEIGHT = 230
 const MIN_FONT_SIZE = 6
 const MAX_FONT_SIZE = 300
@@ -176,7 +178,7 @@ export function BlockQuickEditor({
             aria-label={t('textBlocks.zoomToBox', 'Zoom to this box')}
             title={t('textBlocks.zoomToBox', 'Zoom to this box')}
             data-testid='quick-editor-zoom'
-            onClick={() => zoomCanvasToBox(box, EDITOR_WIDTH + EDITOR_GAP * 2)}
+            onClick={() => zoomCanvasToBox(box, QUICK_EDITOR_RESERVE)}
           >
             <ZoomInIcon className='size-3' />
           </Button>
