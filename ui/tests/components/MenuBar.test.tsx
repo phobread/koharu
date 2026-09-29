@@ -67,7 +67,6 @@ describe('MenuBar', () => {
     useSelectionStore.setState({ pageId: 'kept-page' })
     renderWithQuery(<MenuBar />)
     await userEvent.click(screen.getByTestId('menu-process-trigger'))
-    await userEvent.hover(await screen.findByTestId('menu-inpainting'))
     await userEvent.hover(await screen.findByTestId('menu-rebuild-masks'))
     await userEvent.click(await screen.findByTestId('menu-rebuild-mask-current'))
     await waitFor(() => expect(requests).toHaveLength(1))
@@ -151,67 +150,6 @@ describe('MenuBar', () => {
     expect(close).toHaveAttribute('data-disabled')
   })
 
-  it('Process all + export rendered runs all pages and exports after completion', async () => {
-    const pipeline = {
-      detector: 'detector',
-      segmenter: 'segmenter',
-      bubble_segmenter: 'bubble',
-      font_detector: 'font',
-      ocr: 'ocr',
-      translator: 'translator',
-      inpainter: 'inpainter',
-      renderer: 'renderer',
-    }
-    const pipelineRequests: Array<Record<string, unknown>> = []
-    let exportCalls = 0
-    server.use(
-      http.get('/api/v1/config', () => HttpResponse.json({ pipeline })),
-      http.post('/api/v1/pipelines', async ({ request }) => {
-        pipelineRequests.push((await request.json()) as Record<string, unknown>)
-        return HttpResponse.json({ operationId: 'op-1', pageCount: 3 })
-      }),
-      http.get('/api/v1/operations', () =>
-        HttpResponse.json({
-          operations: [{ id: 'op-1', kind: 'pipeline', status: 'completed' }],
-        }),
-      ),
-      http.post('/api/v1/projects/current/export', () => {
-        exportCalls += 1
-        return HttpResponse.arrayBuffer(new Uint8Array([0]).buffer, {
-          headers: { 'content-type': 'application/zip' },
-        })
-      }),
-    )
-    queryClient.setQueryData(getGetConfigQueryKey(), { pipeline })
-    useEditorUiStore.setState({ selectedLanguage: 'en-US' })
-    usePreferencesStore.setState({ customSystemPrompt: 'write vividly' })
-
-    renderWithQuery(<MenuBar />)
-    await userEvent.click(screen.getByTestId('menu-process-trigger'))
-    await userEvent.click(await screen.findByTestId('menu-process-all-export-rendered'))
-
-    await waitFor(() => expect(pipelineRequests).toHaveLength(1))
-    expect(pipelineRequests[0]).toMatchObject({
-      steps: [
-        'detector',
-        'segmenter',
-        'bubble',
-        'font',
-        'ocr',
-        'translator',
-        'inpainter',
-        'renderer',
-      ],
-      targetLanguage: 'en-US',
-      systemPrompt: 'write vividly',
-      onlyMissing: true,
-    })
-    expect(pipelineRequests[0]).not.toHaveProperty('pages')
-
-    await waitFor(() => expect(exportCalls).toBe(1))
-    expect(saveBlob).toHaveBeenCalledTimes(1)
-  })
-
   describe('processing only what is missing', () => {
     const pipeline = { detector: 'detector', ocr: 'ocr', renderer: 'renderer' }
     const pageScene = (ids: string[]) => {
@@ -267,6 +205,41 @@ describe('MenuBar', () => {
       renderWithQuery(<MenuBar />)
       await userEvent.click(screen.getByTestId('menu-process-trigger'))
       expect(await screen.findByTestId('menu-process-selected')).toHaveAttribute('data-disabled')
+    })
+
+    it('the step ticks decide what Process runs', async () => {
+      usePreferencesStore.getState().setProcessSteps({ translate: false, render: false })
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      expect(await screen.findByTestId('menu-process-step-render')).toHaveAttribute(
+        'data-state',
+        'unchecked',
+      )
+      await userEvent.click(screen.getByTestId('menu-process-all'))
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({ steps: ['detector', 'ocr'], onlyMissing: true })
+      usePreferencesStore.getState().setProcessSteps({ translate: true, render: true })
+    })
+
+    it('with nothing ticked there is nothing to start', async () => {
+      usePreferencesStore.getState().setProcessSteps({
+        detect: false,
+        ocr: false,
+        translate: false,
+        inpaint: false,
+        render: false,
+      })
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      expect(await screen.findByTestId('menu-process-all')).toHaveAttribute('data-disabled')
+      expect(screen.getByTestId('menu-process-redo-all')).toHaveAttribute('data-disabled')
+      usePreferencesStore.getState().setProcessSteps({
+        detect: true,
+        ocr: true,
+        translate: true,
+        inpaint: true,
+        render: true,
+      })
     })
 
     it('Redo all pages asks first, then redoes every step', async () => {

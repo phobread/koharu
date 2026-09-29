@@ -1,11 +1,10 @@
 'use client'
 
-import { EyeIcon, SlidersHorizontalIcon, SparklesIcon, TypeIcon } from 'lucide-react'
+import { PaletteIcon, SparklesIcon, TypeIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { AiPanel } from '@/components/panels/AiPanel'
-import { LayersPanel } from '@/components/panels/LayersPanel'
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import { TextBlocksPanel } from '@/components/panels/TextBlocksPanel'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -50,16 +49,8 @@ export function Panels() {
             data-testid='panels-tab-layout'
             className='h-8 gap-1.5 px-2 text-xs'
           >
-            <SlidersHorizontalIcon className='size-3.5' />
-            {t('panels.properties', 'Properties')}
-          </TabsTrigger>
-          <TabsTrigger
-            value='layers'
-            data-testid='panels-tab-layers'
-            className='h-8 gap-1.5 px-2 text-xs'
-          >
-            <EyeIcon className='size-3.5' />
-            {t('layers.title')}
+            <PaletteIcon className='size-3.5' />
+            {t('panels.style', 'Style')}
           </TabsTrigger>
           {codexSignedIn && (
             <TabsTrigger
@@ -91,18 +82,6 @@ export function Panels() {
           <ScrollArea className='h-full' viewportClassName='[&>div]:!block'>
             <div className='p-3'>
               <RenderControlsPanel />
-            </div>
-          </ScrollArea>
-        </TabsContent>
-        <TabsContent
-          forceMount
-          value='layers'
-          className='min-h-0 flex-1 data-[state=inactive]:hidden'
-          data-testid='panels-layers'
-        >
-          <ScrollArea className='h-full'>
-            <div className='p-2'>
-              <LayersPanel />
             </div>
           </ScrollArea>
         </TabsContent>

@@ -22,9 +22,6 @@ vi.mock('@/components/panels/TextBlocksPanel', () => ({
 vi.mock('@/components/panels/RenderControlsPanel', () => ({
   RenderControlsPanel: () => <div>Render controls</div>,
 }))
-vi.mock('@/components/panels/LayersPanel', () => ({
-  LayersPanel: () => <div>Layers controls</div>,
-}))
 vi.mock('@/components/panels/AiPanel', () => ({ AiPanel: () => <div>AI controls</div> }))
 
 import { Panels } from '@/components/Panels'
@@ -34,14 +31,13 @@ beforeEach(() => {
 })
 
 describe('Inspector tabs', () => {
-  it('retains an unsaved draft across Properties and Layers visits', async () => {
+  it('retains an unsaved draft across Style visits', async () => {
     const user = userEvent.setup()
     render(<Panels />)
     const draft = screen.getByRole('textbox', { name: 'Local translation draft' })
     await user.type(draft, 'Keep this draft')
     await user.click(screen.getByTestId('panels-tab-layout'))
     expect(screen.getByTestId('panels-layout')).toHaveAttribute('data-state', 'active')
-    await user.click(screen.getByTestId('panels-tab-layers'))
     await user.click(screen.getByTestId('panels-tab-textblocks'))
     expect(screen.getByRole('textbox', { name: 'Local translation draft' })).toBe(draft)
     expect(draft).toHaveValue('Keep this draft')
@@ -54,8 +50,8 @@ describe('Inspector tabs', () => {
     await user.keyboard('{ArrowRight}')
     await waitFor(() => expect(screen.getByTestId('panels-tab-layout')).toHaveFocus())
     expect(screen.getByTestId('panels-tab-layout')).toHaveAttribute('aria-selected', 'true')
-    await user.keyboard('{End}')
-    await waitFor(() => expect(screen.getByTestId('panels-tab-layers')).toHaveFocus())
+    await user.keyboard('{Home}')
+    await waitFor(() => expect(screen.getByTestId('panels-tab-textblocks')).toHaveFocus())
   })
 
   it('preserves the signed-in AI panel and returns to Text after sign-out', async () => {

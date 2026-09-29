@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { LayersPanel } from '@/components/panels/LayersPanel'
+import { ViewControls } from '@/components/canvas/ViewControls'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -47,7 +47,7 @@ function sceneWithLayers() {
   }
 }
 
-describe('LayersPanel', () => {
+describe('ViewControls', () => {
   beforeEach(() => {
     useSelectionStore.getState().setPage('p1')
     useEditorUiStore.setState({
@@ -61,7 +61,7 @@ describe('LayersPanel', () => {
   })
 
   it('maps the view choice onto the image toggles', async () => {
-    renderWithQuery(<LayersPanel />)
+    renderWithQuery(<ViewControls />)
 
     const original = await screen.findByTestId('view-original')
     expect(original).toHaveAttribute('aria-checked', 'true')
@@ -82,15 +82,17 @@ describe('LayersPanel', () => {
 
   it('reflects an externally set translated view', async () => {
     useEditorUiStore.setState({ showRenderedImage: true, showInpaintedImage: true })
-    renderWithQuery(<LayersPanel />)
+    renderWithQuery(<ViewControls />)
 
     const translated = await screen.findByTestId('view-translated')
     expect(translated).toHaveAttribute('aria-checked', 'true')
   })
 
   it('toggles the text-box overlay independently of the view', async () => {
-    renderWithQuery(<LayersPanel />)
+    renderWithQuery(<ViewControls />)
 
+    // The overlays sit behind the eye button next to the view switch.
+    await userEvent.click(await screen.findByTestId('view-overlays'))
     const row = await screen.findByTestId('overlay-textBlocks')
     await userEvent.click(row)
     expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(true)

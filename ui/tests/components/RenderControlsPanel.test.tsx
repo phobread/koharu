@@ -61,6 +61,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     useSelectionStore.getState().setPage('p1')
     useSelectionStore.getState().clear()
     usePreferencesStore.getState().setDefaultFont('Arial')
+    usePreferencesStore.getState().setStyleMoreOpen(true)
     vi.clearAllMocks()
 
     server.use(
@@ -140,6 +141,19 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     // Verify default font changed
     expect(usePreferencesStore.getState().defaultFont).toBe('Custom')
+  })
+
+  it('folds direction, border, gradient and padding under More', async () => {
+    usePreferencesStore.getState().setStyleMoreOpen(false)
+    renderWithQuery(<RenderControlsPanel />)
+    const toggle = await screen.findByTestId('style-more-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('render-writing-vertical')).not.toBeInTheDocument()
+
+    await userEvent.click(toggle)
+    expect(await screen.findByTestId('render-writing-vertical')).toBeInTheDocument()
+    // Remembered for next time.
+    expect(usePreferencesStore.getState().styleMoreOpen).toBe(true)
   })
 
   it('forces vertical writing for the selected text block', async () => {

@@ -40,4 +40,39 @@ describe('preferencesStore persistence', () => {
       redo: 'Ctrl+Shift+U',
     })
   })
+
+  it('replaces the old Custom pipeline ticks with all Process steps ticked', async () => {
+    const persisted = JSON.stringify({
+      state: {
+        customPipeline: {
+          detect: false,
+          ocr: false,
+          translator: false,
+          inpainter: true,
+          renderer: false,
+        },
+      },
+      version: 9,
+    })
+    const storage = {
+      getItem: vi.fn(async () => persisted),
+      setItem: vi.fn(async () => undefined),
+      removeItem: vi.fn(async () => undefined),
+    }
+    vi.resetModules()
+    vi.doMock('@/lib/stores/serverConfigStorage', () => ({ serverConfigStorage: storage }))
+
+    const { usePreferencesStore } = await import('@/lib/stores/preferencesStore')
+    await usePreferencesStore.persist.rehydrate()
+
+    const state = usePreferencesStore.getState() as unknown as Record<string, unknown>
+    expect(state.processSteps).toEqual({
+      detect: true,
+      ocr: true,
+      translate: true,
+      inpaint: true,
+      render: true,
+    })
+    expect(state).not.toHaveProperty('customPipeline')
+  })
 })

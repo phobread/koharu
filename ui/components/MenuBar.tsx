@@ -21,6 +21,7 @@ import {
   Menubar,
   MenubarContent,
   MenubarItem,
+  MenubarLabel,
   MenubarMenu,
   MenubarRadioGroup,
   MenubarRadioItem,
@@ -32,13 +33,11 @@ import {
   MenubarSubTrigger,
 } from '@/components/ui/menubar'
 import { useScene } from '@/hooks/useScene'
-import { getConfig, listOperations, startPipeline } from '@/lib/api/default/default'
-import type { JobSummary } from '@/lib/api/schemas'
+import { getConfig, startPipeline } from '@/lib/api/default/default'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
-import { orderedPageIds, processPages, processPagesWithFeedback } from '@/lib/io/processPages'
+import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
-import { defaultRenderedExportDirectory, pickSaveDirectory } from '@/lib/io/saveBlob'
 import {
   awaitPendingSceneEdits,
   closeProject,
@@ -49,7 +48,7 @@ import {
 import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
-import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { type ProcessSteps, usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 const windowControls = {
@@ -71,67 +70,6 @@ const windowControls = {
   },
 }
 
-const FINAL_JOB_STATUSES = new Set<JobSummary['status']>([
-  'completed',
-  'completed_with_errors',
-  'cancelled',
-  'failed',
-])
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-function isFinalJob(job: JobSummary | undefined): job is JobSummary {
-  return !!job && FINAL_JOB_STATUSES.has(job.status)
-}
-
-function assertJobFinishedSuccessfully(job: JobSummary): void {
-  if (job.status === 'failed') {
-    throw new Error(job.error ?? 'Processing failed.')
-  }
-  if (job.status === 'cancelled') {
-    throw new Error('Processing was cancelled before export.')
-  }
-}
-
-async function waitForOperation(operationId: string): Promise<JobSummary> {
-  let done = false
-  let unsubscribe: (() => void) | undefined
-
-  const storePromise = new Promise<JobSummary>((resolve) => {
-    const finish = (job: JobSummary | undefined) => {
-      if (!isFinalJob(job)) return false
-      done = true
-      unsubscribe?.()
-      resolve(job)
-      return true
-    }
-
-    if (finish(useJobsStore.getState().jobs[operationId])) return
-    unsubscribe = useJobsStore.subscribe((state) => {
-      finish(state.jobs[operationId])
-    })
-  })
-
-  const pollPromise = (async () => {
-    while (!done) {
-      try {
-        const job = (await listOperations()).operations.find((op) => op.id === operationId)
-        if (isFinalJob(job)) return job
-      } catch (err) {
-        console.warn('Operation status poll failed:', err)
-      }
-      await sleep(2000)
-    }
-    return useJobsStore.getState().jobs[operationId]
-  })()
-
-  const job = await Promise.race([storePromise, pollPromise])
-  done = true
-  unsubscribe?.()
-  if (!job) throw new Error('Processing finished, but its final status was unavailable.')
-  return job
-}
-
 type MenuItem = {
   label: string
   onSelect?: () => void | Promise<void>
@@ -139,26 +77,35 @@ type MenuItem = {
   testId?: string
 }
 
+const PROCESS_STEP_ITEMS: {
+  key: keyof ProcessSteps
+  labelKey: string
+  fallback: string
+}[] = [
+  { key: 'detect', labelKey: 'processing.detect', fallback: 'Detect' },
+  { key: 'ocr', labelKey: 'processing.ocr', fallback: 'OCR' },
+  { key: 'translate', labelKey: 'llm.translate', fallback: 'Translate' },
+  { key: 'inpaint', labelKey: 'mask.inpaint', fallback: 'Inpaint' },
+  { key: 'render', labelKey: 'llm.render', fallback: 'Render' },
+]
+
 export function MenuBar() {
   const { t } = useTranslation()
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<TabId>('appearance')
-  const [processExporting, setProcessExporting] = useState(false)
+  const settingsTab = useEditorUiStore((s) => s.settingsTab)
+  const openSettings = useEditorUiStore((s) => s.openSettings)
+  const closeSettings = useEditorUiStore((s) => s.closeSettings)
   const hasPage = useSelectionStore((s) => s.pageId !== null)
   const { scene } = useScene()
   const hasScene = scene !== null
   const shortcuts = usePreferencesStore((state) => state.shortcuts)
-  const customPipeline = usePreferencesStore((state) => state.customPipeline)
+  const processStepsPref = usePreferencesStore((state) => state.processSteps)
   const isProcessing = useJobsStore((state) =>
     Object.values(state.jobs).some((job) => job.status === 'running'),
   )
   const ocrLanguage = usePreferencesStore((state) => state.ocrLanguage)
   const setOcrLanguage = usePreferencesStore((state) => state.setOcrLanguage)
-  const setCustomPipeline = usePreferencesStore((state) => state.setCustomPipeline)
-  const hasSelectedSteps = useMemo(
-    () => Object.values(customPipeline).some(Boolean),
-    [customPipeline],
-  )
+  const setProcessSteps = usePreferencesStore((state) => state.setProcessSteps)
+  const anyStepTicked = Object.values(processStepsPref).some(Boolean)
   const isMac = useMemo(() => getPlatform() === 'mac', [])
   const selectedPageIds = useSelectionStore((s) => s.selectedPageIds)
   const selectedPages = useMemo(
@@ -179,43 +126,6 @@ export function MenuBar() {
       t('process.nothingToDo', 'Nothing to process: those pages already have every step.'),
     )
 
-  const runPipelineAndExportRendered = async () => {
-    if (processExporting) return
-    setProcessExporting(true)
-    try {
-      const desktop = isTauri()
-      const defaultDirectory = desktop
-        ? await defaultRenderedExportDirectory(scene?.project.name)
-        : undefined
-      const outputDirectory = desktop ? await pickSaveDirectory(defaultDirectory) : undefined
-      if (desktop && !outputDirectory) return
-
-      const started = await processPages({ onlyMissing: true })
-      if (!started?.operationId) {
-        throw new Error('Could not start processing because no pipeline is configured.')
-      }
-
-      // Nothing left to process: export what's there.
-      if (started.pageCount > 0) {
-        const finished = await waitForOperation(started.operationId)
-        assertJobFinishedSuccessfully(finished)
-      }
-      await exportCurrentProjectAs('rendered', undefined, { outputDirectory })
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err)
-      useEditorUiStore.getState().showError(`Process/export failed: ${raw}`)
-    } finally {
-      setProcessExporting(false)
-    }
-  }
-
-  const runInpaint = async (pageId: string) => {
-    await awaitPendingSceneEdits()
-    const cfg = await getConfig()
-    if (!cfg.pipeline?.inpainter) return
-    await startPipeline({ steps: [cfg.pipeline.inpainter], pages: [pageId] })
-  }
-
   const rebuildMasksAndInpaint = async (pageId?: string) => {
     try {
       await awaitPendingSceneEdits()
@@ -232,33 +142,6 @@ export function MenuBar() {
     } catch (err) {
       useEditorUiStore.getState().showError(String(err))
     }
-  }
-
-  const runCustomPipeline = async (opts: { pageId?: string }) => {
-    await awaitPendingSceneEdits()
-    const cfg = await getConfig()
-    if (!cfg.pipeline) return
-    const p = cfg.pipeline
-    const prefs = usePreferencesStore.getState()
-    const steps = [
-      ...(prefs.customPipeline.detect
-        ? [p.detector, p.segmenter, p.bubble_segmenter, p.font_detector]
-        : []),
-      prefs.customPipeline.ocr ? p.ocr : null,
-      prefs.customPipeline.translator ? p.translator : null,
-      prefs.customPipeline.inpainter ? p.inpainter : null,
-      prefs.customPipeline.renderer ? p.renderer : null,
-    ].filter((s): s is string => !!s)
-    const editor = useEditorUiStore.getState()
-    await startPipeline({
-      steps,
-      pages: opts.pageId ? [opts.pageId] : undefined,
-      targetLanguage: editor.selectedLanguage,
-      sourceLanguage: prefs.ocrLanguage,
-      systemPrompt: prefs.customSystemPrompt,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
-      ...renderDefaultsForPipeline(),
-    })
   }
 
   const exportItems: MenuItem[] = [
@@ -372,8 +255,7 @@ export function MenuBar() {
             <MenubarItem
               className='text-[13px]'
               onSelect={() => {
-                setSettingsTab('appearance')
-                setSettingsOpen(true)
+                openSettings('appearance')
               }}
             >
               {t('menu.settings')}
@@ -440,10 +322,29 @@ export function MenuBar() {
             {t('menu.process')}
           </MenubarTrigger>
           <MenubarContent className='min-w-48' align='start' sideOffset={5} alignOffset={-3}>
+            {/* Ticked steps apply to every Process action; each runs only where
+                it's still missing, so re-ticking Translate + Render later
+                finishes pages without redoing detection, OCR or cleanup. */}
+            <MenubarLabel className='py-1 text-[11px] font-normal text-muted-foreground'>
+              {t('menu.processStepsLabel', 'Steps to run · only what is missing')}
+            </MenubarLabel>
+            {PROCESS_STEP_ITEMS.map(({ key, labelKey, fallback }) => (
+              <MenubarCheckboxItem
+                key={key}
+                data-testid={`menu-process-step-${key}`}
+                className='text-[13px]'
+                checked={processStepsPref[key]}
+                onCheckedChange={(checked) => setProcessSteps({ [key]: checked })}
+                onSelect={(e) => e.preventDefault()}
+              >
+                {t(labelKey, fallback)}
+              </MenubarCheckboxItem>
+            ))}
+            <MenubarSeparator />
             <MenubarItem
               data-testid='menu-process-current'
               className='text-[13px]'
-              disabled={!hasPage}
+              disabled={!hasPage || !anyStepTicked}
               title={t('menu.processMissingHint')}
               onSelect={() => void startProcess({ pages: [requirePageId()], onlyMissing: true })}
             >
@@ -452,7 +353,7 @@ export function MenuBar() {
             <MenubarItem
               data-testid='menu-process-selected'
               className='text-[13px]'
-              disabled={selectedPages.length < 2}
+              disabled={selectedPages.length < 2 || !anyStepTicked}
               title={t('menu.processMissingHint')}
               onSelect={() => void startProcess({ pages: selectedPages, onlyMissing: true })}
             >
@@ -466,139 +367,52 @@ export function MenuBar() {
             <MenubarItem
               data-testid='menu-process-all'
               className='text-[13px]'
-              disabled={!hasScene}
+              disabled={!hasScene || !anyStepTicked}
               title={t('menu.processMissingHint')}
               onSelect={() => void startProcess({ onlyMissing: true })}
             >
               {t('menu.processUnfinished', 'Process unfinished pages')}
             </MenubarItem>
-            <MenubarItem
-              data-testid='menu-process-all-export-rendered'
-              className='text-[13px]'
-              disabled={!hasScene || processExporting}
-              onSelect={() => void runPipelineAndExportRendered()}
-            >
-              {processExporting
-                ? t('menu.processingAllAndExporting', 'Processing and exporting...')
-                : t('menu.processAllAndExportRendered', 'Process all images + export rendered...')}
-            </MenubarItem>
+            <MenubarSeparator />
             <MenubarItem
               data-testid='menu-process-redo-all'
               className='text-[13px]'
-              disabled={!hasScene}
+              disabled={!hasScene || !anyStepTicked}
               onSelect={() => setRedoAllConfirmOpen(true)}
             >
-              {t('menu.redoAll', 'Redo all pages from scratch…')}
+              {t('menu.redoTicked', 'Redo ticked steps on all pages…')}
             </MenubarItem>
             <MenubarSeparator />
+            {/* The one mask job the ticks can't do: re-make the text masks
+                from the kept boxes (after a mask-detection improvement) and
+                clean again. Detect would replace the boxes instead. */}
             <MenubarSub>
               <MenubarSubTrigger
-                data-testid='menu-inpainting'
+                data-testid='menu-rebuild-masks'
+                disabled={!hasScene || isProcessing}
+                title={t('menu.rebuildMasksHint')}
                 className='text-[13px]'
-                disabled={!hasScene}
               >
-                {t('menu.inpainting', 'Inpainting')}
+                {t('menu.rebuildMasks')}
               </MenubarSubTrigger>
-              <MenubarSubContent className='min-w-48'>
+              <MenubarSubContent>
                 <MenubarItem
-                  data-testid='menu-process-rerender'
-                  className='text-[13px]'
-                  disabled={!hasPage}
-                  onSelect={() => void runInpaint(requirePageId())}
+                  data-testid='menu-rebuild-mask-current'
+                  disabled={!hasPage || isProcessing}
+                  onSelect={() => void rebuildMasksAndInpaint(requirePageId())}
                 >
-                  {t('menu.redoInpaintRender')}
-                </MenubarItem>
-                <MenubarSub>
-                  <MenubarSubTrigger
-                    data-testid='menu-rebuild-masks'
-                    disabled={!hasScene || isProcessing}
-                    title={t('menu.rebuildMasksHint')}
-                    className='text-[13px]'
-                  >
-                    {t('menu.rebuildMasks')}
-                  </MenubarSubTrigger>
-                  <MenubarSubContent>
-                    <MenubarItem
-                      data-testid='menu-rebuild-mask-current'
-                      disabled={!hasPage || isProcessing}
-                      onSelect={() => void rebuildMasksAndInpaint(requirePageId())}
-                    >
-                      {t('menu.currentImage')}
-                    </MenubarItem>
-                    <MenubarItem
-                      data-testid='menu-rebuild-mask-all'
-                      disabled={!hasScene || isProcessing}
-                      onSelect={() => void rebuildMasksAndInpaint()}
-                    >
-                      {t('menu.allImages')}
-                    </MenubarItem>
-                    <p className='max-w-64 px-2 py-1.5 text-xs text-muted-foreground'>
-                      {t('menu.rebuildMasksHint')}
-                    </p>
-                  </MenubarSubContent>
-                </MenubarSub>
-              </MenubarSubContent>
-            </MenubarSub>
-            <MenubarSub>
-              <MenubarSubTrigger className='text-[13px]'>
-                {t('menu.customPipeline')}
-              </MenubarSubTrigger>
-              <MenubarSubContent className='min-w-48'>
-                <MenubarItem
-                  className='text-[13px]'
-                  disabled={!hasPage || !hasSelectedSteps}
-                  onSelect={() => void runCustomPipeline({ pageId: requirePageId() })}
-                >
-                  {t('menu.runCustomCurrent')}
+                  {t('menu.currentImage')}
                 </MenubarItem>
                 <MenubarItem
-                  className='text-[13px]'
-                  disabled={!hasScene || !hasSelectedSteps}
-                  onSelect={() => void runCustomPipeline({})}
+                  data-testid='menu-rebuild-mask-all'
+                  disabled={!hasScene || isProcessing}
+                  onSelect={() => void rebuildMasksAndInpaint()}
                 >
-                  {t('menu.runCustomAll')}
+                  {t('menu.allImages')}
                 </MenubarItem>
-                <MenubarSeparator />
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.detect}
-                  onCheckedChange={(checked) => setCustomPipeline({ detect: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('processing.detect')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.ocr}
-                  onCheckedChange={(checked) => setCustomPipeline({ ocr: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('processing.ocr')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.translator}
-                  onCheckedChange={(checked) => setCustomPipeline({ translator: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('llm.generate')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.inpainter}
-                  onCheckedChange={(checked) => setCustomPipeline({ inpainter: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('mask.inpaint')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.renderer}
-                  onCheckedChange={(checked) => setCustomPipeline({ renderer: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('llm.render')}
-                </MenubarCheckboxItem>
+                <p className='max-w-64 px-2 py-1.5 text-xs text-muted-foreground'>
+                  {t('menu.rebuildMasksHint')}
+                </p>
               </MenubarSubContent>
             </MenubarSub>
             <MenubarSub>
@@ -661,8 +475,7 @@ export function MenuBar() {
             <MenubarItem
               className='text-[13px]'
               onSelect={() => {
-                setSettingsTab('about')
-                setSettingsOpen(true)
+                openSettings('about')
               }}
             >
               {t('settings.about')}
@@ -672,20 +485,35 @@ export function MenuBar() {
       </Menubar>
       <div data-tauri-drag-region className='flex h-full flex-1 items-center justify-center' />
       {isWindowsTauri && <WindowControls />}
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} defaultTab={settingsTab} />
+      <SettingsDialog
+        open={settingsTab !== null}
+        onOpenChange={(open) => {
+          if (!open) closeSettings()
+        }}
+        defaultTab={(settingsTab ?? 'appearance') as TabId}
+      />
       <AlertDialog open={redoAllConfirmOpen} onOpenChange={setRedoAllConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogTitle>
-            {t('menu.redoAllTitle', 'Redo all pages from scratch?')}
+            {t('menu.redoTickedTitle', 'Redo the ticked steps on all pages?')}
           </AlertDialogTitle>
-          <AlertDialogDescription>{t('menu.redoAllDescription')}</AlertDialogDescription>
+          <AlertDialogDescription>
+            {t('menu.redoTickedDescription', {
+              steps: PROCESS_STEP_ITEMS.filter(({ key }) => processStepsPref[key])
+                .map(({ labelKey, fallback }) => t(labelKey, fallback))
+                .join(', '),
+              defaultValue:
+                'These steps run again on every page and replace what they made before: {{steps}}.',
+            })}{' '}
+            {processStepsPref.detect ? t('menu.redoDetectWarning') : null}
+          </AlertDialogDescription>
           <div className='flex justify-end gap-2'>
             <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction
               data-testid='redo-all-confirm'
               onClick={() => void startProcess({ onlyMissing: false })}
             >
-              {t('menu.redoAllConfirm', 'Redo everything')}
+              {t('menu.redoTickedConfirm', 'Redo')}
             </AlertDialogAction>
           </div>
         </AlertDialogContent>

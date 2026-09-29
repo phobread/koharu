@@ -35,8 +35,8 @@
     "process": "Process",
     "processCurrent": "Process current page",
     "redoInpaintRender": "Re-inpaint current page",
-    "rebuildMasks": "Rebuild masks and inpaint",
-    "rebuildMasksHint": "Uses your current text boxes. Replaces manual mask edits; can be undone.",
+    "rebuildMasks": "Rebuild text masks",
+    "rebuildMasksHint": "Re-makes the text masks from your current boxes (no re-detection) and cleans the page again. Replaces repair-brush edits; can be undone.",
     "currentImage": "Current page",
     "allImages": "All pages",
     "processAll": "Process all pages",
@@ -49,6 +49,12 @@
     "redoAllTitle": "Redo all pages from scratch?",
     "redoAllDescription": "Every step runs again on every page. Detection replaces all text boxes, so the OCR text, translations, box sizes, fonts and cleanup repairs on every page are replaced. To finish only what is left, use Process unfinished pages.",
     "redoAllConfirm": "Redo everything",
+    "redoTicked": "Redo ticked steps on all pages…",
+    "processStepsLabel": "Steps to run · only what is missing",
+    "redoTickedTitle": "Redo the ticked steps on all pages?",
+    "redoTickedDescription": "These steps run again on every page and replace what they made before: {{steps}}.",
+    "redoDetectWarning": "Detect replaces every text box, so the OCR text, translations, box sizes and fonts on every page go with it.",
+    "redoTickedConfirm": "Redo",
     "processAllAndExportRendered": "Process unfinished + export all…",
     "processingAllAndExporting": "Processing and exporting…",
     "help": "Help",
@@ -120,7 +126,8 @@
     "nothingToDo": "Nothing to process: those pages already have every step.",
     "pagesButton_one": "Process {{count}} page",
     "pagesButton_other": "Process {{count}} pages",
-    "pagesButtonHint": "Run the steps these pages are missing. Finished work is kept."
+    "pagesButtonHint": "Run the ticked Process steps these pages are missing. Finished work is kept.",
+    "noSteps": "Tick steps in the Process menu first"
   },
   "selection": {
     "count_one": "{{count}} box selected",
@@ -137,12 +144,23 @@
     "pages_other": "{{count}} pages",
     "empty": "No documents",
     "prompt": "Select or import a page to begin",
+    "status": {
+      "done": "Done",
+      "notStarted": "Not started",
+      "needs": "Needs {{steps}}",
+      "ocr": "OCR",
+      "translate": "translation",
+      "clean": "cleanup",
+      "render": "render"
+    },
     "pageManager": {
       "title": "Page Manager",
       "description": "Drag and drop pages to reorder them."
     }
   },
   "panels": {
+    "text": "Text",
+    "style": "Style",
     "processing": "Processing",
     "mask": "Mask",
     "llm": "LLM",
@@ -156,11 +174,16 @@
     "mask": "Detected text",
     "viewOriginal": "Original",
     "viewCleaned": "Cleaned",
-    "viewTranslated": "Translated"
+    "viewTranslated": "Translated",
+    "overlays": "Show on the page"
   },
   "processing": {
     "detect": "Detect",
     "detectTooltip": "Run text detection on current page",
+    "redoDetect": "Detect text on this page again (replaces its boxes)",
+    "redoOcr": "Read every box on this page again (replaces its OCR text)",
+    "redoInpaint": "Clean this page again",
+    "redoRender": "Render this page again",
     "ocr": "OCR",
     "ocrTooltip": "Recognize text for detected regions",
     "render": "Render"
@@ -192,6 +215,15 @@
     "generate": "Generate",
     "generating": "Generating...",
     "generateTooltip": "Generate translations for detected text blocks",
+    "translate": "Translate",
+    "redoTranslate": "Translate every box on this page again",
+    "translateNoModel": "No translation model loaded: click to choose one",
+    "translateLoading": "The translation model is still loading",
+    "paneReady": "Loaded — ready to translate",
+    "paneLoading": "Loading…",
+    "paneNotLoaded": "Not loaded",
+    "targetLanguage": "Translate into",
+    "instructions": "Instructions for the translator",
     "render": "Render",
     "renderTooltip": "Render translations onto the page",
     "apiKeyMissing": "{{provider}} API key is required.",
@@ -285,6 +317,7 @@
     "fontColorLabel": "Font color",
     "eyedropper": "Eyedropper",
     "fontSizeLabel": "Size",
+    "more": "More: direction, border, gradient",
     "fontStylePlaceholder": "Style",
     "fontScopeGlobal": "Global",
     "fontScopeBlock": "Per block",
@@ -330,6 +363,8 @@
     "readingOrderLtr": "Left-to-Right (LTR)",
     "readingOrderCustom": "Custom",
     "peekOriginal": "Show original art beneath the block",
+    "zoomToBox": "Zoom to this box",
+    "fitPage": "Back to the whole page",
     "slant": "Slant",
     "straighten": "Straighten (0°)"
   },
@@ -401,6 +436,7 @@
     "retryNow": "RETRY NOW"
   },
   "settings": {
+    "translation": "Translation",
     "projectCache": "Saved project cache",
     "projectCacheDescription": "Clear temporary page thumbnails for all saved projects. Thumbnails are recreated when needed. Projects, images, translations, undo history, models and fonts are kept.",
     "clearCache": "Clear cache",

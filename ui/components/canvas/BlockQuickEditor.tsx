@@ -1,23 +1,35 @@
 'use client'
 
-import { ImageIcon, XIcon } from 'lucide-react'
+import {
+  ImageIcon,
+  MinusIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  ShrinkIcon,
+  XIcon,
+  ZoomInIcon,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { fitCanvasToViewport, zoomCanvasToBox } from '@/components/canvas/canvasViewport'
 import { Button } from '@/components/ui/button'
 import { RichTextDraftTextarea } from '@/components/ui/rich-text-draft-textarea'
 import { SplittableDraftTextarea } from '@/components/ui/splittable-draft-textarea'
 import type { TextNodeEntry } from '@/hooks/useCurrentPage'
 import type { Page, TextDataPatch } from '@/lib/api/schemas'
-import { applyOp, queueAutoRender } from '@/lib/io/scene'
+import { applyOp, applyOpFromScene, queueAutoRender } from '@/lib/io/scene'
 import { splitBlock } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
 import type { SplitField } from '@/lib/splitBlock'
-import { effectiveTextColor } from '@/lib/textStyle'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { effectiveTextColor, mergeTextStyle } from '@/lib/textStyle'
 
 const EDITOR_WIDTH = 240
 const EDITOR_GAP = 10
-const EDITOR_APPROX_HEIGHT = 200
+const EDITOR_APPROX_HEIGHT = 230
+const MIN_FONT_SIZE = 6
+const MAX_FONT_SIZE = 300
 
 /**
  * Small floating editor anchored beside the selected block: the OCR'd source
@@ -42,6 +54,8 @@ export function BlockQuickEditor({
   onClose: () => void
 }) {
   const { t } = useTranslation()
+  // Zoomed away from the whole-page fit (by this button or by hand).
+  const zoomed = !useEditorUiStore((s) => s.autoFitEnabled)
   const box = node.transform
   // Prefer the right side of the box; flip to the left when that would run
   // off the page. Top tracks the box, clamped so the editor stays visible.
@@ -95,6 +109,52 @@ export function BlockQuickEditor({
     })()
   }
 
+  // Size: the block's own override, else what the renderer fitted ("auto").
+  // Built from the latest saved scene so quick repeated clicks add up.
+  const fontSize = node.data.style?.fontSize ?? undefined
+  const renderedSize = node.data.renderedFontSizePx ?? undefined
+  const [sizeDraft, setSizeDraft] = useState(
+    fontSize !== undefined ? String(Math.round(fontSize)) : '',
+  )
+  useEffect(() => {
+    setSizeDraft(fontSize !== undefined ? String(Math.round(fontSize)) : '')
+  }, [fontSize, node.id])
+
+  const setFontSize = (next: (current: number) => number | null) => {
+    // The size change is only visible on the rendered text, not the original.
+    if (showOriginal) onToggleOriginal()
+    void (async () => {
+      const applied = await applyOpFromScene((scene) => {
+        const current = scene.pages[page.id]?.nodes[node.id]
+        if (!current || !('text' in current.kind)) return null
+        const text = current.kind.text
+        const base = text.style?.fontSize ?? text.renderedFontSizePx ?? 16
+        const size = next(base)
+        const clamped =
+          size === null ? null : Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(size)))
+        if (clamped === (text.style?.fontSize ?? null)) return null
+        return ops.updateNode(page.id, node.id, {
+          data: { text: { style: mergeTextStyle(text.style, { fontSize: clamped }) } } as never,
+        })
+      })
+      if (applied) queueAutoRender(page.id)
+    })()
+  }
+
+  const commitSizeDraft = (raw: string) => {
+    const value = raw.trim()
+    if (value === '') {
+      setFontSize(() => null)
+      return
+    }
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setSizeDraft(fontSize !== undefined ? String(Math.round(fontSize)) : '')
+      return
+    }
+    setFontSize(() => parsed)
+  }
+
   return (
     <div
       data-testid='block-quick-editor'
@@ -109,6 +169,30 @@ export function BlockQuickEditor({
           #{index + 1}
         </span>
         <div className='flex items-center gap-1'>
+          <Button
+            variant='ghost'
+            size='icon-xs'
+            className='size-4 text-muted-foreground hover:text-foreground'
+            aria-label={t('textBlocks.zoomToBox', 'Zoom to this box')}
+            title={t('textBlocks.zoomToBox', 'Zoom to this box')}
+            data-testid='quick-editor-zoom'
+            onClick={() => zoomCanvasToBox(box, EDITOR_WIDTH + EDITOR_GAP * 2)}
+          >
+            <ZoomInIcon className='size-3' />
+          </Button>
+          {zoomed && (
+            <Button
+              variant='ghost'
+              size='icon-xs'
+              className='size-4 text-muted-foreground hover:text-foreground'
+              aria-label={t('textBlocks.fitPage', 'Back to the whole page')}
+              title={t('textBlocks.fitPage', 'Back to the whole page')}
+              data-testid='quick-editor-fit'
+              onClick={fitCanvasToViewport}
+            >
+              <ShrinkIcon className='size-3' />
+            </Button>
+          )}
           <Button
             variant='ghost'
             size='icon-xs'
@@ -169,6 +253,63 @@ export function BlockQuickEditor({
           splitLabel={t('textBlocks.splitAtCursor')}
           onSplit={(offset) => splitAt('translation', offset)}
         />
+      </div>
+      <div className='flex items-center gap-1.5'>
+        <span className='flex-1 text-[10px] text-muted-foreground uppercase'>
+          {t('render.fontSizeLabel')}
+        </span>
+        <div className='flex items-center rounded-md border border-input bg-background'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-xs'
+            className='size-6 rounded-r-none'
+            aria-label={t('textBlocks.smaller', 'Smaller')}
+            data-testid='quick-editor-size-down'
+            onClick={() => setFontSize((size) => size - 1)}
+          >
+            <MinusIcon className='size-3' />
+          </Button>
+          <input
+            data-testid='quick-editor-size'
+            type='number'
+            step={1}
+            min={MIN_FONT_SIZE}
+            max={MAX_FONT_SIZE}
+            inputMode='numeric'
+            value={sizeDraft}
+            placeholder={renderedSize !== undefined ? `auto (${Math.round(renderedSize)})` : 'auto'}
+            onChange={(e) => setSizeDraft(e.target.value)}
+            onBlur={(e) => commitSizeDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitSizeDraft((e.target as HTMLInputElement).value)
+            }}
+            className='h-6 w-16 [appearance:textfield] border-x border-input bg-transparent px-1 text-center text-xs outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+          />
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-xs'
+            className='size-6 rounded-l-none'
+            aria-label={t('textBlocks.larger', 'Larger')}
+            data-testid='quick-editor-size-up'
+            onClick={() => setFontSize((size) => size + 1)}
+          >
+            <PlusIcon className='size-3' />
+          </Button>
+        </div>
+        <Button
+          variant='ghost'
+          size='icon-xs'
+          className='size-5 text-muted-foreground hover:text-foreground'
+          aria-label={t('render.resetToAuto')}
+          title={t('render.resetToAuto')}
+          data-testid='quick-editor-size-auto'
+          disabled={fontSize === undefined}
+          onClick={() => setFontSize(() => null)}
+        >
+          <RotateCcwIcon className='size-3' />
+        </Button>
       </div>
       <div className='flex items-center gap-1.5'>
         <span className='flex-1 text-[10px] text-muted-foreground uppercase'>

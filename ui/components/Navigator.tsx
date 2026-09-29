@@ -1,7 +1,7 @@
 'use client'
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { LayoutGridIcon, PlayIcon, Trash2Icon } from 'lucide-react'
+import { CheckIcon, LayoutGridIcon, PlayIcon, Trash2Icon } from 'lucide-react'
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +14,8 @@ import { getGetPageThumbnailUrl } from '@/lib/api/default/default'
 import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { applyOp } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
+import { pageStatus, type PageStatus } from '@/lib/pageStatus'
+import { type ProcessSteps, usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 const THUMBNAIL_DPR =
@@ -32,10 +34,11 @@ export function Navigator() {
   const selectedPageIds = useSelectionStore((s) => s.selectedPageIds)
   const setSelectedPageIds = useSelectionStore((s) => s.setSelectedPageIds)
 
-  const currentIndex = pages.findIndex((p) => p.id === pageId)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const { t } = useTranslation()
   const [pageManagerOpen, setPageManagerOpen] = useState(false)
+  const processStepsPref = usePreferencesStore((s) => s.processSteps)
+  const tickedSteps = PROCESS_STEP_LABELS.filter(({ key }) => processStepsPref[key])
   const selectedInOrder = useMemo(
     () => orderedPageIds(pagesMap, selectedPageIds),
     [pagesMap, selectedPageIds],
@@ -181,6 +184,7 @@ export function Navigator() {
             size='sm'
             data-testid='navigator-process-selected'
             className='h-7 w-full gap-1.5 text-xs'
+            disabled={tickedSteps.length === 0}
             title={t('process.pagesButtonHint')}
             onClick={() =>
               void processPagesWithFeedback(
@@ -198,18 +202,20 @@ export function Navigator() {
               defaultValue: 'Process {{count}} pages',
             })}
           </Button>
+          <div
+            data-testid='navigator-process-steps'
+            className='mt-1 truncate text-center text-[10px] text-muted-foreground'
+          >
+            {tickedSteps.length > 0
+              ? tickedSteps.map(({ labelKey, fallback }) => t(labelKey, fallback)).join(' · ')
+              : t('process.noSteps', 'Tick steps in the Process menu first')}
+          </div>
         </div>
       )}
 
-      <div className='flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground'>
-        {totalPages > 0 ? (
-          <span className='bg-secondary px-2 py-0.5 font-mono text-[10px] text-secondary-foreground'>
-            #{currentIndex + 1}
-          </span>
-        ) : (
-          <span>{t('navigator.prompt')}</span>
-        )}
-      </div>
+      {totalPages === 0 && (
+        <div className='px-2 py-1.5 text-xs text-muted-foreground'>{t('navigator.prompt')}</div>
+      )}
 
       <ScrollArea className='min-h-0 flex-1' viewportRef={viewportRef}>
         <div className='relative w-full' style={{ height: virtualizer.getTotalSize() }}>
@@ -230,7 +236,7 @@ export function Navigator() {
                   index={virtualRow.index}
                   pageId={page.id}
                   label={page.name}
-                  dimensions={`${page.width} × ${page.height}`}
+                  status={pageStatus(page)}
                   blockCount={Object.values(page.nodes).filter((n) => 'text' in n.kind).length}
                   selected={selectedPageIds.has(page.id)}
                   active={page.id === pageId}
@@ -254,7 +260,7 @@ type PagePreviewProps = {
   index: number
   pageId: string
   label: string
-  dimensions: string
+  status: PageStatus
   blockCount: number
   selected: boolean
   active: boolean
@@ -268,7 +274,7 @@ const PagePreview = memo(function PagePreview({
   index,
   pageId,
   label,
-  dimensions,
+  status,
   blockCount,
   selected,
   active,
@@ -333,8 +339,59 @@ const PagePreview = memo(function PagePreview({
       <div className='min-w-0 text-xs'>
         <div className='truncate font-medium'>{label}</div>
         <div className='mt-1 text-[10px] text-muted-foreground'>{blockCount} text blocks</div>
-        <div className='mt-1 text-[10px] text-muted-foreground tabular-nums'>{dimensions}</div>
+        <PageStatusLine status={status} />
       </div>
     </div>
   )
 })
+
+const PROCESS_STEP_LABELS: { key: keyof ProcessSteps; labelKey: string; fallback: string }[] = [
+  { key: 'detect', labelKey: 'processing.detect', fallback: 'Detect' },
+  { key: 'ocr', labelKey: 'processing.ocr', fallback: 'OCR' },
+  { key: 'translate', labelKey: 'llm.translate', fallback: 'Translate' },
+  { key: 'inpaint', labelKey: 'mask.inpaint', fallback: 'Inpaint' },
+  { key: 'render', labelKey: 'llm.render', fallback: 'Render' },
+]
+
+const STEP_LABELS: Record<string, string> = {
+  ocr: 'OCR',
+  translate: 'translation',
+  clean: 'cleanup',
+  render: 'render',
+}
+
+/** What the page still needs: the same rules as "Process unfinished pages". */
+function PageStatusLine({ status }: { status: PageStatus }) {
+  const { t } = useTranslation()
+  if (status.kind === 'done') {
+    return (
+      <div
+        data-testid='page-status'
+        data-status='done'
+        className='mt-1 flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400'
+      >
+        <CheckIcon className='size-3' />
+        {t('navigator.status.done', 'Done')}
+      </div>
+    )
+  }
+  const text =
+    status.kind === 'notStarted'
+      ? t('navigator.status.notStarted', 'Not started')
+      : t('navigator.status.needs', {
+          steps: status.steps
+            .map((step) => t(`navigator.status.${step}`, STEP_LABELS[step]))
+            .join(', '),
+          defaultValue: 'Needs {{steps}}',
+        })
+  return (
+    <div
+      data-testid='page-status'
+      data-status={status.kind}
+      className='mt-1 truncate text-[10px] text-amber-600 dark:text-amber-400'
+      title={text}
+    >
+      {text}
+    </div>
+  )
+}

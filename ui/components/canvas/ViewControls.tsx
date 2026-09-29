@@ -1,7 +1,10 @@
 'use client'
 
+import { EyeIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { findImageBlob, findMaskBlob, useCurrentPage, useTextNodes } from '@/hooks/useCurrentPage'
 import { useScene } from '@/hooks/useScene'
@@ -9,15 +12,15 @@ import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 
 /**
- * Replaces the old Photoshop-style layer list: the page images (original /
- * inpainted / rendered) stack opaquely, so only one is ever really visible —
- * a single "View" choice models that honestly. The overlays that genuinely
- * combine with any view are simple on/off switches below it.
+ * What the canvas shows, next to the step buttons. The page images (original
+ * / cleaned / translated) stack opaquely, so only one is ever really visible:
+ * a single switch models that honestly. The overlays that combine with any
+ * view (text boxes, detected text, brush strokes) sit behind the eye button.
  */
 
 type ViewId = 'original' | 'cleaned' | 'translated'
 
-export function LayersPanel() {
+export function ViewControls() {
   const { t } = useTranslation()
   const page = useCurrentPage()
   const { epoch: sceneEpoch } = useScene()
@@ -79,9 +82,10 @@ export function LayersPanel() {
       enabled: hasBrush,
     },
   ]
+  const overlaysOn = overlays.filter((o) => o.enabled && o.checked).length
 
   return (
-    <div className='flex flex-col gap-3 px-2 pt-2'>
+    <div className='flex items-center gap-1'>
       <div
         className='grid grid-cols-3 gap-0.5 rounded-md border border-border bg-muted/60 p-0.5'
         role='radiogroup'
@@ -97,7 +101,7 @@ export function LayersPanel() {
             disabled={!v.enabled}
             onClick={() => setView(v.id)}
             className={cn(
-              'rounded-[5px] px-1 py-1 text-xs transition-colors',
+              'rounded-[5px] px-2 py-0.5 text-xs transition-colors',
               view === v.id
                 ? 'bg-background font-medium text-foreground shadow-sm'
                 : 'text-muted-foreground',
@@ -108,31 +112,45 @@ export function LayersPanel() {
           </button>
         ))}
       </div>
-
-      <div className='flex flex-col gap-1'>
-        {overlays.map((o) => (
-          <label
-            key={o.id}
-            data-testid={`overlay-${o.id}`}
-            className={cn(
-              'flex cursor-pointer items-center justify-between gap-2 rounded px-1 py-1',
-              !o.enabled && 'cursor-default opacity-40',
-            )}
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant='ghost'
+            size='xs'
+            data-testid='view-overlays'
+            data-active={overlaysOn > 0}
+            className='text-muted-foreground data-[active=true]:bg-primary/10 data-[active=true]:text-primary'
+            title={t('layers.overlays', 'Show on the page')}
+            aria-label={t('layers.overlays', 'Show on the page')}
           >
-            <span
-              className={cn('text-xs', o.checked ? 'text-foreground' : 'text-muted-foreground')}
+            <EyeIcon className='size-4' />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align='end' className='w-52 p-1.5' data-testid='view-overlays-popover'>
+          {overlays.map((o) => (
+            <label
+              key={o.id}
+              data-testid={`overlay-${o.id}`}
+              className={cn(
+                'flex cursor-pointer items-center justify-between gap-2 rounded px-1.5 py-1',
+                !o.enabled && 'cursor-default opacity-40',
+              )}
             >
-              {o.label}
-            </span>
-            <Switch
-              checked={o.checked}
-              disabled={!o.enabled}
-              onCheckedChange={o.setChecked}
-              className='scale-90'
-            />
-          </label>
-        ))}
-      </div>
+              <span
+                className={cn('text-xs', o.checked ? 'text-foreground' : 'text-muted-foreground')}
+              >
+                {o.label}
+              </span>
+              <Switch
+                checked={o.checked}
+                disabled={!o.enabled}
+                onCheckedChange={o.setChecked}
+                className='scale-90'
+              />
+            </label>
+          ))}
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }

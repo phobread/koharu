@@ -20,6 +20,7 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 
 import { Navigator } from '@/components/Navigator'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 import { renderWithQuery } from '../helpers'
@@ -80,6 +81,26 @@ describe('Navigator', () => {
     await userEvent.click(await screen.findByTestId('navigator-process-selected'))
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]).toMatchObject({ pages: ['a', 'c'], onlyMissing: true, steps: ['ocr'] })
+  })
+
+  it('the Process N pages button shows the ticked steps and needs at least one', async () => {
+    server.use(http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithPages(['a', 'b']))))
+    usePreferencesStore.getState().setProcessSteps({ translate: false, render: false })
+    useSelectionStore.getState().setPage('a')
+    useSelectionStore.getState().setSelectedPageIds(new Set(['a', 'b']))
+    renderWithQuery(<Navigator />)
+    expect(await screen.findByTestId('navigator-process-steps')).toHaveTextContent(
+      'processing.detect · processing.ocr · mask.inpaint',
+    )
+    usePreferencesStore.getState().setProcessSteps({ detect: false, ocr: false, inpaint: false })
+    await waitFor(() => expect(screen.getByTestId('navigator-process-selected')).toBeDisabled())
+    usePreferencesStore.getState().setProcessSteps({
+      detect: true,
+      ocr: true,
+      translate: true,
+      inpaint: true,
+      render: true,
+    })
   })
 
   it('exposes total page count via data attribute', async () => {

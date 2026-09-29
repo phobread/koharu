@@ -6,6 +6,14 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { getPlatform } from '@/lib/shortcutUtils'
 import { serverConfigStorage } from '@/lib/stores/serverConfigStorage'
 
+export type ProcessSteps = {
+  detect: boolean
+  ocr: boolean
+  translate: boolean
+  inpaint: boolean
+  render: boolean
+}
+
 type PreferencesState = {
   brushConfig: {
     size: number
@@ -15,6 +23,9 @@ type PreferencesState = {
   /** Repair-brush strokes use LaMa instead of the pipeline's inpainter. */
   repairWithLama: boolean
   setRepairWithLama: (enabled: boolean) => void
+  /** Style panel: the "More" section (direction, border, gradient, padding) is open. */
+  styleMoreOpen: boolean
+  setStyleMoreOpen: (open: boolean) => void
   defaultFont?: string
   setDefaultFont: (font?: string) => void
   /** Global default text size (px). Caps render auto-fit; undefined = auto. */
@@ -48,14 +59,9 @@ type PreferencesState = {
   }
   setShortcuts: (shortcuts: Partial<PreferencesState['shortcuts']>) => void
   resetShortcuts: () => void
-  customPipeline: {
-    detect: boolean
-    ocr: boolean
-    translator: boolean
-    inpainter: boolean
-    renderer: boolean
-  }
-  setCustomPipeline: (pipeline: Partial<PreferencesState['customPipeline']>) => void
+  /** Steps the Process actions run (each only where it's still missing). */
+  processSteps: ProcessSteps
+  setProcessSteps: (steps: Partial<ProcessSteps>) => void
   resetPreferences: () => void
 }
 
@@ -67,6 +73,7 @@ const initialPreferences = {
     color: '#ffffff',
   },
   repairWithLama: false,
+  styleMoreOpen: false,
   boxPadding: 0,
   favoriteFonts: [],
   shortcuts: {
@@ -85,12 +92,12 @@ const initialPreferences = {
   codexImagePrompt:
     'Translate all visible text to natural English, remove the original lettering, and redraw the page as a clean manga image while preserving the artwork, panel layout, speech bubbles, tone, and composition.',
   codexImageModel: 'gpt-5.5',
-  customPipeline: {
+  processSteps: {
     detect: true,
     ocr: true,
-    translator: true,
-    inpainter: true,
-    renderer: true,
+    translate: true,
+    inpaint: true,
+    render: true,
   },
 }
 
@@ -106,6 +113,7 @@ export const usePreferencesStore = create<PreferencesState>()(
           },
         })),
       setRepairWithLama: (enabled) => set({ repairWithLama: enabled }),
+      setStyleMoreOpen: (open) => set({ styleMoreOpen: open }),
       setDefaultFont: (font) => set({ defaultFont: font }),
       setDefaultFontSize: (size) =>
         set({
@@ -139,11 +147,11 @@ export const usePreferencesStore = create<PreferencesState>()(
             ...initialPreferences.shortcuts,
           },
         })),
-      setCustomPipeline: (pipeline) =>
+      setProcessSteps: (steps) =>
         set((state) => ({
-          customPipeline: {
-            ...state.customPipeline,
-            ...pipeline,
+          processSteps: {
+            ...state.processSteps,
+            ...steps,
           },
         })),
       resetPreferences: () => set({ ...initialPreferences }),
@@ -151,7 +159,7 @@ export const usePreferencesStore = create<PreferencesState>()(
     {
       name: 'koharu-config',
       storage: createJSONStorage(() => serverConfigStorage),
-      version: 9,
+      version: 10,
       migrate: (persisted: any, version: number) => {
         if (version < 2 && persisted) {
           delete persisted.localLlm
@@ -183,8 +191,10 @@ export const usePreferencesStore = create<PreferencesState>()(
           persisted.codexImagePrompt ??= initialPreferences.codexImagePrompt
           persisted.codexImageModel ??= initialPreferences.codexImageModel
         }
-        if (persisted && (version < 7 || persisted.customPipeline?.detect === undefined)) {
-          persisted.customPipeline = initialPreferences.customPipeline
+        if (version < 10 && persisted) {
+          // The Custom pipeline submenu became the Process step ticks.
+          delete persisted.customPipeline
+          persisted.processSteps ??= initialPreferences.processSteps
         }
         if (version < 8 && persisted) {
           persisted.boxPadding ??= initialPreferences.boxPadding
@@ -197,6 +207,7 @@ export const usePreferencesStore = create<PreferencesState>()(
       partialize: (state) => ({
         brushConfig: state.brushConfig,
         repairWithLama: state.repairWithLama,
+        styleMoreOpen: state.styleMoreOpen,
         defaultFont: state.defaultFont,
         defaultFontSize: state.defaultFontSize,
         boxPadding: state.boxPadding,
@@ -206,7 +217,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         codexImagePrompt: state.codexImagePrompt,
         codexImageModel: state.codexImageModel,
         shortcuts: state.shortcuts,
-        customPipeline: state.customPipeline,
+        processSteps: state.processSteps,
       }),
     },
   ),

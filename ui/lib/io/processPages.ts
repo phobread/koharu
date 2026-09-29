@@ -5,27 +5,33 @@ import type { PipelineConfig, StartPipelineResponse } from '@/lib/api/schemas'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { awaitPendingSceneEdits } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
-import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { type ProcessSteps, usePreferencesStore } from '@/lib/stores/preferencesStore'
 
-/** Engine ids of a full Process run, in order. */
-export function processSteps(p: PipelineConfig): string[] {
+const ALL_STEPS: ProcessSteps = {
+  detect: true,
+  ocr: true,
+  translate: true,
+  inpaint: true,
+  render: true,
+}
+
+/** Engine ids for the chosen steps (all by default), in pipeline order. */
+export function processSteps(p: PipelineConfig, chosen: ProcessSteps = ALL_STEPS): string[] {
   return [
-    p.detector,
-    p.segmenter,
-    p.bubble_segmenter,
-    p.font_detector,
-    p.ocr,
-    p.translator,
-    p.inpainter,
-    p.renderer,
+    ...(chosen.detect ? [p.detector, p.segmenter, p.bubble_segmenter, p.font_detector] : []),
+    chosen.ocr ? p.ocr : null,
+    chosen.translate ? p.translator : null,
+    chosen.inpaint ? p.inpainter : null,
+    chosen.render ? p.renderer : null,
   ].filter((s): s is string => !!s)
 }
 
 /**
- * Start a Process run over `pages` (all pages when omitted). With
- * `onlyMissing` each step runs only where its output is missing, so finished
- * pages and hand-corrected boxes are kept; without it every step is redone.
- * Returns `undefined` when no pipeline is configured.
+ * Start a Process run of the ticked steps over `pages` (all pages when
+ * omitted). With `onlyMissing` each step runs only where its output is
+ * missing, so finished pages and hand-corrected boxes are kept; without it
+ * the ticked steps are redone. Returns `undefined` when no pipeline is
+ * configured or no step is ticked.
  */
 export async function processPages(opts: {
   pages?: string[]
@@ -36,8 +42,10 @@ export async function processPages(opts: {
   if (!cfg.pipeline) return undefined
   const editor = useEditorUiStore.getState()
   const prefs = usePreferencesStore.getState()
+  const steps = processSteps(cfg.pipeline, prefs.processSteps)
+  if (steps.length === 0) return undefined
   return startPipeline({
-    steps: processSteps(cfg.pipeline),
+    steps,
     pages: opts.pages,
     onlyMissing: opts.onlyMissing,
     targetLanguage: editor.selectedLanguage,

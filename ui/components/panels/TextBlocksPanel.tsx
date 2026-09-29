@@ -278,14 +278,18 @@ function BlockCard({
           <div className='flex min-w-0 flex-1 items-center gap-1'>
             <span
               className={`shrink-0 rounded-sm px-1 py-0.5 text-[9px] font-medium uppercase ${
-                hasOcr ? 'bg-rose-400/70 text-white' : 'bg-muted text-muted-foreground/50'
+                hasOcr
+                  ? 'bg-foreground/10 text-foreground/70'
+                  : 'border border-dashed border-muted-foreground/30 text-muted-foreground/50'
               }`}
             >
               {t('textBlocks.ocrBadge')}
             </span>
             <span
               className={`shrink-0 rounded-sm px-1 py-0.5 text-[9px] font-medium uppercase ${
-                hasTranslation ? 'bg-rose-400/70 text-white' : 'bg-muted text-muted-foreground/50'
+                hasTranslation
+                  ? 'bg-foreground/10 text-foreground/70'
+                  : 'border border-dashed border-muted-foreground/30 text-muted-foreground/50'
               }`}
             >
               {t('textBlocks.translationBadge')}

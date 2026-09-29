@@ -498,7 +498,9 @@ export function Workspace() {
                             in the Translated view too. */}
                         {showTextBlocksOverlay && (
                           <TextBlockLayer
-                            showSprites={!showRenderedImage}
+                            // Sprites preview the translation on the cleaned page; over
+                            // the original they would hide the lettering being proofread.
+                            showSprites={showInpaintedImage && !showRenderedImage}
                             scale={scaleRatio}
                             style={{ zIndex: 50 }}
                           />

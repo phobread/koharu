@@ -10,6 +10,7 @@ import {
   LoaderIcon,
   PaletteIcon,
   KeyIcon,
+  LanguagesIcon,
   HardDriveIcon,
   InfoIcon,
   CpuIcon,
@@ -33,6 +34,7 @@ import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { TranslationSettings } from '@/components/TranslationSettings'
 import {
   Accordion,
   AccordionItem,
@@ -179,6 +181,7 @@ const GITHUB_REPO = 'mayocream/koharu'
 const TABS = [
   { id: 'appearance', icon: PaletteIcon, labelKey: 'settings.appearance' },
   { id: 'rendering', icon: TypeIcon, labelKey: 'settings.textDefaults' },
+  { id: 'translation', icon: LanguagesIcon, labelKey: 'settings.translation' },
   { id: 'engines', icon: CpuIcon, labelKey: 'settings.engines' },
   { id: 'providers', icon: KeyIcon, labelKey: 'settings.apiKeys' },
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
@@ -416,6 +419,7 @@ export function SettingsDialog({
             <div className='p-6'>
               {tab === 'appearance' && <AppearancePane />}
               {tab === 'rendering' && <TextDefaultsPane />}
+              {tab === 'translation' && <TranslationSettings />}
               {tab === 'engines' && engineCatalog && appConfig && (
                 <EnginesPane
                   catalog={engineCatalog}

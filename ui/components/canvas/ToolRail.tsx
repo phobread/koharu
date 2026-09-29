@@ -31,10 +31,10 @@ const MODES: ModeDefinition[] = [
     testId: 'tool-block',
   },
   {
-    labelKey: 'toolRail.brush',
-    value: 'brush',
-    icon: Brush,
-    testId: 'tool-brush',
+    labelKey: 'toolRail.repairBrush',
+    value: 'repairBrush',
+    icon: Bandage,
+    testId: 'tool-repairBrush',
   },
   {
     labelKey: 'toolRail.eraser',
@@ -42,11 +42,16 @@ const MODES: ModeDefinition[] = [
     icon: Eraser,
     testId: 'tool-eraser',
   },
+]
+
+// Rarely used: painting over the rendered page. Kept, but out of the way at
+// the bottom of the rail (its shortcut still works).
+const BOTTOM_MODES: ModeDefinition[] = [
   {
-    labelKey: 'toolRail.repairBrush',
-    value: 'repairBrush',
-    icon: Bandage,
-    testId: 'tool-repairBrush',
+    labelKey: 'toolRail.brush',
+    value: 'brush',
+    icon: Brush,
+    testId: 'tool-brush',
   },
 ]
 
@@ -87,6 +92,33 @@ export function ToolRail() {
 
       <div className='flex flex-1 flex-col items-center gap-1 py-2'>
         {MODES.map((item) => {
+          const label = t(item.labelKey)
+
+          return (
+            <Tooltip key={item.value}>
+              <TooltipTrigger asChild>
+                <Button
+                  variant='ghost'
+                  size='icon-sm'
+                  data-testid={item.testId}
+                  data-active={item.value === mode}
+                  onClick={() => setMode(item.value)}
+                  className='border border-transparent text-muted-foreground data-[active=true]:border-primary data-[active=true]:bg-accent data-[active=true]:text-primary'
+                  aria-label={label}
+                >
+                  <item.icon className='h-4 w-4' />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side='right' sideOffset={8}>
+                {shortcuts[item.value as keyof typeof shortcuts]
+                  ? `${label} (${shortcuts[item.value as keyof typeof shortcuts].toUpperCase()})`
+                  : label}
+              </TooltipContent>
+            </Tooltip>
+          )
+        })}
+        <div className='mt-auto h-px w-6 bg-border' />
+        {BOTTOM_MODES.map((item) => {
           const label = t(item.labelKey)
 
           return (

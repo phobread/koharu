@@ -68,6 +68,11 @@ type EditorUiState = {
   showNotice: (message: string) => void
   clearError: () => void
 
+  // settings dialog: the open tab, or null when closed (not persisted)
+  settingsTab: string | null
+  openSettings: (tab: string) => void
+  closeSettings: () => void
+
   // page navigator panel
   showNavigator: boolean
   setShowNavigator: (show: boolean) => void
@@ -92,6 +97,7 @@ const initialState = {
   selectedLanguage: undefined as string | undefined,
   error: undefined as { id: number; message: string; notice?: boolean } | undefined,
   showNavigator: true,
+  settingsTab: null as string | null,
   readingOrder: 'rtl' as const,
 }
 
@@ -156,6 +162,9 @@ export const useEditorUiStore = create<EditorUiState>()(
         clearDismissTimer()
         set({ error: undefined })
       },
+
+      openSettings: (tab) => set({ settingsTab: tab }),
+      closeSettings: () => set({ settingsTab: null }),
 
       setShowNavigator: (show) => set({ showNavigator: show }),
 

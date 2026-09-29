@@ -6,6 +6,7 @@ import {
   AlignRightIcon,
   BlendIcon,
   BoldIcon,
+  ChevronRightIcon,
   ItalicIcon,
   MinusIcon,
   MoveDownIcon,
@@ -176,8 +177,8 @@ export function RenderControlsPanel() {
   const appDefaultFont = usePreferencesStore((s) => s.defaultFont)
   const appDefaultFontSize = usePreferencesStore((s) => s.defaultFontSize)
   const setAppDefaultFontSize = usePreferencesStore((s) => s.setDefaultFontSize)
-  const boxPadding = usePreferencesStore((s) => s.boxPadding)
-  const setBoxPadding = usePreferencesStore((s) => s.setBoxPadding)
+  const moreOpen = usePreferencesStore((s) => s.styleMoreOpen)
+  const setMoreOpen = usePreferencesStore((s) => s.setStyleMoreOpen)
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
@@ -461,13 +462,6 @@ export function RenderControlsPanel() {
       return
     }
     setAppDefaultFontSize(size)
-    if (page) queueAutoRender(page.id)
-  }
-
-  // Box padding is a global render default (insets text from each box edge to
-  // stop glyphs/strokes clipping). Re-render so the change is visible at once.
-  const updateBoxPadding = (px: number) => {
-    setBoxPadding(px)
     if (page) queueAutoRender(page.id)
   }
 
@@ -847,324 +841,297 @@ export function RenderControlsPanel() {
         </div>
       </div>
 
-      {/* Writing direction */}
-      <div className='flex flex-col gap-0.5'>
-        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-          {t('render.writingDirectionLabel')}
-        </span>
-        <div className='grid grid-cols-3 gap-1'>
-          {(
-            [
-              {
-                value: 'auto',
-                label: t('render.writingDirectionAuto'),
-                Icon: RotateCcwIcon,
-              },
-              {
-                value: 'horizontal',
-                label: t('render.writingDirectionHorizontal'),
-                Icon: MoveRightIcon,
-              },
-              {
-                value: 'vertical',
-                label: t('render.writingDirectionVertical'),
-                Icon: MoveDownIcon,
-              },
-            ] as const
-          ).map(({ value, label, Icon }) => {
-            const active = currentWritingDirection === value
-            return (
-              <Tooltip key={value}>
-                <TooltipTrigger asChild>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    aria-label={label}
-                    aria-pressed={active}
-                    data-testid={`render-writing-${value}`}
-                    disabled={!hasNodes}
-                    className={cn(
-                      'h-7 min-w-0 gap-1 px-2 text-[11px]',
-                      active &&
-                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                    )}
-                    onClick={() => applyWritingDirection(value)}
-                  >
-                    <Icon className='size-3 shrink-0' />
-                    <span className='truncate'>{label}</span>
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side='bottom' sideOffset={4}>
-                  {label}
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
-        </div>
-      </div>
+      {/* Less-used styling folds away; the choice sticks between sessions. */}
+      <button
+        type='button'
+        data-testid='style-more-toggle'
+        aria-expanded={moreOpen}
+        onClick={() => setMoreOpen(!moreOpen)}
+        className='flex items-center gap-1 pt-1 text-[10px] font-medium text-muted-foreground uppercase hover:text-foreground'
+      >
+        <ChevronRightIcon className={cn('size-3 transition-transform', moreOpen && 'rotate-90')} />
+        {t('render.more', 'More: direction, border, gradient')}
+      </button>
 
-      {/* Border / Stroke */}
-      <div className='flex flex-col gap-0.5'>
-        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-          {t('render.effectBorder')}
-        </span>
-        <div className='flex min-w-0 items-center gap-1'>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant='outline'
-                size='icon-sm'
-                data-testid='render-stroke-enable'
-                className={cn(
-                  'size-7 shrink-0',
-                  currentStroke.enabled &&
-                    'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                )}
-                onClick={() =>
-                  applyStrokeSetting({ ...currentStroke, enabled: !currentStroke.enabled })
-                }
-              >
-                <SquareIcon className='size-3.5' />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side='bottom' sideOffset={4}>
-              {t('render.effectBorder')}
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div>
-                <ColorPicker
-                  value={currentStrokeColorHex}
-                  disabled={!hasNodes}
-                  triggerTestId='render-stroke-color-trigger'
-                  pickerTestId='render-stroke-color-picker'
-                  swatchTestId='render-stroke-color-swatch'
-                  inputTestId='render-stroke-color-input'
-                  pickButtonTestId='render-stroke-color-pick'
-                  pickButtonLabel={t('render.eyedropper')}
-                  onChange={(hex) => {
-                    applyStrokeSetting({
-                      ...currentStroke,
-                      color: hexToColor(hex, currentStroke.color?.[3] ?? 255),
-                    })
-                  }}
-                  className='size-7'
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side='bottom' sideOffset={4}>
-              {t('render.strokeColorLabel')}
-            </TooltipContent>
-          </Tooltip>
-
-          <div className='flex min-w-0 flex-1 items-center rounded-md border border-input bg-background shadow-xs'>
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon-sm'
-              className='size-7 shrink-0 rounded-r-none border-r'
-              onClick={() => updateStrokeWidth(currentStrokeWidth - STROKE_WIDTH_STEP)}
-            >
-              <MinusIcon className='size-3' />
-            </Button>
-            <Input
-              type='number'
-              step={String(STROKE_WIDTH_STEP)}
-              min={String(MIN_STROKE_WIDTH)}
-              max={String(MAX_STROKE_WIDTH)}
-              inputMode='decimal'
-              className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
-              data-testid='render-stroke-width'
-              value={
-                Number.isFinite(currentStrokeWidth) ? currentStrokeWidth : DEFAULT_STROKE_WIDTH
-              }
-              onChange={(event) => {
-                const parsed = Number.parseFloat(event.target.value)
-                if (!Number.isFinite(parsed)) return
-                updateStrokeWidth(parsed)
-              }}
-            />
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon-sm'
-              className='size-7 shrink-0 rounded-l-none border-l'
-              onClick={() => updateStrokeWidth(currentStrokeWidth + STROKE_WIDTH_STEP)}
-            >
-              <PlusIcon className='size-3' />
-            </Button>
+      {moreOpen && (
+        <>
+          {/* Writing direction */}
+          <div className='flex flex-col gap-0.5'>
+            <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+              {t('render.writingDirectionLabel')}
+            </span>
+            <div className='grid grid-cols-3 gap-1'>
+              {(
+                [
+                  {
+                    value: 'auto',
+                    label: t('render.writingDirectionAuto'),
+                    Icon: RotateCcwIcon,
+                  },
+                  {
+                    value: 'horizontal',
+                    label: t('render.writingDirectionHorizontal'),
+                    Icon: MoveRightIcon,
+                  },
+                  {
+                    value: 'vertical',
+                    label: t('render.writingDirectionVertical'),
+                    Icon: MoveDownIcon,
+                  },
+                ] as const
+              ).map(({ value, label, Icon }) => {
+                const active = currentWritingDirection === value
+                return (
+                  <Tooltip key={value}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        aria-label={label}
+                        aria-pressed={active}
+                        data-testid={`render-writing-${value}`}
+                        disabled={!hasNodes}
+                        className={cn(
+                          'h-7 min-w-0 gap-1 px-2 text-[11px]',
+                          active &&
+                            'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                        )}
+                        onClick={() => applyWritingDirection(value)}
+                      >
+                        <Icon className='size-3 shrink-0' />
+                        <span className='truncate'>{label}</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side='bottom' sideOffset={4}>
+                      {label}
+                    </TooltipContent>
+                  </Tooltip>
+                )
+              })}
+            </div>
           </div>
-          <ResetToAutoButton
-            label={t('render.resetToAuto')}
-            disabled={!canResetStroke}
-            onClick={resetStrokeToAuto}
-            testId='render-stroke-reset'
-            className='size-7'
-          />
-        </div>
-      </div>
 
-      {/* Gradient fill — the text fades from the font colour into a second
-          colour, left→right or top→bottom. The outline keeps its own colour. */}
-      <div className='flex flex-col gap-0.5'>
-        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-          {t('render.gradientLabel')}
-        </span>
-        <div className='flex min-w-0 items-center gap-1'>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant='outline'
-                size='icon-sm'
-                aria-label={t('render.gradientLabel')}
-                data-testid='render-gradient-enable'
-                disabled={!hasNodes}
-                className={cn(
-                  'size-7 shrink-0',
-                  currentGradient &&
-                    'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                )}
-                onClick={() => {
-                  if (currentGradient) {
-                    applyGradient(null)
-                    return
-                  }
-                  commitCurrentFontColorIfImplicit()
-                  applyGradient({ to: currentColor, direction: 'horizontal' })
-                }}
-              >
-                <BlendIcon className='size-3.5' />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side='bottom' sideOffset={4}>
-              {t('render.gradientLabel')}
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div>
-                <ColorPicker
-                  value={currentGradientToHex}
-                  disabled={!hasNodes || !currentGradient}
-                  triggerTestId='render-gradient-color-trigger'
-                  pickerTestId='render-gradient-color-picker'
-                  swatchTestId='render-gradient-color-swatch'
-                  inputTestId='render-gradient-color-input'
-                  pickButtonTestId='render-gradient-color-pick'
-                  pickButtonLabel={t('render.eyedropper')}
-                  onChange={(hex) => {
-                    applyGradient({
-                      to: hexToColor(hex, (currentGradient?.to ?? currentColor)[3] ?? 255),
-                      direction: currentGradient?.direction ?? 'horizontal',
-                    })
-                  }}
-                  className='size-7'
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side='bottom' sideOffset={4}>
-              {t('render.gradientEndColorLabel')}
-            </TooltipContent>
-          </Tooltip>
-
-          <div className='flex flex-1 items-center gap-0.5'>
-            {(
-              [
-                {
-                  value: 'horizontal',
-                  label: t('render.gradientHorizontal'),
-                  Icon: MoveRightIcon,
-                },
-                { value: 'vertical', label: t('render.gradientVertical'), Icon: MoveDownIcon },
-              ] as {
-                value: GradientDirection
-                label: string
-                Icon: ComponentType<{ className?: string }>
-              }[]
-            ).map(({ value, label, Icon }) => (
-              <Tooltip key={value}>
+          {/* Border / Stroke */}
+          <div className='flex flex-col gap-0.5'>
+            <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+              {t('render.effectBorder')}
+            </span>
+            <div className='flex min-w-0 items-center gap-1'>
+              <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant='outline'
                     size='icon-sm'
-                    aria-label={label}
-                    data-testid={`render-gradient-direction-${value}`}
-                    disabled={!hasNodes || !currentGradient}
+                    data-testid='render-stroke-enable'
                     className={cn(
                       'size-7 shrink-0',
-                      currentGradient?.direction === value &&
+                      currentStroke.enabled &&
                         'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
                     )}
-                    onClick={() => {
-                      if (!currentGradient) return
-                      applyGradient({ to: currentGradient.to, direction: value })
-                    }}
+                    onClick={() =>
+                      applyStrokeSetting({ ...currentStroke, enabled: !currentStroke.enabled })
+                    }
                   >
-                    <Icon className='size-3.5' />
+                    <SquareIcon className='size-3.5' />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side='bottom' sideOffset={4}>
-                  {label}
+                  {t('render.effectBorder')}
                 </TooltipContent>
               </Tooltip>
-            ))}
-          </div>
-          <ResetToAutoButton
-            label={t('render.resetToAuto')}
-            disabled={!canResetGradient}
-            onClick={resetGradientToAuto}
-            testId='render-gradient-reset'
-            className='size-7'
-          />
-        </div>
-      </div>
 
-      {/* Box padding (global render default) — insets text from each box edge
-          so glyphs/strokes don't clip at the border. */}
-      <div className='flex flex-col gap-0.5'>
-        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-          {t('render.boxPadding', { defaultValue: 'Box padding' })}
-        </span>
-        <div className='flex min-w-0 items-center rounded-md border border-input bg-background shadow-xs'>
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            className='size-7 shrink-0 rounded-r-none border-r'
-            onClick={() => updateBoxPadding(Math.max(0, boxPadding - 1))}
-          >
-            <MinusIcon className='size-3' />
-          </Button>
-          <Input
-            type='number'
-            step='1'
-            min='0'
-            max='64'
-            inputMode='numeric'
-            className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
-            data-testid='render-box-padding'
-            value={Number.isFinite(boxPadding) ? boxPadding : 0}
-            onChange={(event) => {
-              const parsed = Number.parseInt(event.target.value, 10)
-              if (!Number.isFinite(parsed)) return
-              updateBoxPadding(Math.max(0, Math.min(64, parsed)))
-            }}
-          />
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            className='size-7 shrink-0 rounded-l-none border-l'
-            onClick={() => updateBoxPadding(Math.min(64, boxPadding + 1))}
-          >
-            <PlusIcon className='size-3' />
-          </Button>
-        </div>
-      </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div>
+                    <ColorPicker
+                      value={currentStrokeColorHex}
+                      disabled={!hasNodes}
+                      triggerTestId='render-stroke-color-trigger'
+                      pickerTestId='render-stroke-color-picker'
+                      swatchTestId='render-stroke-color-swatch'
+                      inputTestId='render-stroke-color-input'
+                      pickButtonTestId='render-stroke-color-pick'
+                      pickButtonLabel={t('render.eyedropper')}
+                      onChange={(hex) => {
+                        applyStrokeSetting({
+                          ...currentStroke,
+                          color: hexToColor(hex, currentStroke.color?.[3] ?? 255),
+                        })
+                      }}
+                      className='size-7'
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side='bottom' sideOffset={4}>
+                  {t('render.strokeColorLabel')}
+                </TooltipContent>
+              </Tooltip>
+
+              <div className='flex min-w-0 flex-1 items-center rounded-md border border-input bg-background shadow-xs'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon-sm'
+                  className='size-7 shrink-0 rounded-r-none border-r'
+                  onClick={() => updateStrokeWidth(currentStrokeWidth - STROKE_WIDTH_STEP)}
+                >
+                  <MinusIcon className='size-3' />
+                </Button>
+                <Input
+                  type='number'
+                  step={String(STROKE_WIDTH_STEP)}
+                  min={String(MIN_STROKE_WIDTH)}
+                  max={String(MAX_STROKE_WIDTH)}
+                  inputMode='decimal'
+                  className='h-7 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-1 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+                  data-testid='render-stroke-width'
+                  value={
+                    Number.isFinite(currentStrokeWidth) ? currentStrokeWidth : DEFAULT_STROKE_WIDTH
+                  }
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value)
+                    if (!Number.isFinite(parsed)) return
+                    updateStrokeWidth(parsed)
+                  }}
+                />
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon-sm'
+                  className='size-7 shrink-0 rounded-l-none border-l'
+                  onClick={() => updateStrokeWidth(currentStrokeWidth + STROKE_WIDTH_STEP)}
+                >
+                  <PlusIcon className='size-3' />
+                </Button>
+              </div>
+              <ResetToAutoButton
+                label={t('render.resetToAuto')}
+                disabled={!canResetStroke}
+                onClick={resetStrokeToAuto}
+                testId='render-stroke-reset'
+                className='size-7'
+              />
+            </div>
+          </div>
+
+          {/* Gradient fill — the text fades from the font colour into a second
+          colour, left→right or top→bottom. The outline keeps its own colour. */}
+          <div className='flex flex-col gap-0.5'>
+            <span className='text-[10px] font-medium text-muted-foreground uppercase'>
+              {t('render.gradientLabel')}
+            </span>
+            <div className='flex min-w-0 items-center gap-1'>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant='outline'
+                    size='icon-sm'
+                    aria-label={t('render.gradientLabel')}
+                    data-testid='render-gradient-enable'
+                    disabled={!hasNodes}
+                    className={cn(
+                      'size-7 shrink-0',
+                      currentGradient &&
+                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                    )}
+                    onClick={() => {
+                      if (currentGradient) {
+                        applyGradient(null)
+                        return
+                      }
+                      commitCurrentFontColorIfImplicit()
+                      applyGradient({ to: currentColor, direction: 'horizontal' })
+                    }}
+                  >
+                    <BlendIcon className='size-3.5' />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='bottom' sideOffset={4}>
+                  {t('render.gradientLabel')}
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div>
+                    <ColorPicker
+                      value={currentGradientToHex}
+                      disabled={!hasNodes || !currentGradient}
+                      triggerTestId='render-gradient-color-trigger'
+                      pickerTestId='render-gradient-color-picker'
+                      swatchTestId='render-gradient-color-swatch'
+                      inputTestId='render-gradient-color-input'
+                      pickButtonTestId='render-gradient-color-pick'
+                      pickButtonLabel={t('render.eyedropper')}
+                      onChange={(hex) => {
+                        applyGradient({
+                          to: hexToColor(hex, (currentGradient?.to ?? currentColor)[3] ?? 255),
+                          direction: currentGradient?.direction ?? 'horizontal',
+                        })
+                      }}
+                      className='size-7'
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side='bottom' sideOffset={4}>
+                  {t('render.gradientEndColorLabel')}
+                </TooltipContent>
+              </Tooltip>
+
+              <div className='flex flex-1 items-center gap-0.5'>
+                {(
+                  [
+                    {
+                      value: 'horizontal',
+                      label: t('render.gradientHorizontal'),
+                      Icon: MoveRightIcon,
+                    },
+                    { value: 'vertical', label: t('render.gradientVertical'), Icon: MoveDownIcon },
+                  ] as {
+                    value: GradientDirection
+                    label: string
+                    Icon: ComponentType<{ className?: string }>
+                  }[]
+                ).map(({ value, label, Icon }) => (
+                  <Tooltip key={value}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant='outline'
+                        size='icon-sm'
+                        aria-label={label}
+                        data-testid={`render-gradient-direction-${value}`}
+                        disabled={!hasNodes || !currentGradient}
+                        className={cn(
+                          'size-7 shrink-0',
+                          currentGradient?.direction === value &&
+                            'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                        )}
+                        onClick={() => {
+                          if (!currentGradient) return
+                          applyGradient({ to: currentGradient.to, direction: value })
+                        }}
+                      >
+                        <Icon className='size-3.5' />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side='bottom' sideOffset={4}>
+                      {label}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+              <ResetToAutoButton
+                label={t('render.resetToAuto')}
+                disabled={!canResetGradient}
+                onClick={resetGradientToAuto}
+                testId='render-gradient-reset'
+                className='size-7'
+              />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

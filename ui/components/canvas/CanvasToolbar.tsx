@@ -8,43 +8,18 @@ import {
   TypeIcon,
   Wand2Icon,
 } from 'lucide-react'
-import { motion } from 'motion/react'
-import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ViewControls } from '@/components/canvas/ViewControls'
 import { Button } from '@/components/ui/button'
-import { LlmModelSelect, type LlmModelOption } from '@/components/ui/llm-model-select'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
-import { Textarea } from '@/components/ui/textarea'
-import {
-  deleteCurrentLlm,
-  getConfig,
-  putCurrentLlm,
-  startPipeline,
-  useGetCatalog,
-  useGetCurrentLlm,
-} from '@/lib/api/default/default'
+import { getConfig, startPipeline, useGetCurrentLlm } from '@/lib/api/default/default'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { awaitPendingSceneEdits } from '@/lib/io/scene'
-import {
-  flattenCatalogModels,
-  llmTargetKey,
-  sameLlmTarget,
-  withSelectedTarget,
-} from '@/lib/llmTargets'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
-import { flushServerConfigStorage } from '@/lib/stores/serverConfigStorage'
 
 // ---------------------------------------------------------------------------
 // Component
@@ -55,7 +30,7 @@ export function CanvasToolbar() {
     <div className='flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 text-xs text-foreground'>
       <WorkflowButtons />
       <div className='flex-1' />
-      <LlmStatusPopover />
+      <ViewControls />
     </div>
   )
 }
@@ -78,6 +53,7 @@ function WorkflowButtons() {
   const { t } = useTranslation()
   const { data: llmState } = useGetCurrentLlm()
   const llmReady = llmState?.status === 'ready'
+  const llmLoading = llmState?.status === 'loading'
   const pageId = useSelectionStore((s) => s.pageId)
   const hasPage = pageId !== null
   const isProcessing = useIsProcessing()
@@ -147,6 +123,7 @@ function WorkflowButtons() {
         size='xs'
         onClick={() => void runStep(detectChain)}
         data-testid='toolbar-detect'
+        title={t('processing.redoDetect', 'Detect text on this page again (replaces its boxes)')}
         disabled={!hasPage || isProcessing}
       >
         {isDetecting ? (
@@ -162,6 +139,7 @@ function WorkflowButtons() {
         size='xs'
         onClick={() => void runStep(ocrChain)}
         data-testid='toolbar-ocr'
+        title={t('processing.redoOcr', 'Read every box on this page again (replaces its OCR text)')}
         disabled={!hasPage || isProcessing}
       >
         {isOcr ? (
@@ -175,16 +153,36 @@ function WorkflowButtons() {
       <Button
         variant='ghost'
         size='xs'
-        onClick={() => void runStep(translateChain)}
-        disabled={!hasPage || !llmReady || isProcessing}
+        onClick={() =>
+          // No model loaded: take the user to where it's chosen and loaded.
+          llmReady
+            ? void runStep(translateChain)
+            : useEditorUiStore.getState().openSettings('translation')
+        }
+        disabled={!hasPage || isProcessing}
         data-testid='toolbar-translate'
+        data-llm-ready={llmReady ? 'true' : 'false'}
+        title={
+          llmReady
+            ? t('llm.redoTranslate', 'Translate every box on this page again')
+            : llmLoading
+              ? t('llm.translateLoading', 'The translation model is still loading')
+              : t('llm.translateNoModel', 'No translation model loaded: click to choose one')
+        }
+        className='relative'
       >
-        {isTranslating ? (
+        {isTranslating || llmLoading ? (
           <LoaderCircleIcon className='size-4 animate-spin' />
         ) : (
           <LanguagesIcon className='size-4' />
         )}
-        {t('llm.generate')}
+        {t('llm.translate', 'Translate')}
+        {!llmReady && !llmLoading && (
+          <span
+            data-testid='toolbar-translate-no-model'
+            className='absolute top-0.5 right-0.5 size-1.5 rounded-full bg-amber-400'
+          />
+        )}
       </Button>
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
@@ -192,6 +190,7 @@ function WorkflowButtons() {
         size='xs'
         onClick={() => void runStep(inpaintChain)}
         data-testid='toolbar-inpaint'
+        title={t('processing.redoInpaint', 'Clean this page again')}
         disabled={!hasPage || isProcessing}
       >
         {isInpainting ? (
@@ -207,6 +206,7 @@ function WorkflowButtons() {
         size='xs'
         onClick={() => void runStep(renderChain)}
         data-testid='toolbar-render'
+        title={t('processing.redoRender', 'Render this page again')}
         disabled={!hasPage || isProcessing}
       >
         {isRendering ? (
@@ -217,181 +217,5 @@ function WorkflowButtons() {
         {t('llm.render')}
       </Button>
     </div>
-  )
-}
-
-function LlmStatusPopover() {
-  const { t } = useTranslation()
-  const { data: llmCatalog } = useGetCatalog()
-  const { data: llmState } = useGetCurrentLlm()
-  const llmReady = llmState?.status === 'ready'
-  const llmLoading = llmState?.status === 'loading'
-  const [popoverOpen, setPopoverOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const llmModels: LlmModelOption[] = useMemo(() => flattenCatalogModels(llmCatalog), [llmCatalog])
-  const selectedTarget = useEditorUiStore((s) => s.selectedTarget)
-  const customSystemPrompt = usePreferencesStore((s) => s.customSystemPrompt)
-  const setCustomSystemPrompt = usePreferencesStore((s) => s.setCustomSystemPrompt)
-  const llmSelectedLanguage = useEditorUiStore((s) => s.selectedLanguage)
-
-  // Keep the saved selection visible even while provider discovery is slow
-  // or failing — otherwise the picker shows a placeholder and the selection
-  // looks reset when it isn't.
-  const displayModels = useMemo(
-    () => withSelectedTarget(llmModels, selectedTarget, llmSelectedLanguage),
-    [llmModels, selectedTarget, llmSelectedLanguage],
-  )
-  const selectedModel = useMemo(
-    () => displayModels.find(({ model }) => sameLlmTarget(model.target, selectedTarget)),
-    [displayModels, selectedTarget],
-  )
-  const selectedTargetKey = selectedTarget ? llmTargetKey(selectedTarget) : undefined
-  const selectedModelLanguages = selectedModel?.model.languages ?? []
-  const selectedIsLoaded = llmReady && sameLlmTarget(llmState?.target, selectedTarget)
-
-  const handleSetSelectedModel = (key: string) => {
-    const next = displayModels.find(({ model }) => llmTargetKey(model.target) === key)
-    if (!next) return
-    const nextLanguages = next.model.languages
-    const nextLanguage =
-      llmSelectedLanguage && nextLanguages.includes(llmSelectedLanguage)
-        ? llmSelectedLanguage
-        : nextLanguages[0]
-    useEditorUiStore.setState({ selectedTarget: next.model.target, selectedLanguage: nextLanguage })
-    window.setTimeout(() => void flushServerConfigStorage(), 0)
-  }
-
-  const handleSetSelectedLanguage = (language: string) => {
-    if (!selectedModelLanguages.includes(language)) return
-    useEditorUiStore.setState({ selectedLanguage: language })
-    window.setTimeout(() => void flushServerConfigStorage(), 0)
-  }
-
-  const handleToggleLoadUnload = async () => {
-    const target = useEditorUiStore.getState().selectedTarget
-    if (!target) return
-    setBusy(true)
-    try {
-      if (selectedIsLoaded) {
-        await deleteCurrentLlm()
-      } else {
-        await putCurrentLlm({ target })
-      }
-    } catch (e) {
-      useEditorUiStore.getState().showError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const indicatorBusy = busy || llmLoading
-
-  return (
-    <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      <PopoverTrigger asChild>
-        <button
-          data-testid='llm-trigger'
-          data-llm-ready={llmReady ? 'true' : 'false'}
-          data-llm-loading={indicatorBusy ? 'true' : 'false'}
-          className={`flex h-6 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium shadow-sm transition hover:opacity-80 ${
-            llmReady
-              ? 'bg-rose-400 text-white ring-1 ring-rose-400/30'
-              : indicatorBusy
-                ? 'bg-amber-400 text-white ring-1 ring-amber-400/30'
-                : 'bg-muted text-muted-foreground ring-1 ring-border/50'
-          }`}
-        >
-          <motion.span
-            className={`size-1.5 rounded-full ${
-              llmReady ? 'bg-white' : indicatorBusy ? 'bg-white' : 'bg-muted-foreground/40'
-            }`}
-            animate={
-              llmReady
-                ? { opacity: [1, 0.5, 1] }
-                : indicatorBusy
-                  ? { opacity: [1, 0.4, 1] }
-                  : { opacity: 1 }
-            }
-            transition={
-              llmReady || indicatorBusy
-                ? { duration: indicatorBusy ? 1 : 2, repeat: Infinity, ease: 'easeInOut' }
-                : {}
-            }
-          />
-          LLM
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align='end' className='w-[280px] p-0' data-testid='llm-popover'>
-        <div className='flex flex-col gap-1.5 px-3 pt-3 pb-2.5'>
-          <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-            {t('llm.model')}
-          </span>
-          <div className='flex items-center gap-1.5'>
-            <LlmModelSelect
-              data-testid='llm-model-select'
-              value={selectedTargetKey}
-              options={displayModels}
-              getKey={({ model }) => llmTargetKey(model.target)}
-              placeholder={t('llm.selectPlaceholder')}
-              onChange={handleSetSelectedModel}
-              triggerClassName='min-w-0 flex-1'
-            />
-            <Button
-              data-testid='llm-load-toggle'
-              data-llm-ready={selectedIsLoaded ? 'true' : 'false'}
-              data-llm-loading={indicatorBusy ? 'true' : 'false'}
-              variant={selectedIsLoaded ? 'ghost' : 'default'}
-              size='sm'
-              onClick={() => void handleToggleLoadUnload()}
-              disabled={!selectedTarget || indicatorBusy}
-              className='h-6 shrink-0 gap-1 px-2 text-[11px]'
-            >
-              {indicatorBusy ? <LoaderCircleIcon className='size-3 animate-spin' /> : null}
-              {selectedIsLoaded ? t('llm.unload') : t('llm.load')}
-            </Button>
-          </div>
-        </div>
-        <div className='px-3'>
-          <Separator />
-        </div>
-        <div className='flex flex-col gap-1 px-3 pt-2.5 pb-3'>
-          <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-            {t('llm.translationSettings')}
-          </span>
-          <div className='flex flex-col gap-1.5'>
-            {selectedModelLanguages.length > 0 ? (
-              <Select
-                value={llmSelectedLanguage ?? selectedModelLanguages[0]}
-                onValueChange={handleSetSelectedLanguage}
-              >
-                <SelectTrigger data-testid='llm-language-select' className='w-full'>
-                  <SelectValue placeholder={t('llm.languagePlaceholder')} />
-                </SelectTrigger>
-                <SelectContent position='popper'>
-                  {selectedModelLanguages.map((language, index) => (
-                    <SelectItem
-                      key={language}
-                      value={language}
-                      data-testid={`llm-language-option-${index}`}
-                    >
-                      {t(`llm.languages.${language}`, { defaultValue: language })}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
-            <Textarea
-              data-testid='llm-system-prompt'
-              value={customSystemPrompt ?? ''}
-              onChange={(e) => setCustomSystemPrompt(e.target.value)}
-              onBlur={() => void flushServerConfigStorage()}
-              placeholder={t('llm.systemPromptPlaceholder')}
-              rows={5}
-              className='min-h-0 resize-y px-2 py-1.5 text-xs leading-snug md:text-xs'
-            />
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
   )
 }
