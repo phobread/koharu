@@ -35,17 +35,15 @@
 
 ## Inpainting
 
-- **Text hearts come back.** Flux2 redraws the ♡/♥ typed at the end of
-  Korean lines even when the mask covers them (926 pages 5, 13, 14, 15, 23:
-  about half the heart's pixels return). The repair brush can't remove them
-  either: a stroke shows Flux2 the original page, so it redraws the heart
-  (8 of 8 strokes on 4 hearts, 2026-09-28). Today's workaround is the plain
-  Brush in the bubble's colour, which only works on flat bubbles. Hearts drawn
-  as part of the artwork sit outside the text boxes and must stay. Ideas:
-  flat fill for bubbles whose only off-colour pixels are small decorations
-  away from the text (most BadEnd bubbles are black with pink hearts; also
-  faster), a repair stroke that hides the original from Flux2 under the
-  stroke, or regenerating a crop once when a masked symbol survives.
+- ~~**Text hearts come back.**~~ Done 2026-09-29. Flux2 sees the original
+  page and sometimes redraws the ♡/♥ typed at the end of Korean lines. Text on
+  plain black or white panels outside bubbles is now filled flat, so those
+  hearts no longer come back (1fb6c709), and the repair brush has a "Repair
+  with LaMa" switch that removes the rest with one stroke (6 of 6 left on 926;
+  Flux2 strokes redrew 7 of 12) (9b5f8a21). Possible later fix if the manual
+  stroke gets tedious: clean the text area with LaMa before Flux2 generates,
+  so Flux2 never sees the heart (Astra's second option; changes every crop,
+  needs its own A/B).
 - **Crop-downscale A/B (perf idea #6).** Generate Flux2 crops above ~0.3 MP at
   half resolution and upscale the fill. Planned as a final blind A/B, since it
   risks damaging screentone and fine lines.
