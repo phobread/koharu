@@ -1,10 +1,14 @@
-//! Remove only regenerable thumbnails, never saved project content or history.
-//! Also creates the folder an export's save dialog opens in.
+//! Free up space: regenerable thumbnails and, in closed projects, old images
+//! nothing refers to any more (see `koharu_app::cleanup`); never saved
+//! project content or open undo history. Also creates the folder an
+//! export's save dialog opens in.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use axum::{Json, extract::State, http::StatusCode};
+use camino::Utf8PathBuf;
+use koharu_app::cleanup::SkipReason;
 use serde::{Deserialize, Serialize};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -16,7 +20,108 @@ use crate::{
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default()
         .routes(routes!(clear_project_cache))
+        .routes(routes!(clean_up_storage))
         .routes(routes!(create_folder))
+}
+
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanUpStorageRequest {
+    /// `false`: only measure what would be freed.
+    pub apply: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanUpStorageResponse {
+    /// Space all projects take on disk, after the clean-up when applied.
+    pub projects_bytes: u64,
+    /// Old images no closed project refers to: removed, or removable.
+    pub unused_images: u64,
+    pub unused_image_bytes: u64,
+    /// Thumbnails (made again when shown): removed, or removable.
+    pub thumbnails: u64,
+    pub thumbnail_bytes: u64,
+    /// Files that could not be removed.
+    pub failed: u64,
+    /// Projects left alone, with the reason.
+    pub skipped: Vec<SkippedProject>,
+}
+
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedProject {
+    pub id: String,
+    /// `open` (open here or in another window), or why it can't be read.
+    pub reason: String,
+}
+
+/// "Free up space": measure (`apply: false`) or remove old images in closed
+/// projects and all thumbnails. Opening a project waits while this runs.
+#[utoipa::path(
+    post,
+    path = "/storage/cleanup",
+    request_body = CleanUpStorageRequest,
+    responses((status = 200, body = CleanUpStorageResponse))
+)]
+async fn clean_up_storage(
+    State(app): State<AppState>,
+    Json(req): Json<CleanUpStorageRequest>,
+) -> ApiResult<Json<CleanUpStorageResponse>> {
+    let root = app.runtime().root().to_path_buf();
+    let _projects = app.project_files.lock().await;
+    let open = app.current_session().map(|s| s.dir.clone());
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let projects = Utf8PathBuf::from_path_buf(root.join("projects"))
+            .map_err(|p| anyhow::anyhow!("non-UTF-8 data path {}", p.display()))?;
+        let cleaned = koharu_app::cleanup::clean_projects(&projects, open.as_deref(), req.apply)?;
+        let thumbs = clear_thumbnails(&root, req.apply)?;
+        let mut out = CleanUpStorageResponse {
+            thumbnails: thumbs.files_removed,
+            thumbnail_bytes: thumbs.bytes_freed,
+            failed: thumbs.files_skipped,
+            ..Default::default()
+        };
+        for project in cleaned {
+            out.unused_images += project.blobs;
+            out.unused_image_bytes += project.bytes;
+            out.failed += project.failed;
+            if let Some(reason) = project.skipped {
+                out.skipped.push(SkippedProject {
+                    id: project.id,
+                    reason: match reason {
+                        SkipReason::Open => "open".to_string(),
+                        SkipReason::Unreadable(why) => why,
+                    },
+                });
+            }
+        }
+        out.projects_bytes = folder_bytes(projects.as_std_path());
+        Ok(out)
+    })
+    .await
+    .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
+    .map_err(ApiError::internal)?;
+    Ok(Json(result))
+}
+
+/// Total size of the files under `dir`, not following links.
+fn folder_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| fs::symlink_metadata(e.path()).ok().map(|m| (e.path(), m)))
+        .filter(|(_, meta)| !is_link(meta))
+        .map(|(path, meta)| {
+            if meta.is_dir() {
+                folder_bytes(&path)
+            } else {
+                meta.len()
+            }
+        })
+        .sum()
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -73,7 +178,7 @@ async fn clear_project_cache(
 ) -> ApiResult<Json<ClearProjectCacheResponse>> {
     // Use the running app's root, not a pending restart's config.data.path.
     let root = app.runtime().root().to_path_buf();
-    let result = tokio::task::spawn_blocking(move || clear_thumbnails(&root))
+    let result = tokio::task::spawn_blocking(move || clear_thumbnails(&root, true))
         .await
         .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
         .map_err(ApiError::internal)?;
@@ -101,7 +206,8 @@ fn plain_directory(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-fn clear_thumbnails(root: &Path) -> anyhow::Result<ClearProjectCacheResponse> {
+/// Thumbnails of every project; `delete: false` only counts them.
+fn clear_thumbnails(root: &Path, delete: bool) -> anyhow::Result<ClearProjectCacheResponse> {
     let mut result = ClearProjectCacheResponse::default();
     let projects = root.join("projects");
     if !plain_directory(&projects)? {
@@ -137,6 +243,11 @@ fn clear_thumbnails(root: &Path) -> anyhow::Result<ClearProjectCacheResponse> {
             };
             if !meta.is_file() || is_link(&meta) {
                 result.files_skipped += 1;
+                continue;
+            }
+            if !delete {
+                result.files_removed += 1;
+                result.bytes_freed += meta.len();
                 continue;
             }
             match fs::remove_file(&path) {
@@ -206,14 +317,16 @@ mod tests {
         for path in &kept {
             fs::write(path, b"keep").unwrap();
         }
-        let result = clear_thumbnails(&root).unwrap();
+        assert_eq!(clear_thumbnails(&root, false).unwrap().files_removed, 1);
+        assert!(generated.exists());
+        let result = clear_thumbnails(&root, true).unwrap();
         assert_eq!(result.files_removed, 1);
         assert_eq!(result.bytes_freed, 9);
         assert_eq!(result.files_skipped, 0);
         for path in &kept {
             assert_eq!(fs::read(path).unwrap(), b"keep");
         }
-        assert_eq!(clear_thumbnails(&root).unwrap().files_removed, 0);
+        assert_eq!(clear_thumbnails(&root, true).unwrap().files_removed, 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -238,7 +351,7 @@ mod tests {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink(&external, &link).unwrap();
-        assert_eq!(clear_thumbnails(&root).unwrap().files_removed, 0);
+        assert_eq!(clear_thumbnails(&root, true).unwrap().files_removed, 0);
         assert_eq!(fs::read(&thumb).unwrap(), b"keep");
         #[cfg(windows)]
         fs::remove_dir(&link).unwrap();

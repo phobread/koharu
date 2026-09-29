@@ -24,6 +24,7 @@ import type {
   AppConfig,
   AppEvent,
   BootstrapStatus,
+  CleanUpStorageResponse,
   ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
@@ -1199,6 +1200,24 @@ export const getGetSceneJsonResponseMock = (
       updatedAt: faker.date.past().toISOString().slice(0, 19) + 'Z',
     },
   },
+  ...overrideResponse,
+})
+
+export const getCleanUpStorageResponseMock = (
+  overrideResponse: Partial<Extract<CleanUpStorageResponse, object>> = {},
+): CleanUpStorageResponse => ({
+  failed: faker.number.int({ min: 0 }),
+  projectsBytes: faker.number.int({ min: 0 }),
+  skipped: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => ({
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      reason: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    }),
+  ),
+  thumbnailBytes: faker.number.int({ min: 0 }),
+  thumbnails: faker.number.int({ min: 0 }),
+  unusedImageBytes: faker.number.int({ min: 0 }),
+  unusedImages: faker.number.int({ min: 0 }),
   ...overrideResponse,
 })
 

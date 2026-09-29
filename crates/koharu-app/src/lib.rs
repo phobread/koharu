@@ -10,6 +10,7 @@ pub mod autosave;
 pub mod blobs;
 pub mod bus;
 pub mod cancel;
+pub mod cleanup;
 pub mod config;
 pub mod custom_fonts;
 pub mod google_fonts;

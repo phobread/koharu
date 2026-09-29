@@ -282,6 +282,11 @@ fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
     Ok((scene, 0))
 }
 
+/// The scene in a `scene.bin`, in whichever format it was written.
+pub(crate) fn decode_scene(bytes: &[u8]) -> Result<Scene> {
+    Ok(decode_snapshot(bytes)?.scene)
+}
+
 /// Decode `scene.bin` in whichever format it was written.
 ///
 /// - `"KSCN"` + version header → decode with that version's layout.

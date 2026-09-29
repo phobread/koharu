@@ -252,6 +252,12 @@ expression: paths
         ],
     ),
     (
+        "/storage/cleanup",
+        [
+            "post",
+        ],
+    ),
+    (
         "/storage/folders",
         [
             "post",

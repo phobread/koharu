@@ -1083,6 +1083,34 @@
         }
       }
     },
+    "/storage/cleanup": {
+      "post": {
+        "summary": "\"Free up space\": measure (`apply: false`) or remove old images in closed\nprojects and all thumbnails. Opening a project waits while this runs.",
+        "operationId": "clean_up_storage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanUpStorageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanUpStorageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/storage/folders": {
       "post": {
         "summary": "Create the folder an export's save dialog opens in (the project's folder\nunder the export folder). The window may only write inside\nPictures/Koharu and folders the user picks in a dialog, so it cannot make\nthis folder under an export folder chosen in an earlier session. Only\ncreates folders: the files are still written where the user confirms.",
@@ -1412,6 +1440,71 @@
           },
           "state": {
             "$ref": "#/components/schemas/BootstrapState"
+          }
+        }
+      },
+      "CleanUpStorageRequest": {
+        "type": "object",
+        "required": ["apply"],
+        "properties": {
+          "apply": {
+            "type": "boolean",
+            "description": "`false`: only measure what would be freed."
+          }
+        }
+      },
+      "CleanUpStorageResponse": {
+        "type": "object",
+        "required": [
+          "projectsBytes",
+          "unusedImages",
+          "unusedImageBytes",
+          "thumbnails",
+          "thumbnailBytes",
+          "failed",
+          "skipped"
+        ],
+        "properties": {
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files that could not be removed.",
+            "minimum": 0
+          },
+          "projectsBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Space all projects take on disk, after the clean-up when applied.",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkippedProject"
+            },
+            "description": "Projects left alone, with the reason."
+          },
+          "thumbnailBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "thumbnails": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Thumbnails (made again when shown): removed, or removable.",
+            "minimum": 0
+          },
+          "unusedImageBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "unusedImages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Old images no closed project refers to: removed, or removable.",
+            "minimum": 0
           }
         }
       },
@@ -3274,6 +3367,19 @@
           },
           "scene": {
             "$ref": "#/components/schemas/Scene"
+          }
+        }
+      },
+      "SkippedProject": {
+        "type": "object",
+        "required": ["id", "reason"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "`open` (open here or in another window), or why it can't be read."
           }
         }
       },

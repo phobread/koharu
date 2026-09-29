@@ -35,6 +35,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from '
 import { useTranslation } from 'react-i18next'
 
 import { ExportFolderSetting } from '@/components/ExportFolderSetting'
+import { FreeUpSpace } from '@/components/FreeUpSpace'
 import { TranslationSettings } from '@/components/TranslationSettings'
 import {
   Accordion,
@@ -83,7 +84,6 @@ import {
   useGetCodexAuthStatus,
   useGetGoogleFontsCatalog,
   useListFonts,
-  clearProjectCache,
 } from '@/lib/api/default/default'
 import type {
   AppConfig,
@@ -187,7 +187,7 @@ const TABS = [
   { id: 'providers', icon: KeyIcon, labelKey: 'settings.apiKeys' },
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
   { id: 'keybinds', icon: KeyboardIcon, labelKey: 'settings.keybinds' },
-  { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.runtime' },
+  { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.storage' },
   { id: 'privacy', icon: ShieldIcon, labelKey: 'settings.privacy' },
   { id: 'about', icon: InfoIcon, labelKey: 'settings.about' },
 ] as const
@@ -1723,30 +1723,6 @@ function StoragePane({
 }) {
   const { t } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [clearingCache, setClearingCache] = useState(false)
-  const [cacheMessage, setCacheMessage] = useState<string | null>(null)
-  const [cacheError, setCacheError] = useState<string | null>(null)
-
-  const clearCache = async () => {
-    if (clearingCache) return
-    setClearingCache(true)
-    setCacheMessage(null)
-    setCacheError(null)
-    try {
-      const result = await clearProjectCache()
-      setCacheMessage(
-        t('settings.cacheCleared', {
-          size: `${(result.bytesFreed / 1_000_000).toFixed(2)} MB`,
-          count: result.filesRemoved,
-        }),
-      )
-      if (result.filesSkipped > 0) setCacheError(t('settings.cacheSkipped'))
-    } catch {
-      setCacheError(t('settings.cacheClearFailed'))
-    } finally {
-      setClearingCache(false)
-    }
-  }
 
   return (
     <>
@@ -1756,22 +1732,10 @@ function StoragePane({
         </Section>
       )}
       <Section
-        title={t('settings.projectCache')}
-        description={t('settings.projectCacheDescription')}
+        title={t('settings.freeUpSpace', 'Free up space')}
+        description={t('settings.freeUpSpaceDescription')}
       >
-        <Button variant='outline' onClick={() => void clearCache()} disabled={clearingCache}>
-          {clearingCache ? t('settings.clearingCache') : t('settings.clearCache')}
-        </Button>
-        {cacheMessage && (
-          <p role='status' className='text-xs text-muted-foreground'>
-            {cacheMessage}
-          </p>
-        )}
-        {cacheError && (
-          <p role='alert' className='text-xs text-destructive'>
-            {cacheError}
-          </p>
-        )}
+        <FreeUpSpace />
       </Section>
       <Section title={t('settings.runtime')} description={t('settings.runtimeDescription')}>
         <div className='space-y-1.5'>

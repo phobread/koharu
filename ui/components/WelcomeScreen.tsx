@@ -14,6 +14,7 @@ import Image from 'next/image'
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { FreeUpSpace } from '@/components/FreeUpSpace'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -172,11 +173,18 @@ export function WelcomeScreen() {
               <h2 className='text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase'>
                 {t('welcome.projects')}
               </h2>
-              {projects.length > 0 && (
-                <span className='text-[10px] text-muted-foreground tabular-nums'>
-                  {projects.length}
-                </span>
-              )}
+              <div className='flex items-center gap-3'>
+                {projects.length > 0 && (
+                  <span className='text-[10px] text-muted-foreground tabular-nums'>
+                    {t('welcome.projectCount', {
+                      count: projects.length,
+                      defaultValue: '{{count}} projects',
+                    })}
+                  </span>
+                )}
+                {/* Re-measured when a project is added or deleted. */}
+                <FreeUpSpace key={projects.length} compact />
+              </div>
             </div>
             {projects.length > 0 ? (
               <ul className='grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-4 gap-y-5'>

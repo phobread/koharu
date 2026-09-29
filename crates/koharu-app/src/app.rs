@@ -68,6 +68,9 @@ pub struct App {
     pub renderer: Arc<renderer::Renderer>,
     /// Autosave handle (tx + join) for the currently-open session. `None` = no project open.
     autosave: Mutex<Option<autosave::AutosaveHandle>>,
+    /// Held while "Free up space" works through project folders; opening a
+    /// project waits for it, so the two never meet on one project's lock.
+    pub project_files: Mutex<()>,
     pub version: &'static str,
 }
 
@@ -108,6 +111,7 @@ impl App {
             llm,
             renderer,
             autosave: Mutex::new(None),
+            project_files: Mutex::new(()),
             version,
         })
     }
@@ -131,6 +135,7 @@ impl App {
     ) -> Result<Arc<ProjectSession>> {
         // Close any current session first (releases the lock).
         self.close_project().await?;
+        let _cleanup = self.project_files.lock().await;
         let session = match create {
             Some(name) => ProjectSession::create(&dir, name)?,
             None => ProjectSession::open(&dir)?,

@@ -70,35 +70,28 @@ function renderSettings(inpainter: string, flux2Steps: number) {
   )
 }
 
-describe('SettingsDialog project cache', () => {
-  it('clears only through the cache endpoint and reports the result', async () => {
+describe('SettingsDialog storage', () => {
+  it('offers Free up space on the Storage tab', async () => {
     installSettingsHandlers({ pipeline, providers: [] })
-    let calls = 0
+    let measured = 0
     server.use(
-      http.post('/api/v1/storage/project-cache/clear', () => {
-        calls++
-        return HttpResponse.json({ bytesFreed: 1234, filesRemoved: 2, filesSkipped: 0 })
+      http.post('/api/v1/storage/cleanup', () => {
+        measured++
+        return HttpResponse.json({
+          projectsBytes: 1e9,
+          unusedImages: 3,
+          unusedImageBytes: 2e8,
+          thumbnails: 0,
+          thumbnailBytes: 0,
+          failed: 0,
+          skipped: [],
+        })
       }),
     )
     renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='runtime' />)
-    expect(await screen.findByText('settings.projectCacheDescription')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'settings.clearCache' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('settings.cacheCleared')
-    expect(calls).toBe(1)
-  })
-
-  it('reports cache failures without reporting success', async () => {
-    installSettingsHandlers({ pipeline, providers: [] })
-    server.use(
-      http.post(
-        '/api/v1/storage/project-cache/clear',
-        () => new HttpResponse(null, { status: 500 }),
-      ),
-    )
-    renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='runtime' />)
-    await userEvent.click(await screen.findByRole('button', { name: 'settings.clearCache' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('settings.cacheClearFailed')
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(await screen.findByText('settings.freeUpSpaceDescription')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('free-up-space')).toBeEnabled())
+    expect(measured).toBe(1)
   })
 })
 

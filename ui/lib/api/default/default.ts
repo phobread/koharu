@@ -25,6 +25,8 @@ import type {
   AppConfig,
   AppEvent,
   BootstrapStatus,
+  CleanUpStorageRequest,
+  CleanUpStorageResponse,
   ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
@@ -3978,6 +3980,86 @@ export function useGetSceneJson<TData = Awaited<ReturnType<typeof getSceneJson>>
   return withQueryKey(query, queryOptions.queryKey)
 }
 
+export const getCleanUpStorageUrl = () => {
+  return `/api/v1/storage/cleanup`
+}
+
+/**
+ * @summary "Free up space": measure (`apply: false`) or remove old images in closed
+projects and all thumbnails. Opening a project waits while this runs.
+ */
+export const cleanUpStorage = async (
+  cleanUpStorageRequest: CleanUpStorageRequest,
+  options?: RequestInit,
+): Promise<CleanUpStorageResponse> => {
+  return fetchApi<CleanUpStorageResponse>(getCleanUpStorageUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(cleanUpStorageRequest),
+  })
+}
+
+export const getCleanUpStorageMutationOptions = <TError = unknown, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof cleanUpStorage>>,
+    TError,
+    { data: CleanUpStorageRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof cleanUpStorage>>,
+  TError,
+  { data: CleanUpStorageRequest },
+  TContext
+> => {
+  const mutationKey = ['cleanUpStorage']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof cleanUpStorage>>,
+    { data: CleanUpStorageRequest }
+  > = (props) => {
+    const { data } = props ?? {}
+
+    return cleanUpStorage(data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type CleanUpStorageMutationResult = NonNullable<Awaited<ReturnType<typeof cleanUpStorage>>>
+export type CleanUpStorageMutationBody = CleanUpStorageRequest
+export type CleanUpStorageMutationError = unknown
+
+/**
+ * @summary "Free up space": measure (`apply: false`) or remove old images in closed
+projects and all thumbnails. Opening a project waits while this runs.
+ */
+export const useCleanUpStorage = <TError = unknown, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof cleanUpStorage>>,
+      TError,
+      { data: CleanUpStorageRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof cleanUpStorage>>,
+  TError,
+  { data: CleanUpStorageRequest },
+  TContext
+> => {
+  return useMutation(getCleanUpStorageMutationOptions(options), queryClient)
+}
 export const getCreateFolderUrl = () => {
   return `/api/v1/storage/folders`
 }

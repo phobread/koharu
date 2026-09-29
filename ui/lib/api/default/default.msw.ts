@@ -26,6 +26,7 @@ import type {
   AppConfig,
   AppEvent,
   BootstrapStatus,
+  CleanUpStorageResponse,
   ClearProjectCacheResponse,
   CodexAuthStatus,
   CodexDeviceLogin,
@@ -1204,6 +1205,24 @@ export const getGetSceneJsonResponseMock = (
   ...overrideResponse,
 })
 
+export const getCleanUpStorageResponseMock = (
+  overrideResponse: Partial<Extract<CleanUpStorageResponse, object>> = {},
+): CleanUpStorageResponse => ({
+  failed: faker.number.int({ min: 0 }),
+  projectsBytes: faker.number.int({ min: 0 }),
+  skipped: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => ({
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      reason: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    }),
+  ),
+  thumbnailBytes: faker.number.int({ min: 0 }),
+  thumbnails: faker.number.int({ min: 0 }),
+  unusedImageBytes: faker.number.int({ min: 0 }),
+  unusedImages: faker.number.int({ min: 0 }),
+  ...overrideResponse,
+})
+
 export const getClearProjectCacheResponseMock = (
   overrideResponse: Partial<Extract<ClearProjectCacheResponse, object>> = {},
 ): ClearProjectCacheResponse => ({
@@ -2281,6 +2300,30 @@ export const getGetSceneJsonMockHandler = (
   )
 }
 
+export const getCleanUpStorageMockHandler = (
+  overrideResponse?:
+    | CleanUpStorageResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<CleanUpStorageResponse> | CleanUpStorageResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/storage/cleanup',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCleanUpStorageResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getCreateFolderMockHandler = (
   overrideResponse?:
     | void
@@ -2371,6 +2414,7 @@ export const getDefaultMock = () => [
   getGetProjectThumbnailMockHandler(),
   getGetSceneBinMockHandler(),
   getGetSceneJsonMockHandler(),
+  getCleanUpStorageMockHandler(),
   getCreateFolderMockHandler(),
   getClearProjectCacheMockHandler(),
 ]

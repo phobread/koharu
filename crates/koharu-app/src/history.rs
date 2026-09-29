@@ -924,6 +924,17 @@ impl History {
 // Replay — called once on project open, before a `History` is constructed.
 // ---------------------------------------------------------------------------
 
+/// Whether a history.log with these bytes is in a format this build reads:
+/// empty, headerless (legacy v0), or a complete `KHLG` header with a known
+/// version. Mirrors the header check in [`replay`] without repairing anything.
+pub(crate) fn log_format_known(bytes: &[u8]) -> bool {
+    match bytes.strip_prefix(&HISTORY_LOG_MAGIC) {
+        None => true,
+        Some([lo, hi, ..]) => matches!(u16::from_le_bytes([*lo, *hi]), 1 | 2 | HISTORY_LOG_VERSION),
+        Some(_) => false,
+    }
+}
+
 /// Replay each frame in `log_path` with epoch greater than `start_epoch`
 /// against `scene`. Returns the final epoch seen.
 pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u64> {
