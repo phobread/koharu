@@ -139,6 +139,7 @@ async fn run() -> Result<()> {
                     source_language: Some("Korean".to_owned()),
                     ..Default::default()
                 },
+                only_missing: false,
             },
             Arc::new(AtomicBool::new(false)),
             None,

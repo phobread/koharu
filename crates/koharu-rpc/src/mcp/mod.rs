@@ -195,6 +195,7 @@ impl KoharuServer {
             shader_effect: None,
             shader_stroke: None,
             text_align: None,
+            only_missing: None,
         };
         let res = pipelines::launch(&self.state, req).map_err(api_err)?;
         Ok(JsonOutput(StartPipelineOutput {

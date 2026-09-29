@@ -168,7 +168,7 @@ describe('MenuBar', () => {
       http.get('/api/v1/config', () => HttpResponse.json({ pipeline })),
       http.post('/api/v1/pipelines', async ({ request }) => {
         pipelineRequests.push((await request.json()) as Record<string, unknown>)
-        return HttpResponse.json({ operationId: 'op-1' })
+        return HttpResponse.json({ operationId: 'op-1', pageCount: 3 })
       }),
       http.get('/api/v1/operations', () =>
         HttpResponse.json({
@@ -204,10 +204,81 @@ describe('MenuBar', () => {
       ],
       targetLanguage: 'en-US',
       systemPrompt: 'write vividly',
+      onlyMissing: true,
     })
     expect(pipelineRequests[0]).not.toHaveProperty('pages')
 
     await waitFor(() => expect(exportCalls).toBe(1))
     expect(saveBlob).toHaveBeenCalledTimes(1)
+  })
+
+  describe('processing only what is missing', () => {
+    const pipeline = { detector: 'detector', ocr: 'ocr', renderer: 'renderer' }
+    const pageScene = (ids: string[]) => {
+      const pages: Record<string, unknown> = {}
+      for (const id of ids) pages[id] = { id, name: id, width: 10, height: 10, nodes: {} }
+      return { epoch: 0, scene: { pages, project: { name: 'P' } } }
+    }
+    let requests: Array<Record<string, unknown>>
+
+    beforeEach(() => {
+      requests = []
+      const scene = pageScene(['p1', 'p2', 'p3'])
+      server.use(
+        http.get('/api/v1/scene.json', () => HttpResponse.json(scene)),
+        http.get('/api/v1/config', () => HttpResponse.json({ pipeline })),
+        http.post('/api/v1/pipelines', async ({ request }) => {
+          requests.push((await request.json()) as Record<string, unknown>)
+          return HttpResponse.json({ operationId: 'op-2', pageCount: 0 })
+        }),
+      )
+      queryClient.setQueryData(getGetSceneJsonQueryKey(), scene)
+      useSelectionStore.getState().setPage('p1')
+      useEditorUiStore.getState().clearError()
+    })
+
+    it('Process unfinished pages keeps finished work and says when nothing is left', async () => {
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      await userEvent.click(await screen.findByTestId('menu-process-all'))
+
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({
+        onlyMissing: true,
+        steps: ['detector', 'ocr', 'renderer'],
+      })
+      expect(requests[0]).not.toHaveProperty('pages')
+      await waitFor(() => expect(useEditorUiStore.getState().error?.notice).toBe(true))
+      useEditorUiStore.getState().clearError()
+    })
+
+    it('Process selected pages sends the page-list selection in page order', async () => {
+      useSelectionStore.getState().setSelectedPageIds(new Set(['p3', 'p1']))
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      await userEvent.click(await screen.findByTestId('menu-process-selected'))
+
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({ pages: ['p1', 'p3'], onlyMissing: true })
+    })
+
+    it('Process selected pages needs two or more selected pages', async () => {
+      useSelectionStore.getState().setSelectedPageIds(new Set(['p1']))
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      expect(await screen.findByTestId('menu-process-selected')).toHaveAttribute('data-disabled')
+    })
+
+    it('Redo all pages asks first, then redoes every step', async () => {
+      renderWithQuery(<MenuBar />)
+      await userEvent.click(screen.getByTestId('menu-process-trigger'))
+      await userEvent.click(await screen.findByTestId('menu-process-redo-all'))
+      expect(requests).toHaveLength(0)
+
+      await userEvent.click(await screen.findByTestId('redo-all-confirm'))
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({ onlyMissing: false })
+      expect(useEditorUiStore.getState().error).toBeUndefined()
+    })
   })
 })

@@ -27,6 +27,13 @@ export interface StartPipelineRequest {
    */
   defaultFontSize?: number | null
   /**
+   * Run each step only where its output is missing and keep finished work:
+   * pages with nothing missing are left out, and OCR, translation and font
+   * detection only fill boxes that lack them.
+   * @nullable
+   */
+  onlyMissing?: boolean | null
+  /**
    * `None` → whole project, `Some(pages)` → just those pages.
    * @nullable
    */

@@ -70,12 +70,20 @@ pub struct StartPipelineRequest {
     pub shader_stroke: Option<TextStrokeStyle>,
     #[serde(default)]
     pub text_align: Option<TextAlign>,
+    /// Run each step only where its output is missing and keep finished work:
+    /// pages with nothing missing are left out, and OCR, translation and font
+    /// detection only fill boxes that lack them.
+    #[serde(default)]
+    pub only_missing: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StartPipelineResponse {
     pub operation_id: String,
+    /// Pages the run covers. With `onlyMissing`, `0` means every page in the
+    /// scope was already done (the run finishes at once).
+    pub page_count: usize,
 }
 
 #[utoipa::path(
@@ -114,11 +122,34 @@ pub(crate) fn launch(
             config.pipeline.flux2_flat_fill,
         )
     };
+    let only_missing = req.only_missing.unwrap_or(false);
+    let scope = match req.pages {
+        Some(pages) => Scope::Pages(pages),
+        None => Scope::WholeProject,
+    };
+    let (scope, page_count) = {
+        let scene = session.scene.read();
+        if only_missing {
+            // Narrow up front so progress counts only pages with work.
+            let pages = match scope {
+                Scope::Pages(pages) => pages,
+                Scope::WholeProject => scene.pages.keys().copied().collect(),
+            };
+            let pages = pipeline::pages_with_missing_work(&scene, &req.steps, pages)
+                .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+            let count = pages.len();
+            (Scope::Pages(pages), count)
+        } else {
+            let count = match &scope {
+                Scope::Pages(pages) => pages.len(),
+                Scope::WholeProject => scene.pages.len(),
+            };
+            (scope, count)
+        }
+    };
     let spec = PipelineSpec {
-        scope: match req.pages {
-            Some(pages) => Scope::Pages(pages),
-            None => Scope::WholeProject,
-        },
+        scope,
+        only_missing,
         steps: req.steps,
         options: PipelineRunOptions {
             target_language: req.target_language,
@@ -238,5 +269,8 @@ pub(crate) fn launch(
         unregister_cancel(&op_id_c);
     });
 
-    Ok(StartPipelineResponse { operation_id })
+    Ok(StartPipelineResponse {
+        operation_id,
+        page_count,
+    })
 }

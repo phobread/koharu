@@ -9,6 +9,14 @@ import { fitCanvasToViewport, resetCanvasScale } from '@/components/Canvas'
 import { ProjectTitle } from '@/components/ProjectTitle'
 import { SettingsDialog, type TabId } from '@/components/SettingsDialog'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   MenubarCheckboxItem,
   Menubar,
   MenubarContent,
@@ -28,6 +36,7 @@ import { getConfig, listOperations, startPipeline } from '@/lib/api/default/defa
 import type { JobSummary } from '@/lib/api/schemas'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
+import { orderedPageIds, processPages, processPagesWithFeedback } from '@/lib/io/processPages'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import { defaultRenderedExportDirectory, pickSaveDirectory } from '@/lib/io/saveBlob'
 import {
@@ -151,6 +160,12 @@ export function MenuBar() {
     [customPipeline],
   )
   const isMac = useMemo(() => getPlatform() === 'mac', [])
+  const selectedPageIds = useSelectionStore((s) => s.selectedPageIds)
+  const selectedPages = useMemo(
+    () => orderedPageIds(scene?.pages, selectedPageIds),
+    [scene?.pages, selectedPageIds],
+  )
+  const [redoAllConfirmOpen, setRedoAllConfirmOpen] = useState(false)
 
   const requirePageId = () => {
     const id = useSelectionStore.getState().pageId
@@ -158,33 +173,11 @@ export function MenuBar() {
     return id
   }
 
-  const runPipeline = async (opts: { pageId?: string }) => {
-    await awaitPendingSceneEdits()
-    const cfg = await getConfig()
-    if (!cfg.pipeline) return
-    const p = cfg.pipeline
-    const steps = [
-      p.detector,
-      p.segmenter,
-      p.bubble_segmenter,
-      p.font_detector,
-      p.ocr,
-      p.translator,
-      p.inpainter,
-      p.renderer,
-    ].filter((s): s is string => !!s)
-    const editor = useEditorUiStore.getState()
-    const prefs = usePreferencesStore.getState()
-    return startPipeline({
-      steps,
-      pages: opts.pageId ? [opts.pageId] : undefined,
-      targetLanguage: editor.selectedLanguage,
-      sourceLanguage: prefs.ocrLanguage,
-      systemPrompt: prefs.customSystemPrompt,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
-      ...renderDefaultsForPipeline(),
-    })
-  }
+  const startProcess = (opts: { pages?: string[]; onlyMissing: boolean }) =>
+    processPagesWithFeedback(
+      opts,
+      t('process.nothingToDo', 'Nothing to process: those pages already have every step.'),
+    )
 
   const runPipelineAndExportRendered = async () => {
     if (processExporting) return
@@ -197,13 +190,16 @@ export function MenuBar() {
       const outputDirectory = desktop ? await pickSaveDirectory(defaultDirectory) : undefined
       if (desktop && !outputDirectory) return
 
-      const started = await runPipeline({})
+      const started = await processPages({ onlyMissing: true })
       if (!started?.operationId) {
         throw new Error('Could not start processing because no pipeline is configured.')
       }
 
-      const finished = await waitForOperation(started.operationId)
-      assertJobFinishedSuccessfully(finished)
+      // Nothing left to process: export what's there.
+      if (started.pageCount > 0) {
+        const finished = await waitForOperation(started.operationId)
+        assertJobFinishedSuccessfully(finished)
+      }
       await exportCurrentProjectAs('rendered', undefined, { outputDirectory })
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err)
@@ -448,17 +444,33 @@ export function MenuBar() {
               data-testid='menu-process-current'
               className='text-[13px]'
               disabled={!hasPage}
-              onSelect={() => void runPipeline({ pageId: requirePageId() })}
+              title={t('menu.processMissingHint')}
+              onSelect={() => void startProcess({ pages: [requirePageId()], onlyMissing: true })}
             >
               {t('menu.processCurrent')}
+            </MenubarItem>
+            <MenubarItem
+              data-testid='menu-process-selected'
+              className='text-[13px]'
+              disabled={selectedPages.length < 2}
+              title={t('menu.processMissingHint')}
+              onSelect={() => void startProcess({ pages: selectedPages, onlyMissing: true })}
+            >
+              {selectedPages.length < 2
+                ? t('menu.processSelectedNone', 'Process selected pages')
+                : t('menu.processSelected', {
+                    count: selectedPages.length,
+                    defaultValue: 'Process {{count}} selected pages',
+                  })}
             </MenubarItem>
             <MenubarItem
               data-testid='menu-process-all'
               className='text-[13px]'
               disabled={!hasScene}
-              onSelect={() => void runPipeline({})}
+              title={t('menu.processMissingHint')}
+              onSelect={() => void startProcess({ onlyMissing: true })}
             >
-              {t('menu.processAll')}
+              {t('menu.processUnfinished', 'Process unfinished pages')}
             </MenubarItem>
             <MenubarItem
               data-testid='menu-process-all-export-rendered'
@@ -469,6 +481,14 @@ export function MenuBar() {
               {processExporting
                 ? t('menu.processingAllAndExporting', 'Processing and exporting...')
                 : t('menu.processAllAndExportRendered', 'Process all images + export rendered...')}
+            </MenubarItem>
+            <MenubarItem
+              data-testid='menu-process-redo-all'
+              className='text-[13px]'
+              disabled={!hasScene}
+              onSelect={() => setRedoAllConfirmOpen(true)}
+            >
+              {t('menu.redoAll', 'Redo all pages from scratch…')}
             </MenubarItem>
             <MenubarSeparator />
             <MenubarSub>
@@ -653,6 +673,23 @@ export function MenuBar() {
       <div data-tauri-drag-region className='flex h-full flex-1 items-center justify-center' />
       {isWindowsTauri && <WindowControls />}
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} defaultTab={settingsTab} />
+      <AlertDialog open={redoAllConfirmOpen} onOpenChange={setRedoAllConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogTitle>
+            {t('menu.redoAllTitle', 'Redo all pages from scratch?')}
+          </AlertDialogTitle>
+          <AlertDialogDescription>{t('menu.redoAllDescription')}</AlertDialogDescription>
+          <div className='flex justify-end gap-2'>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid='redo-all-confirm'
+              onClick={() => void startProcess({ onlyMissing: false })}
+            >
+              {t('menu.redoAllConfirm', 'Redo everything')}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

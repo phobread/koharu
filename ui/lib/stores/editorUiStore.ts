@@ -62,9 +62,10 @@ type EditorUiState = {
   setSelectedTarget: (target?: LlmTarget) => void
   setSelectedLanguage: (lang?: string) => void
 
-  // ui error
-  error?: { id: number; message: string }
+  // ui error (or a neutral notice, shown in the same spot)
+  error?: { id: number; message: string; notice?: boolean }
   showError: (message: string) => void
+  showNotice: (message: string) => void
   clearError: () => void
 
   // page navigator panel
@@ -89,7 +90,7 @@ const initialState = {
   renderStroke: undefined as RenderStroke | undefined,
   selectedTarget: undefined as LlmTarget | undefined,
   selectedLanguage: undefined as string | undefined,
-  error: undefined as { id: number; message: string } | undefined,
+  error: undefined as { id: number; message: string; notice?: boolean } | undefined,
   showNavigator: true,
   readingOrder: 'rtl' as const,
 }
@@ -138,6 +139,14 @@ export const useEditorUiStore = create<EditorUiState>()(
       showError: (message) => {
         clearDismissTimer()
         set({ error: { id: Date.now(), message } })
+        dismissTimer = setTimeout(() => {
+          dismissTimer = null
+          set({ error: undefined })
+        }, ERROR_AUTO_DISMISS_MS)
+      },
+      showNotice: (message) => {
+        clearDismissTimer()
+        set({ error: { id: Date.now(), message, notice: true } })
         dismissTimer = setTimeout(() => {
           dismissTimer = null
           set({ error: undefined })

@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangleIcon, CircleXIcon } from 'lucide-react'
+import { AlertTriangleIcon, CircleXIcon, InfoIcon } from 'lucide-react'
 import { type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -119,14 +119,39 @@ function ErrorCard({
   )
 }
 
+function NoticeCard({
+  message,
+  onDismiss,
+  t,
+}: {
+  message: string
+  onDismiss: () => void
+  t: TranslateFunc
+}) {
+  return (
+    <BubbleCard>
+      <div data-testid='notice-card' className='flex items-start gap-3'>
+        <div className='mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary'>
+          <InfoIcon className='size-4' />
+        </div>
+        <div className='min-w-0 flex-1 pt-1.5 text-xs break-words text-foreground'>{message}</div>
+        <Button variant='ghost' size='icon-xs' onClick={onDismiss} aria-label={t('errors.dismiss')}>
+          <CircleXIcon className='size-3.5' />
+        </Button>
+      </div>
+    </BubbleCard>
+  )
+}
+
 function JobWarnings({ warnings, t }: { warnings: JobWarningEvent[]; t: TranslateFunc }) {
   const latest = warnings[warnings.length - 1]
   const count = warnings.length
   const pageLabel =
     typeof latest.totalPages === 'number' && latest.totalPages > 1
-      ? t('operations.imageProgress', {
+      ? t('operations.pageProgress', {
           current: latest.pageIndex + 1,
           total: latest.totalPages,
+          defaultValue: 'Page {{current}} of {{total}}',
         })
       : undefined
   const header =
@@ -169,7 +194,11 @@ function JobCard({ job, onCancel, t }: { job: JobEntry; onCancel: () => void; t:
   const totalPages = progress?.totalPages
   const pageText =
     typeof currentPage === 'number' && totalPages && totalPages > 1
-      ? t('operations.imageProgress', { current: currentPage + 1, total: totalPages })
+      ? t('operations.pageProgress', {
+          current: currentPage + 1,
+          total: totalPages,
+          defaultValue: 'Page {{current}} of {{total}}',
+        })
       : undefined
   const subtitle =
     [pageText, stepLabel].filter(Boolean).join(' \u00b7 ') || t('operations.inProgress')
@@ -184,7 +213,10 @@ function JobCard({ job, onCancel, t }: { job: JobEntry; onCancel: () => void; t:
             <div className='flex flex-col gap-1'>
               <div className='text-sm font-semibold text-foreground'>
                 {totalPages && totalPages > 1
-                  ? t('operations.processAll')
+                  ? t('operations.processPages', {
+                      count: totalPages,
+                      defaultValue: 'Processing {{count}} pages',
+                    })
                   : t('operations.processCurrent')}
               </div>
               <div className='text-xs text-muted-foreground'>{subtitle}</div>
@@ -226,10 +258,16 @@ export function ActivityBubble() {
 
   const errorMessage = uiError?.message
   if (!errorMessage && runningJobs.length === 0 && activeDownloads.length === 0) return null
+  const notice = !!uiError?.notice
 
   return (
     <div className='pointer-events-auto fixed right-6 bottom-6 z-100 flex w-80 max-w-[calc(100%-1.5rem)] flex-col gap-3'>
-      {errorMessage && <ErrorCard message={errorMessage} onDismiss={clearUiError} t={t} />}
+      {errorMessage &&
+        (notice ? (
+          <NoticeCard message={errorMessage} onDismiss={clearUiError} t={t} />
+        ) : (
+          <ErrorCard message={errorMessage} onDismiss={clearUiError} t={t} />
+        ))}
       {runningJobs.map((job) => (
         <JobCard key={job.id} job={job} onCancel={() => void cancelOperation(job.id)} t={t} />
       ))}

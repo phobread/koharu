@@ -9,14 +9,14 @@ use koharu_ml::font_detector::FontDetector;
 
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
-use crate::pipeline::engines::support::{load_source_image, text_nodes};
+use crate::pipeline::engines::support::{load_source_image, requested_text_nodes};
 
 pub struct Model(FontDetector);
 
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
-        let texts = text_nodes(ctx.scene, ctx.page);
+        let texts = requested_text_nodes(ctx.scene, ctx.page, ctx.options);
         if texts.is_empty() {
             return Ok(Vec::new());
         }

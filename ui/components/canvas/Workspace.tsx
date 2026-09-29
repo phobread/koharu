@@ -7,12 +7,12 @@ import type React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CanvasToolbar } from '@/components/canvas/CanvasToolbar'
-import { SelectionBar } from '@/components/canvas/SelectionBar'
 import {
   fitCanvasToViewport,
   setCanvasDocumentSize,
   setCanvasViewport,
 } from '@/components/canvas/canvasViewport'
+import { SelectionBar } from '@/components/canvas/SelectionBar'
 import { SubToolRail } from '@/components/canvas/SubToolRail'
 import { TextBlockLayer } from '@/components/canvas/TextBlockLayer'
 import { ToolRail } from '@/components/canvas/ToolRail'

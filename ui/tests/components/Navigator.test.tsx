@@ -61,6 +61,27 @@ describe('Navigator', () => {
     expect(useSelectionStore.getState().pageId).toBe('a')
   })
 
+  it('offers to process a multi-page selection, in page order', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithPages(['a', 'b', 'c']))),
+      http.get('/api/v1/config', () => HttpResponse.json({ pipeline: { ocr: 'ocr' } })),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        requests.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ operationId: 'op', pageCount: 2 })
+      }),
+    )
+    useSelectionStore.getState().setPage('a')
+    renderWithQuery(<Navigator />)
+    await screen.findByTestId('navigator-page-0')
+    expect(screen.queryByTestId('navigator-process-selected')).not.toBeInTheDocument()
+
+    useSelectionStore.getState().setSelectedPageIds(new Set(['c', 'a']))
+    await userEvent.click(await screen.findByTestId('navigator-process-selected'))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toMatchObject({ pages: ['a', 'c'], onlyMissing: true, steps: ['ocr'] })
+  })
+
   it('exposes total page count via data attribute', async () => {
     server.use(http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithPages(['a', 'b']))))
     renderWithQuery(<Navigator />)

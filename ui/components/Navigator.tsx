@@ -1,7 +1,7 @@
 'use client'
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { LayoutGridIcon, Trash2Icon } from 'lucide-react'
+import { LayoutGridIcon, PlayIcon, Trash2Icon } from 'lucide-react'
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useScene } from '@/hooks/useScene'
 import { getGetPageThumbnailUrl } from '@/lib/api/default/default'
+import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { applyOp } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
@@ -35,6 +36,10 @@ export function Navigator() {
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const { t } = useTranslation()
   const [pageManagerOpen, setPageManagerOpen] = useState(false)
+  const selectedInOrder = useMemo(
+    () => orderedPageIds(pagesMap, selectedPageIds),
+    [pagesMap, selectedPageIds],
+  )
 
   const handleSelect = useCallback(
     (id: string, event: React.MouseEvent | React.KeyboardEvent) => {
@@ -168,6 +173,33 @@ export function Navigator() {
           </Button>
         )}
       </div>
+
+      {selectedInOrder.length > 1 && (
+        <div className='border-b border-border px-2 py-1.5'>
+          <Button
+            variant='secondary'
+            size='sm'
+            data-testid='navigator-process-selected'
+            className='h-7 w-full gap-1.5 text-xs'
+            title={t('process.pagesButtonHint')}
+            onClick={() =>
+              void processPagesWithFeedback(
+                { pages: selectedInOrder, onlyMissing: true },
+                t(
+                  'process.nothingToDo',
+                  'Nothing to process: those pages already have every step.',
+                ),
+              )
+            }
+          >
+            <PlayIcon className='size-3.5' />
+            {t('process.pagesButton', {
+              count: selectedInOrder.length,
+              defaultValue: 'Process {{count}} pages',
+            })}
+          </Button>
+        </div>
+      )}
 
       <div className='flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground'>
         {totalPages > 0 ? (

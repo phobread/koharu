@@ -5,4 +5,10 @@
 
 export interface StartPipelineResponse {
   operationId: string
+  /**
+   * Pages the run covers. With `onlyMissing`, `0` means every page in the
+   * scope was already done (the run finishes at once).
+   * @minimum 0
+   */
+  pageCount: number
 }

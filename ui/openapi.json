@@ -3276,6 +3276,10 @@
             "format": "float",
             "description": "Global render defaults applied when a text node has no explicit\nper-node override. The renderer falls back to auto-fit / predicted\nvalues when these are absent."
           },
+          "onlyMissing": {
+            "type": ["boolean", "null"],
+            "description": "Run each step only where its output is missing and keep finished work:\npages with nothing missing are left out, and OCR, translation and font\ndetection only fill boxes that lack them."
+          },
           "pages": {
             "type": ["array", "null"],
             "items": {
@@ -3362,10 +3366,15 @@
       },
       "StartPipelineResponse": {
         "type": "object",
-        "required": ["operationId"],
+        "required": ["operationId", "pageCount"],
         "properties": {
           "operationId": {
             "type": "string"
+          },
+          "pageCount": {
+            "type": "integer",
+            "description": "Pages the run covers. With `onlyMissing`, `0` means every page in the\nscope was already done (the run finishes at once).",
+            "minimum": 0
           }
         }
       },

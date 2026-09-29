@@ -9,6 +9,7 @@ pub mod artifacts;
 pub mod engine;
 mod engines;
 mod gpu_gate;
+mod missing;
 mod plan;
 
 pub use artifacts::Artifact;
@@ -98,6 +99,32 @@ pub struct PipelineSpec {
     pub scope: Scope,
     pub steps: Vec<String>,
     pub options: PipelineRunOptions,
+    /// Run each step only where its output is missing, and the text steps
+    /// only on the boxes that lack their field (see [`missing`]). Callers
+    /// should also narrow the scope with [`pages_with_missing_work`].
+    pub only_missing: bool,
+}
+
+/// The pages of `pages` on which an only-missing run of `steps` has
+/// anything to do, in the given order.
+pub fn pages_with_missing_work(
+    scene: &koharu_core::Scene,
+    steps: &[String],
+    pages: Vec<PageId>,
+) -> Result<Vec<PageId>> {
+    let produces: Vec<&[Artifact]> = steps
+        .iter()
+        .map(|id| Registry::find(id).map(|info| info.produces))
+        .collect::<Result<_>>()?;
+    Ok(pages
+        .into_iter()
+        .filter(|id| {
+            scene
+                .pages
+                .get(id)
+                .is_some_and(|page| missing::page_needs_work(&produces, page))
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +199,8 @@ pub async fn run(
     // deleted the page since the run started.
     let mut missing = vec![plan::MissingArtifacts::default(); pages.len()];
     let mut deleted = vec![false; pages.len()];
+    // Only-missing runs: whether this run has changed the page yet.
+    let mut changed = vec![false; pages.len()];
     let chunk = chunk_size();
     if chunk > 1 {
         tracing::info!(
@@ -202,6 +231,29 @@ pub async fn run(
             missing[page_index].record(io);
             continue;
         }
+        let work = if spec.only_missing {
+            match session.scene.read().pages.get(page_id) {
+                Some(page) => missing::missing_work(io.produces, page, changed[page_index]),
+                None => missing::Work::Skip,
+            }
+        } else {
+            missing::Work::Page
+        };
+        if work.is_skip() {
+            continue;
+        }
+        // Text steps limited to the boxes that lack their field.
+        let node_options;
+        let options = match &work {
+            missing::Work::Nodes(ids) => {
+                node_options = PipelineRunOptions {
+                    text_node_ids: Some(ids.clone()),
+                    ..spec.options.clone()
+                };
+                &node_options
+            }
+            _ => &spec.options,
+        };
 
         if let Some(sink) = progress.as_ref() {
             sink(ProgressTick {
@@ -247,7 +299,7 @@ pub async fn run(
             blobs: &session.blobs,
             runtime: &runtime,
             cancel: &cancel,
-            options: &spec.options,
+            options,
             llm: &llm,
             renderer: &renderer,
         };
@@ -261,7 +313,7 @@ pub async fn run(
             elapsed_ms = step_started.elapsed().as_millis(),
             "pipeline step finished"
         );
-        let ops = match step_result {
+        let mut ops = match step_result {
             Ok(ops) => ops,
             Err(err) => {
                 report_step_failure(
@@ -278,6 +330,11 @@ pub async fn run(
                 continue;
             }
         };
+        if let missing::Work::Nodes(ids) = &work {
+            // Engines that ignore `text_node_ids` still may not touch the
+            // boxes that already have their field.
+            ops.retain(|op| matches!(op, Op::UpdateNode { id, .. } if ids.contains(id)));
+        }
         if ops.is_empty() {
             continue;
         }
@@ -297,6 +354,8 @@ pub async fn run(
                 warnings.as_ref(),
             );
             missing[page_index].record(io);
+        } else {
+            changed[page_index] = true;
         }
     }
 

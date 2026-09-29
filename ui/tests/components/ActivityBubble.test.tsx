@@ -39,8 +39,16 @@ describe('ActivityBubble', () => {
     renderWithQuery(<ActivityBubble />)
     expect(screen.getByTestId('operation-card')).toBeInTheDocument()
     expect(screen.getByText(/25%/)).toBeInTheDocument()
-    // A multi-page run is labelled as such, not as the current image.
-    expect(screen.getByText('operations.processAll')).toBeInTheDocument()
+    // A multi-page run is labelled with its page count and the page it's on.
+    expect(screen.getByText('operations.processPages')).toBeInTheDocument()
+    expect(screen.getByText(/operations\.pageProgress/)).toBeInTheDocument()
+  })
+
+  it('shows a notice in a neutral card', () => {
+    useEditorUiStore.getState().showNotice('Nothing to process')
+    renderWithQuery(<ActivityBubble />)
+    expect(screen.getByTestId('notice-card')).toHaveTextContent('Nothing to process')
+    useEditorUiStore.getState().clearError()
   })
 
   it('labels a single-page run as the current image', () => {

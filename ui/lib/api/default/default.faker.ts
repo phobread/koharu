@@ -793,6 +793,7 @@ export const getStartPipelineResponseMock = (
   overrideResponse: Partial<Extract<StartPipelineResponse, object>> = {},
 ): StartPipelineResponse => ({
   operationId: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  pageCount: faker.number.int({ min: 0 }),
   ...overrideResponse,
 })
 

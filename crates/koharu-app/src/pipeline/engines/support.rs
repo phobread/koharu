@@ -71,6 +71,20 @@ pub fn text_nodes(scene: &Scene, page: PageId) -> Vec<(NodeId, &Transform, &Text
         .collect()
 }
 
+/// [`text_nodes`] narrowed to `options.text_node_ids` when the run names
+/// specific boxes.
+pub fn requested_text_nodes<'a>(
+    scene: &'a Scene,
+    page: PageId,
+    options: &crate::pipeline::PipelineRunOptions,
+) -> Vec<(NodeId, &'a Transform, &'a TextData)> {
+    let mut texts = text_nodes(scene, page);
+    if let Some(ids) = options.text_node_ids.as_deref() {
+        texts.retain(|(id, _, _)| ids.contains(id));
+    }
+    texts
+}
+
 /// Convert a scene `(Transform, TextData)` pair into a `koharu-ml` `TextRegion`
 /// for passing back through detector helpers that need geometry + language
 /// hints (e.g. CTD's `refine_segmentation_mask`, OCR's `extract_text_block_regions`).

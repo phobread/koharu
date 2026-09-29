@@ -91,9 +91,10 @@ function WorkflowButtons() {
    *
    * Detect is the only multi-engine button; it bundles detector +
    * segmenter + font-detector so the subsequent single-engine steps
-   * (OCR / Inpaint / Render) find their inputs already on the page. The
-   * backend driver skips any step whose artifact is already satisfied,
-   * so re-running is idempotent.
+   * (OCR / Inpaint / Render) find their inputs already on the page. These
+   * buttons deliberately redo their step on the current page (Detect
+   * replaces the page's boxes); Process in the menu fills in only what's
+   * missing.
    */
   const runStep = async (
     pick: (p: NonNullable<Awaited<ReturnType<typeof getConfig>>['pipeline']>) => string[],

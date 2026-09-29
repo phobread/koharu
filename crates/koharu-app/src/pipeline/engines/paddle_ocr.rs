@@ -26,8 +26,8 @@ use crate::app::shared_llama_backend;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    is_degenerate_ocr_text, load_source_image, single_line_ocr_text, text_node_to_region,
-    text_nodes,
+    is_degenerate_ocr_text, load_source_image, requested_text_nodes, single_line_ocr_text,
+    text_node_to_region,
 };
 
 const MAX_NEW_TOKENS: usize = 256;
@@ -55,7 +55,7 @@ pub struct Model {
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
-        let texts = text_nodes(ctx.scene, ctx.page);
+        let texts = requested_text_nodes(ctx.scene, ctx.page, ctx.options);
         if texts.is_empty() {
             return Ok(Vec::new());
         }

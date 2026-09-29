@@ -231,6 +231,7 @@ async fn run() -> Result<()> {
             region: None,
             ..Default::default()
         },
+        only_missing: false,
     };
 
     // When translate is skipped, copy OCR text into the translation slot so
