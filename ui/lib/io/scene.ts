@@ -187,6 +187,8 @@ export async function switchProject(req: OpenProjectRequest): Promise<void> {
 }
 
 export async function closeProject(): Promise<void> {
+  // A click on the back arrow can land right after typing: save that first.
+  await awaitPendingSceneEdits()
   await deleteCurrentProject()
   resetSelection()
   await invalidateScene()

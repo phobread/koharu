@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { fitCanvasToViewport, resetCanvasScale } from '@/components/Canvas'
+import { ProjectTitle } from '@/components/ProjectTitle'
 import { SettingsDialog, type TabId } from '@/components/SettingsDialog'
 import {
   MenubarCheckboxItem,
@@ -308,6 +309,11 @@ export function MenuBar() {
       <div className='flex h-full items-center pl-2 select-none'>
         <Image src='/icon.png' alt='Koharu' width={18} height={18} draggable={false} />
       </div>
+      {hasScene && (
+        <div className='flex h-full max-w-56 min-w-0 items-center border-r border-border pr-2 pl-1'>
+          <ProjectTitle />
+        </div>
+      )}
       <Menubar className='h-auto gap-1 border-none bg-transparent p-0 px-1.5 shadow-none'>
         <MenubarMenu>
           <MenubarTrigger

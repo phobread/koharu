@@ -101,6 +101,9 @@
     "cancel": "Stop",
     "cancelling": "Stopping..."
   },
+  "project": {
+    "back": "Back to projects"
+  },
   "navigator": {
     "title": "Navigator",
     "show": "Show Navigator",

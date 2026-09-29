@@ -106,6 +106,35 @@ describe('MenuBar', () => {
     })
   })
 
+  it('shows the project name with a back arrow that closes the project', async () => {
+    let deleted = 0
+    server.use(
+      http.delete('/api/v1/projects/current', () => {
+        deleted += 1
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    renderWithQuery(<MenuBar />)
+    expect(await screen.findByTestId('project-name')).toHaveTextContent('P')
+    const back = screen.getByTestId('project-back')
+    expect(back).toHaveAttribute('title', 'project.back (Ctrl+W)')
+    await userEvent.click(back)
+    await waitFor(() => expect(deleted).toBe(1))
+  })
+
+  it('hides the project name when no project is open', async () => {
+    queryClient.clear()
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json({ message: 'no project' }, { status: 400 }),
+      ),
+    )
+    renderWithQuery(<MenuBar />)
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
+    expect(screen.getByTestId('menu-file-trigger')).toBeInTheDocument()
+    expect(screen.queryByTestId('project-back')).not.toBeInTheDocument()
+  })
+
   it('Close Project is disabled when no project is open', async () => {
     // Clear seeded cache + point /scene.json at the 400 response so useScene
     // resolves to null.
