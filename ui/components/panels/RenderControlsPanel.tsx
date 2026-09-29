@@ -61,6 +61,7 @@ import {
   mergeTextStyle,
   type TextStyleUpdates,
 } from '@/lib/textStyle'
+import type { RenderStroke } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const DEFAULT_STROKE_WIDTH = 1.6
@@ -114,6 +115,45 @@ const normalizeStroke = (stroke?: TextStrokeStyle | null): TextStrokeStyle => ({
   color: stroke?.color ?? null,
   widthPx: stroke?.widthPx ?? null,
 })
+
+// Mirrors the renderer's `default_stroke_width`: 10 % of the font size.
+const autoStrokeWidth = (fontSize?: number | null) =>
+  fontSize != null && fontSize > 0
+    ? clampStrokeWidth(Math.min(8, Math.max(1.2, fontSize * 0.1)))
+    : null
+
+// The outline the renderer actually uses (`resolve_stroke_style`): the
+// block's own setting, else the global default from Settings, else the font
+// detector's width, else 10 % of the font size.
+const effectiveStroke = (
+  node: TextNodeEntry | undefined,
+  global: RenderStroke | undefined,
+): TextStrokeStyle => {
+  const fontSize = node?.data.style?.fontSize ?? node?.data.renderedFontSizePx
+  const own = node?.data.style?.stroke
+  if (own) {
+    return {
+      ...normalizeStroke(own),
+      widthPx: own.widthPx ?? autoStrokeWidth(fontSize) ?? DEFAULT_STROKE_WIDTH,
+    }
+  }
+  if (global) {
+    return {
+      enabled: global.enabled,
+      color: global.color ?? null,
+      widthPx: global.widthPx ?? autoStrokeWidth(fontSize) ?? DEFAULT_STROKE_WIDTH,
+    }
+  }
+  const predicted = node?.data.fontPrediction?.strokeWidthPx
+  return {
+    enabled: true,
+    color: null,
+    widthPx:
+      predicted != null && predicted > 0
+        ? clampStrokeWidth(predicted)
+        : (autoStrokeWidth(fontSize) ?? DEFAULT_STROKE_WIDTH),
+  }
+}
 
 // Mirrors the renderer's auto outline: contrast against the text colour
 // (luminance 0.299r + 0.587g + 0.114b, threshold 128 → black, else white).
@@ -310,7 +350,11 @@ export function RenderControlsPanel() {
     colorSource?.data.renderedTextColor,
   )
   const currentColorHex = colorToHex(currentColor)
-  const currentStroke = normalizeStroke(selectedStyle?.stroke)
+  // With nothing selected the controls edit the global default, so show it.
+  const currentStroke = effectiveStroke(
+    selectedNode ?? (renderStroke ? undefined : firstNode),
+    renderStroke,
+  )
   // Auto stroke shows the colour the renderer would actually pick.
   const currentStrokeColorHex = colorToHex(
     currentStroke.color ?? contrastingStrokeColor(currentColor),

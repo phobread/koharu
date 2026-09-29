@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import * as sceneActions from '@/lib/io/scene'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -224,6 +225,48 @@ describe('RenderControlsPanel Font Assignment', () => {
     const input = (await screen.findByTestId('render-font-size')) as HTMLInputElement
     await waitFor(() => expect(input.value).toBe(''))
     expect(input).toHaveAttribute('placeholder', 'auto')
+  })
+
+  it('shows the border width the renderer uses, not a fixed 1.6', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(
+          sceneWithTextNodes([
+            // Auto: 10 % of the rendered font size.
+            {
+              id: 't1',
+              kind: { text: { style: { fontFamilies: ['Arial'] }, renderedFontSizePx: 40 } },
+            },
+            // Own override wins.
+            {
+              id: 't2',
+              kind: {
+                text: {
+                  style: {
+                    fontFamilies: ['Arial'],
+                    stroke: { enabled: true, color: null, widthPx: 3.5 },
+                  },
+                  renderedFontSizePx: 40,
+                },
+              },
+            },
+          ]),
+        ),
+      ),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+    const input = (await screen.findByTestId('render-stroke-width')) as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe('4'))
+
+    // The Settings default applies to blocks without their own border.
+    useEditorUiStore.getState().setRenderStroke({ enabled: true, widthPx: 2.4 })
+    await waitFor(() => expect(input.value).toBe('2.4'))
+
+    useSelectionStore.getState().select('t2', false)
+    await waitFor(() => expect(input.value).toBe('3.5'))
+    useEditorUiStore.getState().setRenderStroke(undefined)
   })
 
   it('clicking in the color picker commits the shown color even without a change event', async () => {
