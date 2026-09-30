@@ -63,6 +63,141 @@ pub struct LayoutRun<'a> {
     pub height: f32,
     /// Font size used to generate this layout.
     pub font_size: f32,
+    /// Balloon layouts only: the lines did not fit the balloon at this size.
+    pub overflowed: bool,
+    /// Balloon layouts only: top-left of the ink box in the balloon's frame.
+    pub balloon_origin: Option<(f32, f32)>,
+}
+
+/// The usable interior of a speech balloon for horizontal text: one span
+/// `(left, right)` per pixel row of the balloon's frame (`None` = the row is
+/// outside it). Lines take their width from the rows their ink crosses.
+#[derive(Debug, Clone)]
+pub struct Balloon {
+    pub width: f32,
+    pub height: f32,
+    pub rows: Vec<Option<(f32, f32)>>,
+    /// Smallest clearance kept between the ink and the outline (stroke,
+    /// padding). The clearance is at least one line of ink regardless.
+    pub min_air: f32,
+}
+
+/// Vertical ink extent of a line around its baseline.
+#[derive(Clone, Copy, Debug)]
+struct InkBand {
+    before: f32,
+    after: f32,
+}
+
+impl InkBand {
+    fn thickness(self) -> f32 {
+        self.before + self.after
+    }
+}
+
+/// One line's place in a balloon: usable width, the shared centre axis and
+/// the baseline, all in the balloon's frame.
+#[derive(Clone, Copy, Debug)]
+struct LineProfile {
+    width: f32,
+    center: f32,
+    baseline: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BalloonMeasure {
+    advance: f32,
+    /// Advance of trailing spaces, which don't count once the line breaks.
+    trailing: f32,
+    break_suffix_advance: f32,
+    break_penalty: f32,
+    /// Breaking here would split a word at a hyphen or dash ("S-/SORRY").
+    splits_word: bool,
+    is_mandatory: bool,
+}
+
+#[derive(Debug)]
+struct BalloonBreaks {
+    breaks: Vec<usize>,
+    profiles: Vec<LineProfile>,
+    overflowed: bool,
+    cost: f32,
+}
+
+const BALLOON_MAX_LINES: usize = 64;
+const BALLOON_OVERFLOW_PENALTY: f32 = 1_000_000.0;
+const BALLOON_HYPHEN_PENALTY: f32 = 2_000.0;
+
+impl Balloon {
+    /// First and one-past-last rows the balloon covers.
+    fn extent(&self) -> Option<(f32, f32)> {
+        let first = self.rows.iter().position(Option::is_some)?;
+        let last = self.rows.iter().rposition(Option::is_some)?;
+        Some((first as f32, last as f32 + 1.0))
+    }
+
+    /// The span every row from `top` to `bottom` shares.
+    fn band_span(&self, top: f32, bottom: f32) -> Option<(f32, f32)> {
+        let first = top.floor().max(0.0) as usize;
+        let last = (bottom.ceil() as usize).min(self.rows.len());
+        if first >= last {
+            return None;
+        }
+        let mut span = (f32::NEG_INFINITY, f32::INFINITY);
+        for row in &self.rows[first..last] {
+            let (left, right) = (*row)?;
+            span = (span.0.max(left), span.1.min(right));
+        }
+        (span.1 > span.0).then_some(span)
+    }
+
+    /// Widths and baselines for `line_count` lines centred in the balloon, or
+    /// `None` when they don't fit. Every line shares one centre axis so the
+    /// block reads as one phrase rather than zig-zagging along the outline.
+    fn line_profiles(
+        &self,
+        line_count: usize,
+        line_height: f32,
+        ink: InkBand,
+        air: f32,
+    ) -> Option<Vec<LineProfile>> {
+        let (top, bottom) = self.extent()?;
+        let first = top + air;
+        let last = bottom - air;
+        let block = ink.thickness() + line_count.saturating_sub(1) as f32 * line_height;
+        if last - first < block {
+            return None;
+        }
+        let origin = first + (last - first - block) * 0.5;
+        let mut spans = Vec::with_capacity(line_count);
+        for line in 0..line_count {
+            let baseline = origin + ink.before + line as f32 * line_height;
+            let (left, right) = self.band_span(baseline - ink.before, baseline + ink.after)?;
+            let (left, right) = (left + air, right - air);
+            if right <= left {
+                return None;
+            }
+            spans.push((left, right, baseline));
+        }
+        let common_left = spans.iter().map(|s| s.0).fold(f32::NEG_INFINITY, f32::max);
+        let common_right = spans.iter().map(|s| s.1).fold(f32::INFINITY, f32::min);
+        if common_right <= common_left {
+            return None;
+        }
+        let center = (spans.iter().map(|s| (s.0 + s.1) * 0.5).sum::<f32>() / spans.len() as f32)
+            .clamp(common_left, common_right);
+        spans
+            .into_iter()
+            .map(|(left, right, baseline)| {
+                let half = (center - left).min(right - center);
+                (half > 0.0).then_some(LineProfile {
+                    width: half * 2.0,
+                    center,
+                    baseline,
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -104,6 +239,7 @@ pub struct TextLayout<'a> {
     max_width: Option<f32>,
     max_height: Option<f32>,
     alignment: Option<TextAlign>,
+    balloon: Option<&'a Balloon>,
 }
 
 impl<'a> TextLayout<'a> {
@@ -118,6 +254,7 @@ impl<'a> TextLayout<'a> {
             max_width: None,
             max_height: None,
             alignment: None,
+            balloon: None,
         }
     }
 
@@ -168,6 +305,13 @@ impl<'a> TextLayout<'a> {
 
     pub fn with_alignment(mut self, alignment: TextAlign) -> Self {
         self.alignment = Some(alignment);
+        self
+    }
+
+    /// Lay horizontal text out inside a balloon's outline instead of a box.
+    /// Check [`LayoutRun::overflowed`]: the text may not fit at a given size.
+    pub fn with_balloon(mut self, balloon: &'a Balloon) -> Self {
+        self.balloon = Some(balloon);
         self
     }
 
@@ -376,6 +520,21 @@ impl<'a> TextLayout<'a> {
             });
         }
 
+        if let Some(balloon) = self.balloon.filter(|_| !self.writing_mode.is_vertical()) {
+            return self.balloon_run(
+                text,
+                font_size,
+                balloon,
+                &shaped_segments,
+                &bidi_info,
+                InkBand {
+                    before: ascent,
+                    after: descent,
+                },
+                line_height,
+            );
+        }
+
         let mut lines: Vec<LayoutLine<'a>> = Vec::new();
         let mut line_offset = 0usize;
         let mut paragraph_start = 0usize;
@@ -552,6 +711,195 @@ impl<'a> TextLayout<'a> {
             width,
             height,
             font_size,
+            overflowed: false,
+            balloon_origin: None,
+        })
+    }
+
+    /// Horizontal layout inside a balloon: pick the line count and breaks
+    /// whose lines best fill the widths the outline allows at their heights,
+    /// then place the block in the balloon's frame.
+    #[allow(clippy::too_many_arguments)]
+    fn balloon_run(
+        &self,
+        text: &str,
+        font_size: f32,
+        balloon: &Balloon,
+        segments: &[ShapedSegment<'a>],
+        bidi_info: &BidiInfo<'_>,
+        fallback_ink: InkBand,
+        line_height: f32,
+    ) -> Result<LayoutRun<'a>> {
+        let ink = self
+            .segment_ink(font_size, segments)
+            .unwrap_or(fallback_ink);
+        let air = balloon.min_air.max(ink.thickness());
+        let measures = segments
+            .iter()
+            .map(|segment| BalloonMeasure {
+                advance: segment.advance,
+                trailing: trailing_space_advance(text, segment),
+                break_suffix_advance: segment.break_suffix.as_ref().map_or(0.0, |s| s.advance),
+                break_penalty: balloon_break_penalty(text, segment.next_offset),
+                splits_word: splits_word(text, segment.next_offset),
+                is_mandatory: segment.is_mandatory,
+            })
+            .collect::<Vec<_>>();
+        let (breaks, profiles, overflowed) =
+            match balloon_line_breaks(&measures, balloon, line_height, ink, air) {
+                Some(chosen) => (chosen.breaks, Some(chosen.profiles), chosen.overflowed),
+                None => {
+                    let plain = measures
+                        .iter()
+                        .map(|m| LineBreakMeasure {
+                            advance: m.advance,
+                            break_suffix_advance: m.break_suffix_advance,
+                        })
+                        .collect::<Vec<_>>();
+                    let width = (balloon.width - air * 2.0).max(1.0);
+                    (greedy_line_breaks(&plain, width), None, true)
+                }
+            };
+
+        // Every chosen line becomes one layout line (even an empty one from a
+        // blank paragraph) so line indices keep matching their profiles.
+        let mut lines: Vec<LayoutLine<'a>> = Vec::new();
+        let mut line_offset = 0usize;
+        let mut start = 0usize;
+        for end in breaks {
+            if end <= start || end > segments.len() {
+                continue;
+            }
+            let final_line = end == segments.len();
+            let runs = segments[start..end]
+                .iter()
+                .flat_map(|segment| segment.runs.iter().cloned())
+                .collect::<Vec<_>>();
+            line_offset = self.push_layout_line(
+                runs,
+                line_offset,
+                segments[end - 1].range.end,
+                if final_line {
+                    text.len()
+                } else {
+                    segments[end].range.start
+                },
+                if final_line {
+                    None
+                } else {
+                    segments[end - 1].break_suffix.clone()
+                },
+                true,
+                bidi_info,
+                &mut lines,
+            );
+            start = end;
+        }
+
+        // Centre each line's ink on its profile's axis (all lines share it).
+        let block = ink.thickness() + lines.len().saturating_sub(1) as f32 * line_height;
+        let fallback_top = (balloon.height - block) * 0.5 + ink.before;
+        for (index, line) in lines.iter_mut().enumerate() {
+            let (center, baseline) = profiles
+                .as_ref()
+                .and_then(|profiles| profiles.get(index))
+                .map_or(
+                    (
+                        balloon.width * 0.5,
+                        fallback_top + index as f32 * line_height,
+                    ),
+                    |profile| (profile.center, profile.baseline),
+                );
+            line.baseline = (0.0, baseline);
+            let (min_x, max_x) = self
+                .ink_bounds(font_size, std::slice::from_ref(line))
+                .map_or((0.0, line.advance), |(min_x, _, max_x, _)| (min_x, max_x));
+            line.baseline.0 = center - (min_x + max_x) * 0.5;
+        }
+        // Left/right alignment lines the edges up within the widest line,
+        // keeping the block on the same axis.
+        if let Some(align @ (TextAlign::Left | TextAlign::Right)) = self.alignment {
+            let extents = lines
+                .iter()
+                .map(|line| {
+                    self.ink_bounds(font_size, std::slice::from_ref(line))
+                        .map(|(min_x, _, max_x, _)| max_x - min_x)
+                })
+                .collect::<Vec<_>>();
+            let widest = extents.iter().flatten().fold(0.0f32, |a, &b| a.max(b));
+            for (line, extent) in lines.iter_mut().zip(extents) {
+                if let Some(extent) = extent {
+                    let shift = (widest - extent) * 0.5;
+                    line.baseline.0 += if align == TextAlign::Left {
+                        -shift
+                    } else {
+                        shift
+                    };
+                }
+            }
+        }
+
+        const PAD: f32 = 1.0;
+        let Some((min_x, min_y, max_x, max_y)) = self.ink_bounds(font_size, &lines) else {
+            return Ok(LayoutRun {
+                lines,
+                width: 0.0,
+                height: 0.0,
+                font_size,
+                overflowed,
+                balloon_origin: Some((balloon.width * 0.5, balloon.height * 0.5)),
+            });
+        };
+        let (min_x, min_y) = (min_x - PAD, min_y - PAD);
+        let (max_x, max_y) = (max_x + PAD, max_y + PAD);
+        for line in &mut lines {
+            line.baseline.0 -= min_x;
+            line.baseline.1 -= min_y;
+        }
+        Ok(LayoutRun {
+            lines,
+            width: max_x - min_x,
+            height: max_y - min_y,
+            font_size,
+            overflowed,
+            balloon_origin: Some((min_x, min_y)),
+        })
+    }
+
+    /// Vertical ink extent of every glyph the text could put on a line, so
+    /// all lines get the same band whatever words land on them.
+    fn segment_ink(&self, font_size: f32, segments: &[ShapedSegment<'a>]) -> Option<InkBand> {
+        let mut metrics_cache = HashMap::new();
+        let mut before = f32::NEG_INFINITY;
+        let mut after = f32::NEG_INFINITY;
+        for segment in segments {
+            let suffix_runs = segment.break_suffix.iter().flat_map(|s| s.runs.iter());
+            for run in segment.runs.iter().chain(suffix_runs) {
+                for glyph in &run.shaped.glyphs {
+                    let key = font_key(glyph.font);
+                    let glyph_metrics = match metrics_cache.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let Ok(font_ref) = glyph.font.skrifa() else {
+                                continue;
+                            };
+                            entry.insert(
+                                font_ref
+                                    .glyph_metrics(Size::new(font_size), LocationRef::default()),
+                            )
+                        }
+                    };
+                    if let Some(bounds) = glyph_metrics.bounds(skrifa::GlyphId::new(glyph.glyph_id))
+                    {
+                        before = before.max(glyph.y_offset + bounds.y_max);
+                        after = after.max(-glyph.y_offset - bounds.y_min);
+                    }
+                }
+            }
+        }
+        (before.is_finite() && after.is_finite()).then(|| InkBand {
+            before: before.max(0.0),
+            after: after.max(0.0),
         })
     }
 
@@ -848,6 +1196,188 @@ fn greedy_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usi
     breaks
 }
 
+/// Advance of the spaces a segment ends with; they vanish at a line break.
+fn trailing_space_advance(text: &str, segment: &ShapedSegment<'_>) -> f32 {
+    let visible = &text[segment.range.clone()];
+    let visible_end = segment.range.start + visible.trim_end().len();
+    segment
+        .runs
+        .iter()
+        .flat_map(|run| run.shaped.glyphs.iter())
+        .filter(|glyph| glyph.cluster as usize >= visible_end)
+        .map(|glyph| glyph.x_advance.abs())
+        .sum()
+}
+
+/// Cost of breaking a balloon line at `boundary`: free after sentence
+/// punctuation, cheap after a comma or before a conjunction, dear right after
+/// an article or preposition (as in upstream Koharu's comic layout).
+fn balloon_break_penalty(text: &str, boundary: usize) -> f32 {
+    let boundary = boundary.min(text.len());
+    let before = text[..boundary].trim_end();
+    let after = text[boundary..].trim_start();
+    match before.chars().next_back() {
+        Some('.' | '!' | '?' | '\u{2026}' | '\u{203c}' | '\u{2047}' | '\u{2048}' | '\u{2049}') => {
+            return 0.0;
+        }
+        Some(',' | ';' | ':' | '\u{2014}' | '\u{2013}') => return 20.0,
+        _ => {}
+    }
+    let next_word = after
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default();
+    if matches!(
+        next_word.to_ascii_lowercase().as_str(),
+        "and" | "but" | "or" | "so" | "because" | "although" | "while" | "then"
+    ) {
+        return 40.0;
+    }
+    let previous_word = before
+        .rsplit(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default();
+    if matches!(
+        previous_word.to_ascii_lowercase().as_str(),
+        "a" | "an" | "the" | "to" | "of" | "for" | "in" | "on" | "at" | "with" | "from"
+    ) {
+        300.0
+    } else {
+        100.0
+    }
+}
+
+/// Whether a break at `boundary` has no space before it, so it would split a
+/// word at a hyphen or dash ("S-/SORRY", "well-/known"). Balloon layouts
+/// never do that; text that only fits that way keeps its box layout.
+fn splits_word(text: &str, boundary: usize) -> bool {
+    boundary < text.len() && !text[..boundary].ends_with(char::is_whitespace)
+}
+
+/// Best line breaks for a balloon over every line count that fits: no
+/// overflow first, then fewest lines, then the most even fill.
+fn balloon_line_breaks(
+    measures: &[BalloonMeasure],
+    balloon: &Balloon,
+    line_height: f32,
+    ink: InkBand,
+    air: f32,
+) -> Option<BalloonBreaks> {
+    let (top, bottom) = balloon.extent()?;
+    let available = bottom - top - air * 2.0;
+    if available < ink.thickness() || measures.is_empty() {
+        return None;
+    }
+    let maximum = (1 + ((available - ink.thickness()) / line_height).floor() as usize)
+        .min(BALLOON_MAX_LINES)
+        .min(measures.len());
+    (1..=maximum)
+        .filter_map(|count| {
+            let profiles = balloon.line_profiles(count, line_height, ink, air)?;
+            profiled_line_breaks(measures, profiles)
+        })
+        .min_by(|a, b| {
+            a.overflowed
+                .cmp(&b.overflowed)
+                .then_with(|| a.profiles.len().cmp(&b.profiles.len()))
+                .then_with(|| a.cost.total_cmp(&b.cost))
+        })
+}
+
+/// Breaks the segments into exactly `profiles.len()` lines, minimising the
+/// squared relative slack of each line plus the break penalties. Mandatory
+/// breaks always end a line.
+fn profiled_line_breaks(
+    measures: &[BalloonMeasure],
+    profiles: Vec<LineProfile>,
+) -> Option<BalloonBreaks> {
+    let len = measures.len();
+    let count = profiles.len();
+    if count == 0 || count > len {
+        return None;
+    }
+    let mut cost = vec![vec![f32::INFINITY; len + 1]; count + 1];
+    let mut previous = vec![vec![None; len + 1]; count + 1];
+    cost[0][0] = 0.0;
+    for line in 0..count {
+        let remaining = count - line - 1;
+        for start in line..len {
+            if !cost[line][start].is_finite() {
+                continue;
+            }
+            let width = profiles[line].width.max(1.0);
+            let mut advance = 0.0f32;
+            for end in start + 1..=len - remaining {
+                let measure = measures[end - 1];
+                advance += measure.advance;
+                if end < len && measure.splits_word && !measure.is_mandatory {
+                    if advance > width {
+                        break;
+                    }
+                    continue;
+                }
+                let suffix = if end < len {
+                    measure.break_suffix_advance
+                } else {
+                    0.0
+                };
+                let line_advance = advance - measure.trailing + suffix;
+                let overflow = (line_advance - width).max(0.0) / width;
+                let slack = (width - line_advance).max(0.0) / width;
+                let mut total = cost[line][start]
+                    + slack * slack * 1_000.0
+                    + overflow * overflow * BALLOON_OVERFLOW_PENALTY;
+                if end < len {
+                    total += measure.break_penalty;
+                    if suffix > 0.0 {
+                        total += BALLOON_HYPHEN_PENALTY;
+                    }
+                }
+                if total < cost[line + 1][end] {
+                    cost[line + 1][end] = total;
+                    previous[line + 1][end] = Some(start);
+                }
+                if measure.is_mandatory || advance > width {
+                    break;
+                }
+            }
+        }
+    }
+    let total = cost[count][len];
+    if !total.is_finite() {
+        return None;
+    }
+    let mut breaks = Vec::with_capacity(count);
+    let mut end = len;
+    for line in (1..=count).rev() {
+        breaks.push(end);
+        end = previous[line][end]?;
+    }
+    if end != 0 {
+        return None;
+    }
+    breaks.reverse();
+    let mut start = 0usize;
+    let mut overflowed = false;
+    for (line, &end) in breaks.iter().enumerate() {
+        let measure = measures[end - 1];
+        let suffix = if end < len {
+            measure.break_suffix_advance
+        } else {
+            0.0
+        };
+        let advance: f32 = measures[start..end].iter().map(|m| m.advance).sum();
+        overflowed |= advance - measure.trailing + suffix > profiles[line].width + 0.5;
+        start = end;
+    }
+    Some(BalloonBreaks {
+        breaks,
+        profiles,
+        overflowed,
+        cost: total / count as f32 + count as f32 * 8.0,
+    })
+}
+
 fn centered_x_offset(x_min: f32, x_max: f32) -> f32 {
     -((x_min + x_max) * 0.5)
 }
@@ -1091,6 +1621,95 @@ mod tests {
             (actual - expected).abs() <= eps,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn round_balloon(size: u32) -> Balloon {
+        let r = size as f32 * 0.5;
+        let rows = (0..size)
+            .map(|y| {
+                let dy = (y as f32 + 0.5 - r) / r;
+                let half = r * (1.0 - dy * dy).max(0.0).sqrt();
+                (half >= 1.0).then_some((r - half, r + half))
+            })
+            .collect();
+        Balloon {
+            width: size as f32,
+            height: size as f32,
+            rows,
+            min_air: 4.0,
+        }
+    }
+
+    #[test]
+    fn balloon_layout_keeps_mandatory_line_breaks() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let balloon = round_balloon(400);
+        let layout = TextLayout::new(&font, Some(24.0))
+            .with_balloon(&balloon)
+            .run("Hi\nthere")?;
+        assert!(!layout.overflowed);
+        assert_eq!(layout.lines.len(), 2);
+        assert!(layout.lines[1].baseline.1 > layout.lines[0].baseline.1);
+        Ok(())
+    }
+
+    #[test]
+    fn balloon_layout_wraps_to_the_outline_and_centres_every_line() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let balloon = round_balloon(400);
+        let layout = TextLayout::new(&font, Some(26.0))
+            .without_hyphenation()
+            .with_balloon(&balloon)
+            .run("You wanted to discuss your boyfriend's preferences, no?")?;
+        assert!(!layout.overflowed);
+        assert!(layout.lines.len() >= 3);
+        let (origin_x, _) = layout.balloon_origin.expect("placement");
+        let centre = origin_x + layout.width * 0.5;
+        assert!((centre - 200.0).abs() < 12.0, "block centre {centre}");
+        Ok(())
+    }
+
+    #[test]
+    fn balloon_layout_reports_overflow() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let balloon = round_balloon(60);
+        let layout = TextLayout::new(&font, Some(30.0))
+            .with_balloon(&balloon)
+            .run("far too much text for this balloon")?;
+        assert!(layout.overflowed);
+        Ok(())
+    }
+
+    #[test]
+    fn balloon_breaks_avoid_ending_a_line_on_an_article() {
+        let text = "Take the cake. Or the pie";
+        // After "the " is dear, after "cake. " is free.
+        assert!(balloon_break_penalty(text, 9) > balloon_break_penalty(text, 15));
+        assert_eq!(balloon_break_penalty(text, 15), 0.0);
+    }
+
+    #[test]
+    fn balloon_layout_never_splits_a_stutter() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let balloon = round_balloon(300);
+        let text = "S-sorry... my formation just completely fell apart for a second there..";
+        for size in [18.0, 22.0, 26.0] {
+            let layout = TextLayout::new(&font, Some(size))
+                .without_hyphenation()
+                .with_balloon(&balloon)
+                .run(text)?;
+            if layout.overflowed {
+                continue;
+            }
+            for line in &layout.lines {
+                assert!(
+                    !text[line.range.clone()].trim_end().ends_with('-'),
+                    "line {:?} at {size}",
+                    &text[line.range.clone()]
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]

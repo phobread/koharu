@@ -40,9 +40,8 @@ impl Engine for Model {
             None => None,
         };
 
-        // Bubble-interior mask (optional): identifies the relevant interior
-        // for automatic foreground/background contrast sampling. Text layout
-        // itself always follows the visible node rectangle.
+        // Bubble mask (optional): unlocked boxes inside a bubble flow into
+        // its shape; it also picks the interior for automatic contrast.
         let bubble = match find_mask_node(ctx.scene, ctx.page, MaskRole::Bubble) {
             Some((_, blob)) => Some(ctx.blobs.load_image(&blob)?),
             None => None,

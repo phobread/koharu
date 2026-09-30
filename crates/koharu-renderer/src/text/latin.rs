@@ -10,8 +10,16 @@
 
 use std::collections::HashMap;
 
-use image::{GrayImage, Luma};
+use image::{GrayImage, ImageBuffer, Luma};
+use imageproc::contours::{BorderType, find_contours_with_threshold};
 use imageproc::distance_transform::{Norm, distance_transform};
+use imageproc::drawing::draw_polygon_mut;
+use imageproc::geometry::{approximate_polygon_dp, arc_length};
+use imageproc::morphology::open;
+use imageproc::point::Point;
+use imageproc::region_labelling::{Connectivity, connected_components};
+
+use super::lobes;
 
 use crate::layout::WritingMode;
 use crate::types::RenderBlock;
@@ -63,9 +71,31 @@ fn safe_padding_fraction(writing_mode: WritingMode) -> f32 {
 
 #[derive(Clone, Copy, Debug)]
 struct BubbleGeometry {
+    bbox: LayoutBox,
     horizontal_safe: LayoutBox,
     vertical_safe: LayoutBox,
 }
+
+/// The part of a bubble one text may fill: a span `(left, right)` per pixel
+/// row of `frame`, relative to the frame's top-left (`None` = row unused).
+#[derive(Clone, Debug)]
+pub struct BalloonShape {
+    pub frame: LayoutBox,
+    pub rows: Vec<Option<(f32, f32)>>,
+}
+
+/// A text box counts as inside a bubble only when at least this share of it
+/// lies on the bubble...
+const BALLOON_MIN_COVERAGE: f32 = 0.5;
+/// ...and the bubble covers at least this many times as much of it as any
+/// other bubble.
+const BALLOON_DOMINANCE: u32 = 2;
+/// Holes in a bubble's mask up to this share of its area are segmentation
+/// pinholes and get filled.
+const BALLOON_PINHOLE_SHARE: f32 = 0.02;
+/// Opening radius, as a share of the bubble's short side, that trims tails
+/// and thin connectors before any text is placed.
+const BALLOON_TRIM_FRAC: f32 = 0.04;
 
 /// Pre-built index over a bubble-segmentation mask.
 ///
@@ -123,6 +153,7 @@ impl BubbleIndex {
                 (
                     id,
                     BubbleGeometry {
+                        bbox,
                         horizontal_safe,
                         vertical_safe,
                     },
@@ -187,6 +218,462 @@ impl BubbleIndex {
     pub fn mask(&self) -> &GrayImage {
         &self.mask
     }
+
+    /// The bubble a text box confidently sits in: most of the box lies on
+    /// it and no other bubble comes close. `None` for boxes over artwork or
+    /// straddling bubbles.
+    pub fn confident_match(&self, seed: LayoutBox) -> Option<u8> {
+        let w = self.mask.width() as i32;
+        let h = self.mask.height() as i32;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let sx0 = (seed.x.floor() as i32).max(0).min(w - 1);
+        let sy0 = (seed.y.floor() as i32).max(0).min(h - 1);
+        let sx1 = ((seed.x + seed.width).ceil() as i32).clamp(sx0 + 1, w);
+        let sy1 = ((seed.y + seed.height).ceil() as i32).clamp(sy0 + 1, h);
+        let mut counts: HashMap<u8, u32> = HashMap::new();
+        for y in sy0..sy1 {
+            for x in sx0..sx1 {
+                let id = self.mask.get_pixel(x as u32, y as u32).0[0];
+                if id != 0 {
+                    *counts.entry(id).or_insert(0) += 1;
+                }
+            }
+        }
+        let total = ((sx1 - sx0) * (sy1 - sy0)) as f32;
+        let mut ranked = counts.into_iter().collect::<Vec<_>>();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let (id, best) = *ranked.first()?;
+        let runner_up = ranked.get(1).map_or(0, |entry| entry.1);
+        (best as f32 >= BALLOON_MIN_COVERAGE * total && best >= BALLOON_DOMINANCE * runner_up)
+            .then_some(id)
+    }
+
+    /// Splits bubble `id` into one balloon per text box in it (`anchors`,
+    /// page coordinates). The mask is first opened (eroded, then dilated)
+    /// a little so tails and thin connectors fall away. Joined balloons are
+    /// then separated at their necks (see [`split_lobes`]) so text keeps to
+    /// the lobe its box is in, even when the other lobes hold no text. A lobe
+    /// still holding several texts is cut with straight lines, each at the
+    /// narrowest place that puts the texts' boxes on different sides (the
+    /// seam of overlapping balloons). An anchor that can't be separated from
+    /// the others gets `None`.
+    pub fn balloon_shapes(&self, id: u8, anchors: &[LayoutBox]) -> Vec<Option<BalloonShape>> {
+        let mut shapes = vec![None; anchors.len()];
+        let Some(bubble) = self.bubbles.get(&id) else {
+            return shapes;
+        };
+        let bbox = bubble.bbox;
+        let (x0, y0) = (bbox.x as u32, bbox.y as u32);
+        let (w, h) = (bbox.width as u32, bbox.height as u32);
+        if w == 0 || h == 0 || anchors.is_empty() {
+            return shapes;
+        }
+        // One pixel of margin so the opening sees the outline everywhere.
+        let mut binary = GrayImage::new(w + 2, h + 2);
+        let mut area = 0u32;
+        for y in 0..h {
+            for x in 0..w {
+                if self.mask.get_pixel(x0 + x, y0 + y).0[0] == id {
+                    binary.put_pixel(x + 1, y + 1, Luma([255]));
+                    area += 1;
+                }
+            }
+        }
+        fill_pinholes(&mut binary, &self.mask, (x0, y0), area);
+        let crop_origin = (x0 as f32 - 1.0, y0 as f32 - 1.0);
+        let local = anchors
+            .iter()
+            .map(|a| LayoutBox {
+                x: a.x - crop_origin.0,
+                y: a.y - crop_origin.1,
+                width: a.width,
+                height: a.height,
+            })
+            .collect::<Vec<_>>();
+        let radius = (w.min(h) as f32 * BALLOON_TRIM_FRAC)
+            .round()
+            .clamp(2.0, 255.0) as u8;
+        let opened = open(&binary, Norm::L2, radius);
+        let labels = connected_components(&opened, Connectivity::Four, Luma([0u8]));
+        let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (index, anchor) in local.iter().enumerate() {
+            if let Some(label) = majority_label(&labels, *anchor) {
+                groups.entry(label).or_default().push(index);
+            }
+        }
+        let crop_width = labels.width();
+        for (label, members) in groups {
+            let region = GrayImage::from_fn(labels.width(), labels.height(), |x, y| {
+                Luma([if labels.get_pixel(x, y).0[0] == label {
+                    255
+                } else {
+                    0
+                }])
+            });
+            let Some(outline) = region_outline(&region) else {
+                continue;
+            };
+            let (min_x, max_x, min_y, max_y) = outline.iter().fold(
+                (
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                ),
+                |(a, b, c, d), &(x, y)| (a.min(x), b.max(x), c.min(y), d.max(y)),
+            );
+            let tolerance = ((max_x - min_x).min(max_y - min_y) * LOBE_TOLERANCE_FRAC).max(1.0);
+            let centres = members
+                .iter()
+                .map(|&i| {
+                    let anchor = local[i];
+                    (
+                        anchor.x + anchor.width * 0.5,
+                        anchor.y + anchor.height * 0.5,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let cells = if members.len() == 1 {
+                Some(vec![outline.clone()])
+            } else {
+                lobes::lobe_cells(&outline, &centres, tolerance)
+            };
+            let Some(cells) = cells else {
+                // No seam separates these texts (e.g. one balloon holding
+                // several): fall back to straight cuts across the region.
+                let pixels = region
+                    .enumerate_pixels()
+                    .filter(|(_, _, value)| value.0[0] != 0)
+                    .map(|(x, y, _)| y * crop_width + x)
+                    .collect::<Vec<_>>();
+                let group = members.iter().map(|&i| (i, local[i])).collect::<Vec<_>>();
+                let mut cut_cells = vec![None; anchors.len()];
+                split_region(crop_width, pixels, &group, &mut cut_cells);
+                for &index in &members {
+                    let Some(cell) = cut_cells[index].take() else {
+                        continue;
+                    };
+                    let mut mask = GrayImage::new(labels.width(), labels.height());
+                    for pixel in cell {
+                        mask.put_pixel(pixel % crop_width, pixel / crop_width, Luma([255]));
+                    }
+                    shapes[index] = shape_from_mask(&mask, local[index], crop_origin);
+                }
+                continue;
+            };
+            for (&index, cell) in members.iter().zip(cells) {
+                let anchor = local[index];
+                let own = lobes::trim_empty_lobes(
+                    &cell,
+                    (
+                        anchor.x,
+                        anchor.y,
+                        anchor.x + anchor.width,
+                        anchor.y + anchor.height,
+                    ),
+                    tolerance,
+                );
+                let mut mask = GrayImage::new(region.width(), region.height());
+                let points = own
+                    .iter()
+                    .map(|&(x, y)| Point::new(x.round() as i32, y.round() as i32))
+                    .collect::<Vec<_>>();
+                if points.len() < 3 {
+                    continue;
+                }
+                let mut points = points;
+                points.dedup();
+                if points.first() == points.last() {
+                    points.pop();
+                }
+                if points.len() < 3 {
+                    continue;
+                }
+                draw_polygon_mut(&mut mask, &points, Luma([255]));
+                for (x, y, pixel) in mask.enumerate_pixels_mut() {
+                    if region.get_pixel(x, y).0[0] == 0 {
+                        pixel.0[0] = 0;
+                    }
+                }
+                shapes[index] = shape_from_mask(&mask, anchor, crop_origin);
+            }
+        }
+        shapes
+    }
+}
+
+/// Seam tolerance: outline simplification error as a share of the region's
+/// short side (upstream Koharu uses the same).
+const LOBE_TOLERANCE_FRAC: f32 = 0.0075;
+
+/// The outer outline of the largest region in `mask`, crop coordinates.
+fn region_outline(mask: &GrayImage) -> Option<Vec<(f32, f32)>> {
+    let contours = find_contours_with_threshold::<i32>(mask, 0);
+    let outer = contours
+        .iter()
+        .filter(|contour| contour.border_type == BorderType::Outer)
+        .max_by(|a, b| {
+            outline_area(&a.points)
+                .partial_cmp(&outline_area(&b.points))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    if outer.points.len() < 3 {
+        return None;
+    }
+    let epsilon = (arc_length(&outer.points, true) * 0.001).max(0.5);
+    let simplified = approximate_polygon_dp(&outer.points, epsilon, true);
+    (simplified.len() >= 3).then(|| {
+        simplified
+            .into_iter()
+            .map(|point| (point.x as f32, point.y as f32))
+            .collect()
+    })
+}
+
+fn outline_area(points: &[Point<i32>]) -> f64 {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            f64::from(a.x) * f64::from(b.y) - f64::from(b.x) * f64::from(a.y)
+        })
+        .sum::<f64>()
+        .abs()
+        * 0.5
+}
+
+/// The balloon for `anchor` from a cell mask: the connected piece covering
+/// most of the anchor box.
+fn shape_from_mask(
+    mask: &GrayImage,
+    anchor: LayoutBox,
+    crop_origin: (f32, f32),
+) -> Option<BalloonShape> {
+    let pieces = connected_components(mask, Connectivity::Four, Luma([0u8]));
+    let piece = majority_label(&pieces, anchor)?;
+    balloon_from_label(&pieces, piece, anchor.x + anchor.width * 0.5, crop_origin)
+}
+
+/// Share of a text box that must lie on one side of a cut.
+const CUT_SIDE_SHARE: f32 = 0.8;
+/// Cut directions tried (evenly spread over 180 degrees).
+const CUT_ANGLES: usize = 36;
+
+/// Recursively cuts `pixels` (indices into a `width`-wide crop) between the
+/// `anchors` until each has its own cell, written to `cells[anchor index]`.
+/// Anchors that no straight cut can separate keep `None`.
+fn split_region(
+    width: u32,
+    pixels: Vec<u32>,
+    anchors: &[(usize, LayoutBox)],
+    cells: &mut [Option<Vec<u32>>],
+) {
+    if let [(index, _)] = anchors {
+        cells[*index] = Some(pixels);
+        return;
+    }
+    let Some((cos, sin, cut)) = narrowest_cut(width, &pixels, anchors) else {
+        return;
+    };
+    let below = |x: f32, y: f32| x * cos + y * sin < cut;
+    let (mut first, mut second) = (Vec::new(), Vec::new());
+    for pixel in pixels {
+        if below((pixel % width) as f32, (pixel / width) as f32) {
+            first.push(pixel);
+        } else {
+            second.push(pixel);
+        }
+    }
+    let (first_anchors, second_anchors): (Vec<_>, Vec<_>) = anchors
+        .iter()
+        .partition(|(_, anchor)| box_share_below(anchor, cos, sin, cut) >= 0.5);
+    split_region(width, first, &first_anchors, cells);
+    split_region(width, second, &second_anchors, cells);
+}
+
+/// The straight line `x*cos + y*sin = cut` crossing the fewest region pixels
+/// that leaves every anchor box (mostly) on one side and some on each.
+fn narrowest_cut(
+    width: u32,
+    pixels: &[u32],
+    anchors: &[(usize, LayoutBox)],
+) -> Option<(f32, f32, f32)> {
+    if pixels.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u32, f32, f32, f32)> = None;
+    for step in 0..CUT_ANGLES {
+        let angle = std::f32::consts::PI * step as f32 / CUT_ANGLES as f32;
+        let (sin, cos) = angle.sin_cos();
+        let project = |pixel: u32| (pixel % width) as f32 * cos + (pixel / width) as f32 * sin;
+        let (low, high) = pixels
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &p| {
+                let value = project(p);
+                (lo.min(value), hi.max(value))
+            });
+        // Pixels crossed by each one-pixel-wide band perpendicular to the
+        // direction: the length of the cut there.
+        let bins = (high - low).ceil() as usize + 1;
+        let mut crossed = vec![0u32; bins];
+        for &pixel in pixels {
+            crossed[(project(pixel) - low) as usize] += 1;
+        }
+        for (bin, &count) in crossed.iter().enumerate() {
+            if best.is_some_and(|b| count >= b.0) {
+                continue;
+            }
+            let cut = low + bin as f32 + 0.5;
+            let mut sides = (0, 0);
+            let clean = anchors.iter().all(|(_, anchor)| {
+                let share = box_share_below(anchor, cos, sin, cut);
+                if share >= CUT_SIDE_SHARE {
+                    sides.0 += 1;
+                    true
+                } else if share <= 1.0 - CUT_SIDE_SHARE {
+                    sides.1 += 1;
+                    true
+                } else {
+                    false
+                }
+            });
+            if clean && sides.0 > 0 && sides.1 > 0 {
+                best = Some((count, cos, sin, cut));
+            }
+        }
+    }
+    best.map(|(_, cos, sin, cut)| (cos, sin, cut))
+}
+
+/// Share of `anchor`'s area with `x*cos + y*sin < cut` (sampled on a grid).
+fn box_share_below(anchor: &LayoutBox, cos: f32, sin: f32, cut: f32) -> f32 {
+    const GRID: usize = 12;
+    let mut below = 0;
+    for i in 0..GRID {
+        for j in 0..GRID {
+            let x = anchor.x + anchor.width * (i as f32 + 0.5) / GRID as f32;
+            let y = anchor.y + anchor.height * (j as f32 + 0.5) / GRID as f32;
+            if x * cos + y * sin < cut {
+                below += 1;
+            }
+        }
+    }
+    below as f32 / (GRID * GRID) as f32
+}
+
+/// Fills holes in `binary` (0 regions not reaching its border) that are
+/// small and don't belong to another bubble in `page_mask`.
+fn fill_pinholes(binary: &mut GrayImage, page_mask: &GrayImage, origin: (u32, u32), area: u32) {
+    let (w, h) = binary.dimensions();
+    let inverted = GrayImage::from_fn(w, h, |x, y| Luma([255 - binary.get_pixel(x, y).0[0]]));
+    let holes = connected_components(&inverted, Connectivity::Four, Luma([0u8]));
+    let mut touches_border = HashMap::<u32, bool>::new();
+    let mut sizes = HashMap::<u32, u32>::new();
+    let mut other_bubble = HashMap::<u32, bool>::new();
+    for (x, y, label) in holes.enumerate_pixels() {
+        let label = label.0[0];
+        if label == 0 {
+            continue;
+        }
+        *sizes.entry(label).or_insert(0) += 1;
+        let border = x == 0 || y == 0 || x == w - 1 || y == h - 1;
+        *touches_border.entry(label).or_insert(false) |= border;
+        if !border {
+            let page = page_mask.get_pixel(origin.0 + x - 1, origin.1 + y - 1).0[0];
+            *other_bubble.entry(label).or_insert(false) |= page != 0;
+        }
+    }
+    let limit = area as f32 * BALLOON_PINHOLE_SHARE;
+    for (x, y, label) in holes.enumerate_pixels() {
+        let label = label.0[0];
+        if label != 0
+            && !touches_border[&label]
+            && !other_bubble.get(&label).copied().unwrap_or(false)
+            && sizes[&label] as f32 <= limit
+        {
+            binary.put_pixel(x, y, Luma([255]));
+        }
+    }
+}
+
+/// The region label covering most of `anchor`, if any.
+fn majority_label(labels: &ImageBuffer<Luma<u32>, Vec<u32>>, anchor: LayoutBox) -> Option<u32> {
+    let (w, h) = labels.dimensions();
+    let x0 = (anchor.x.floor().max(0.0) as u32).min(w);
+    let y0 = (anchor.y.floor().max(0.0) as u32).min(h);
+    let x1 = ((anchor.x + anchor.width).ceil().max(0.0) as u32).min(w);
+    let y1 = ((anchor.y + anchor.height).ceil().max(0.0) as u32).min(h);
+    let mut counts = HashMap::<u32, u32>::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let label = labels.get_pixel(x, y).0[0];
+            if label != 0 {
+                *counts.entry(label).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(label, _)| label)
+}
+
+/// Row spans of one region. Where a row has several runs, the one under the
+/// text's centre wins, else the widest.
+fn balloon_from_label(
+    labels: &ImageBuffer<Luma<u32>, Vec<u32>>,
+    label: u32,
+    anchor_x: f32,
+    crop_origin: (f32, f32),
+) -> Option<BalloonShape> {
+    let (w, h) = labels.dimensions();
+    let mut runs_by_row = Vec::with_capacity(h as usize);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for y in 0..h {
+        let mut runs = Vec::new();
+        let mut x = 0;
+        while x < w {
+            if labels.get_pixel(x, y).0[0] != label {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < w && labels.get_pixel(x, y).0[0] == label {
+                x += 1;
+            }
+            runs.push((start, x));
+        }
+        let best = runs
+            .iter()
+            .copied()
+            .find(|&(start, end)| start as f32 <= anchor_x && anchor_x < end as f32)
+            .or_else(|| runs.iter().copied().max_by_key(|&(start, end)| end - start));
+        if let Some((start, end)) = best {
+            min_x = min_x.min(start);
+            max_x = max_x.max(end);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y + 1);
+        }
+        runs_by_row.push(best);
+    }
+    if min_x >= max_x || min_y >= max_y {
+        return None;
+    }
+    let rows = runs_by_row[min_y as usize..max_y as usize]
+        .iter()
+        .map(|run| run.map(|(start, end)| ((start - min_x) as f32, (end - min_x) as f32)))
+        .collect();
+    Some(BalloonShape {
+        frame: LayoutBox {
+            x: crop_origin.0 + min_x as f32,
+            y: crop_origin.1 + min_y as f32,
+            width: (max_x - min_x) as f32,
+            height: (max_y - min_y) as f32,
+        },
+        rows,
+    })
 }
 
 fn safe_layout_box(
@@ -455,6 +942,79 @@ mod tests {
                 img.put_pixel(x, y, Luma([value]));
             }
         }
+    }
+
+    fn text_box(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+        LayoutBox {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn confident_match_needs_most_of_the_box_on_one_bubble() {
+        let mut mask = GrayImage::new(300, 100);
+        paint_rect(&mut mask, 0, 0, 100, 100, 1);
+        paint_rect(&mut mask, 100, 0, 200, 100, 2);
+        let index = BubbleIndex::new(mask);
+        assert_eq!(
+            index.confident_match(text_box(20.0, 20.0, 40.0, 40.0)),
+            Some(1)
+        );
+        // Straddles two bubbles evenly.
+        assert_eq!(
+            index.confident_match(text_box(80.0, 20.0, 40.0, 40.0)),
+            None
+        );
+        // Mostly over the background.
+        assert_eq!(
+            index.confident_match(text_box(180.0, 20.0, 60.0, 40.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn joined_balloons_split_along_their_seam() {
+        let mut mask = GrayImage::new(320, 440);
+        paint_rect(&mut mask, 20, 20, 220, 200, 1);
+        paint_rect(&mut mask, 90, 180, 290, 420, 1);
+        let index = BubbleIndex::new(mask);
+        let shapes = index.balloon_shapes(
+            1,
+            &[
+                text_box(60.0, 60.0, 100.0, 80.0),
+                text_box(140.0, 260.0, 100.0, 80.0),
+            ],
+        );
+        let top = shapes[0].as_ref().expect("top lobe").frame;
+        let bottom = shapes[1].as_ref().expect("bottom lobe").frame;
+        assert!(top.y + top.height <= 215.0, "{top:?}");
+        assert!(bottom.y >= 175.0, "{bottom:?}");
+        assert!(bottom.x >= 80.0, "{bottom:?}");
+    }
+
+    #[test]
+    fn a_text_keeps_to_its_own_lobe_when_empty_lobes_are_attached() {
+        let mut mask = GrayImage::new(400, 360);
+        paint_rect(&mut mask, 20, 120, 240, 340, 1);
+        paint_rect(&mut mask, 200, 20, 360, 150, 1);
+        let index = BubbleIndex::new(mask);
+        let shapes = index.balloon_shapes(1, &[text_box(60.0, 180.0, 120.0, 100.0)]);
+        let own = shapes[0].as_ref().expect("main lobe").frame;
+        assert!(own.y >= 110.0, "{own:?}");
+        assert!(own.x + own.width <= 250.0, "{own:?}");
+    }
+
+    #[test]
+    fn a_single_balloon_keeps_its_whole_body() {
+        let mut mask = GrayImage::new(300, 300);
+        paint_rect(&mut mask, 40, 40, 260, 260, 1);
+        let index = BubbleIndex::new(mask);
+        let shapes = index.balloon_shapes(1, &[text_box(100.0, 120.0, 100.0, 60.0)]);
+        let frame = shapes[0].as_ref().expect("balloon").frame;
+        assert!(frame.width >= 200.0 && frame.height >= 200.0, "{frame:?}");
     }
 
     fn assert_rect_pixels_match(mask: &GrayImage, rect: LayoutBox, value: u8) {

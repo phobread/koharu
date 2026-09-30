@@ -18,6 +18,7 @@ import { RichTextDraftTextarea } from '@/components/ui/rich-text-draft-textarea'
 import { SplittableDraftTextarea } from '@/components/ui/splittable-draft-textarea'
 import type { TextNodeEntry } from '@/hooks/useCurrentPage'
 import type { Page, TextDataPatch } from '@/lib/api/schemas'
+import { displayBox } from '@/lib/displayBox'
 import { applyOp, applyOpFromScene, queueAutoRender } from '@/lib/io/scene'
 import { splitBlock } from '@/lib/io/splitNode'
 import { ops } from '@/lib/ops'
@@ -58,7 +59,7 @@ export function BlockQuickEditor({
   const { t } = useTranslation()
   // Zoomed away from the whole-page fit (by this button or by hand).
   const zoomed = !useEditorUiStore((s) => s.autoFitEnabled)
-  const box = node.transform
+  const box = displayBox(node.transform, node.data)
   // Prefer the right side of the box; flip to the left when that would run
   // off the page. Top tracks the box, clamped so the editor stays visible.
   const rightX = (box.x + box.width) * scale + EDITOR_GAP

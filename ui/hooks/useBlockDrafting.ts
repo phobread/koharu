@@ -5,6 +5,7 @@ import { useRef, useState } from 'react'
 
 import type { DocumentPointer, PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import type { Page } from '@/lib/api/schemas'
+import { displayBox } from '@/lib/displayBox'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 import type { ToolMode } from '@/lib/types'
 
@@ -170,7 +171,7 @@ export function textNodesTouching(page: Page, rect: BlockDraft): string[] {
   const ids: string[] = []
   for (const [id, node] of Object.entries(page.nodes)) {
     if (!node?.transform || !('text' in node.kind)) continue
-    const { x, y, width, height, rotationDeg } = node.transform
+    const { x, y, width, height, rotationDeg } = displayBox(node.transform, node.kind.text)
     const rad = ((rotationDeg ?? 0) * Math.PI) / 180
     const cos = Math.abs(Math.cos(rad))
     const sin = Math.abs(Math.sin(rad))

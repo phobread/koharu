@@ -6,6 +6,7 @@ import type React from 'react'
 import { isTextNode } from '@/hooks/useCurrentPage'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import type { Page } from '@/lib/api/schemas'
+import { displayBox } from '@/lib/displayBox'
 
 type BlockContextMenuOptions = {
   page: Page | null
@@ -39,8 +40,8 @@ export function useBlockContextMenu({
     }
     const hitId = Object.entries(page.nodes).find(([, n]) => {
       if (!isTextNode(n)) return false
-      const t = n.transform
-      if (!t) return false
+      if (!n.transform) return false
+      const t = displayBox(n.transform, n.kind.text)
       return (
         point.x >= t.x && point.x <= t.x + t.width && point.y >= t.y && point.y <= t.y + t.height
       )

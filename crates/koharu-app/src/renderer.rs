@@ -19,12 +19,12 @@ use koharu_core::{
 use koharu_renderer::{
     TextAlign as RendererTextAlign, TextShaderEffect as RendererEffect,
     font::{FaceInfo, Font, FontBook},
-    layout::{LayoutRun, TextLayout, WritingMode},
+    layout::{Balloon, LayoutRun, TextLayout, WritingMode},
     renderer::{
         RasterOptions, RenderOptions, RenderStrokeOptions, RenderStyleRange, TinySkiaRenderer,
     },
     text::{
-        latin::{BubbleIndex, LayoutBox},
+        latin::{BalloonShape, BubbleIndex, LayoutBox},
         script::{font_families_for_text, writing_mode_for_block},
     },
     types::{RenderBlock, TextDirection as RendererTextDirection},
@@ -73,8 +73,9 @@ pub struct PageRenderOptions {
 }
 
 /// Per-block sprite output. `expanded_transform` becomes
-/// `TextData.sprite_transform` and places the tightly sized sprite within the
-/// authoritative node rectangle.
+/// `TextData.sprite_transform` and places the tightly sized sprite: centred
+/// in the node rectangle, or where the layout put it inside the block's
+/// balloon.
 pub struct RenderedBlock {
     pub node_id: NodeId,
     pub sprite: DynamicImage,
@@ -236,6 +237,7 @@ impl Renderer {
         // lookups in O(seed_area).
         let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| BubbleIndex::new(m.to_luma8()));
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
+        let balloons = resolve_balloons(blocks, bubble_index.as_ref());
         let bubble_mask = bubble_index.as_ref().map(BubbleIndex::mask);
 
         let mut background = inpainted.to_rgba8();
@@ -244,10 +246,15 @@ impl Renderer {
         }
 
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
-        for (block, layout_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
+        for ((block, layout_box), balloon) in blocks
+            .iter()
+            .zip(layout_boxes.iter().copied())
+            .zip(balloons.iter())
+        {
             match self.render_one(
                 block,
                 layout_box,
+                balloon.as_ref(),
                 &background,
                 bubble_mask,
                 &opts.shader_effect,
@@ -283,6 +290,7 @@ impl Renderer {
         &self,
         block: &RenderBlockInput,
         resolved_box: ResolvedLayoutBox,
+        balloon: Option<&BalloonShape>,
         background: &RgbaImage,
         bubble_mask: Option<&GrayImage>,
         effect: &TextShaderEffect,
@@ -485,6 +493,92 @@ impl Renderer {
             layout
         };
 
+        // Unlocked boxes in a speech bubble flow into the bubble's shape when
+        // that lets the text be at least as big as in the box; otherwise (or
+        // if it can't fit the bubble at a readable size) the box layout
+        // stands. A tight box, like a small black caption box the lettering
+        // already filled, gains nothing from the bubble's margins.
+        if let Some(shape) =
+            balloon.filter(|_| !writing_mode.is_vertical() && rotation_deg.is_none())
+        {
+            let region = Balloon {
+                width: shape.frame.width,
+                height: shape.frame.height,
+                rows: shape.rows.clone(),
+                min_air: BALLOON_MIN_AIR + box_padding.max(0.0) + fit_clearance,
+            };
+            let fitted = fit_balloon_font_size(
+                &layout_builder.clone().with_balloon(&region),
+                translation,
+                style.font_size,
+                min_font_size.max(layout.font_size),
+                max_font,
+            )?;
+            if let Some(fitted) = fitted {
+                // Synthetic bold/italic need extra room around the ink.
+                let effect_clearance = self.renderer.effect_padding(
+                    &fitted,
+                    &RenderOptions {
+                        font_size: fitted.font_size,
+                        effect: shader_core_to_renderer(block_effect),
+                        style_ranges: render_style_ranges.clone(),
+                        ..Default::default()
+                    },
+                )?;
+                let widened;
+                let fitted = if effect_clearance > 0.0 {
+                    widened = Balloon {
+                        min_air: region.min_air + effect_clearance,
+                        ..region.clone()
+                    };
+                    fit_balloon_font_size(
+                        &layout_builder.clone().with_balloon(&widened),
+                        translation,
+                        Some(fitted.font_size),
+                        min_font_size.max(layout.font_size),
+                        fitted.font_size,
+                    )?
+                } else {
+                    Some(fitted)
+                };
+                if let Some(layout) = fitted
+                    && let Some((origin_x, origin_y)) = layout.balloon_origin
+                {
+                    tracing::debug!(
+                        node = %block.node_id,
+                        font_size = layout.font_size,
+                        lines = layout.lines.len(),
+                        "text laid out in its bubble"
+                    );
+                    let mut candidate = render_candidate(&layout)?;
+                    let pad_x = (candidate.image.width() as f32 - layout.width) * 0.5;
+                    let pad_y = (candidate.image.height() as f32 - layout.height) * 0.5;
+                    candidate.transform = Transform {
+                        x: (shape.frame.x + origin_x - pad_x).round(),
+                        y: (shape.frame.y + origin_y - pad_y).round(),
+                        width: candidate.image.width() as f32,
+                        height: candidate.image.height() as f32,
+                        rotation_deg: 0.0,
+                    };
+                    return Ok(Some(RenderedBlock {
+                        node_id: block.node_id,
+                        sprite: DynamicImage::ImageRgba8(candidate.image),
+                        rendered_direction: rendered_direction_for_writing_mode(writing_mode),
+                        expanded_transform: Some(candidate.transform),
+                        font_size: candidate.font_size,
+                        text_color: color,
+                    }));
+                }
+            }
+
+            tracing::debug!(
+                node = %block.node_id,
+                min_font_size,
+                box_font_size = layout.font_size,
+                "text isn't bigger in its bubble than in its box; using the box"
+            );
+        }
+
         let candidate = render_candidate(&layout)?;
 
         Ok(Some(RenderedBlock {
@@ -666,6 +760,67 @@ fn effective_min_font_size(image_min: f32, lock_layout_box: bool) -> f32 {
     }
 }
 
+/// Clearance kept between bubble text and the bubble outline on top of the
+/// renderer's own margin (which is at least one line of ink).
+const BALLOON_MIN_AIR: f32 = 4.0;
+
+/// Largest integer font size in `[min_size, max_size]` at which the text fits
+/// its balloon, or `None` (the caller then fits the box rectangle instead).
+/// An `explicit_size` is used when it fits and otherwise caps the search.
+/// A balloon's fit isn't monotonic in size (a smaller font can reflow into a
+/// worse line count), so sizes are probed downward from the top in coarse
+/// steps and the gap above the first fit is then bisected; only sizes that
+/// were laid out and fit are ever returned.
+fn fit_balloon_font_size<'a>(
+    layout_builder: &TextLayout<'a>,
+    text: &str,
+    explicit_size: Option<f32>,
+    min_size: f32,
+    max_size: f32,
+) -> Result<Option<LayoutRun<'a>>> {
+    const PROBES: i32 = 8;
+    let run_at = |size: i32| -> Result<LayoutRun<'a>> {
+        layout_builder.clone().with_font_size(size as f32).run(text)
+    };
+    let min_size = min_size.max(1.0).round() as i32;
+    let max_size = match explicit_size {
+        Some(size) => size.clamp(1.0, MAX_AUTO_FONT_SIZE).floor() as i32,
+        None => max_size.round() as i32,
+    };
+    if max_size < min_size {
+        return Ok(None);
+    }
+    let step = ((max_size - min_size) / PROBES).max(1);
+    let mut larger_non_fit: Option<i32> = None;
+    let mut size = max_size;
+    loop {
+        let candidate = run_at(size)?;
+        if !candidate.overflowed {
+            let Some(mut high) = larger_non_fit else {
+                return Ok(Some(candidate));
+            };
+            let mut low = size;
+            let mut best = candidate;
+            while high - low > 1 {
+                let middle = low + (high - low) / 2;
+                let candidate = run_at(middle)?;
+                if candidate.overflowed {
+                    high = middle;
+                } else {
+                    best = candidate;
+                    low = middle;
+                }
+            }
+            return Ok(Some(best));
+        }
+        larger_non_fit = Some(size);
+        if size == min_size {
+            return Ok(None);
+        }
+        size = (size - step).max(min_size);
+    }
+}
+
 /// Binary-search the largest integer font size in `[min_size, max_size]`
 /// whose shaped layout still fits inside the constraint box. An
 /// `explicit_size` override is the preferred size, but still shrinks when
@@ -777,11 +932,11 @@ fn resolve_layout_boxes(
         .iter()
         .map(|block| {
             let seed_box = seed_layout_box(block);
-            // The visible node rectangle is always the authoritative layout
-            // boundary. Bubble detection may identify which interior to use
-            // for automatic contrast sampling, but must never replace the
-            // user's box or make untouched first renders behave differently
-            // from manually resized boxes.
+            // The node rectangle is the layout boundary whenever a block
+            // doesn't flow into a balloon (locked or rotated boxes, text over
+            // artwork, or text too long for its bubble; see
+            // `resolve_balloons`). The bubble also picks the interior used
+            // for automatic contrast sampling.
             let bubble_id = bubble_index.and_then(|index| {
                 let translation = block.translation.trim();
                 if translation.is_empty() {
@@ -805,6 +960,67 @@ fn resolve_layout_boxes(
 // ---------------------------------------------------------------------------
 // Helpers: font families, fallbacks
 // ---------------------------------------------------------------------------
+
+/// The balloon each block may flow into: its share of the speech bubble it
+/// confidently sits in, split from any other text in that bubble. Every block
+/// with text reserves its part of a bubble it touches, but only unlocked,
+/// unrotated boxes use one; the rest keep their rectangle.
+fn resolve_balloons(
+    blocks: &[RenderBlockInput],
+    bubble_index: Option<&BubbleIndex>,
+) -> Vec<Option<BalloonShape>> {
+    let mut balloons = vec![None; blocks.len()];
+    let Some(index) = bubble_index else {
+        return balloons;
+    };
+    // bubble id -> (block index, may use the balloon)
+    let mut occupants: std::collections::BTreeMap<u8, Vec<(usize, bool)>> = Default::default();
+    for (i, block) in blocks.iter().enumerate() {
+        if block.translation.trim().is_empty() {
+            continue;
+        }
+        let seed = seed_layout_box(block);
+        match index.confident_match(seed) {
+            Some(id) => {
+                let eligible = !block.lock_layout_box
+                    && effective_rotation(block.transform.rotation_deg).is_none();
+                occupants.entry(id).or_default().push((i, eligible));
+            }
+            None => {
+                if let Some(matched) = index.lookup_match(seed, WritingMode::Horizontal) {
+                    tracing::debug!(
+                        node = %block.node_id,
+                        bubble = matched.id,
+                        "box isn't clearly inside one bubble; using the box"
+                    );
+                    occupants.entry(matched.id).or_default().push((i, false));
+                }
+            }
+        }
+    }
+    for (id, members) in occupants {
+        if !members.iter().any(|&(_, eligible)| eligible) {
+            continue;
+        }
+        let anchors = members
+            .iter()
+            .map(|&(i, _)| seed_layout_box(&blocks[i]))
+            .collect::<Vec<_>>();
+        for ((i, eligible), shape) in members.into_iter().zip(index.balloon_shapes(id, &anchors)) {
+            if eligible {
+                if shape.is_none() {
+                    tracing::debug!(
+                        node = %blocks[i].node_id,
+                        bubble = id,
+                        "bubble shared with other text that can't be split off; using the box"
+                    );
+                }
+                balloons[i] = shape;
+            }
+        }
+    }
+    balloons
+}
 
 fn apply_default_font_families(font_families: &mut Vec<String>, text: &str) {
     if font_families.is_empty() {
@@ -1718,6 +1934,124 @@ mod tests {
         assert_eq!(layout_boxes[0].bubble_id, Some(1));
         assert_eq!(layout_boxes[1].layout_box, seed_layout_box(&blocks[1]));
         assert_eq!(layout_boxes[1].bubble_id, Some(1));
+    }
+
+    fn ellipse_balloon(width: u32, height: u32) -> Balloon {
+        let (cx, cy) = (width as f32 * 0.5, height as f32 * 0.5);
+        let rows = (0..height)
+            .map(|y| {
+                let dy = (y as f32 + 0.5 - cy) / cy;
+                let half = cx * (1.0 - dy * dy).max(0.0).sqrt();
+                (half >= 1.0).then_some((cx - half, cx + half))
+            })
+            .collect();
+        Balloon {
+            width: width as f32,
+            height: height as f32,
+            rows,
+            min_air: 4.0,
+        }
+    }
+
+    #[test]
+    fn balloon_fit_fills_the_outline_and_stays_inside_it() -> Result<()> {
+        let font = any_system_font();
+        let balloon = ellipse_balloon(600, 400);
+        let builder = TextLayout::new(&font, None).without_hyphenation();
+        let layout = fit_balloon_font_size(
+            &builder.with_balloon(&balloon),
+            "HOW FAR HAVE YOU GONE WITH MY SISTER?",
+            None,
+            12.0,
+            MAX_AUTO_FONT_SIZE,
+        )?
+        .expect("text fits the balloon");
+        assert!(!layout.overflowed);
+        assert!(layout.font_size > 24.0, "font {}", layout.font_size);
+        assert!(layout.lines.len() >= 2);
+        let (x, y) = layout.balloon_origin.expect("balloon placement");
+        assert!(x >= 0.0 && y >= 0.0);
+        assert!(x + layout.width <= 600.0 && y + layout.height <= 400.0);
+        assert!((x + layout.width * 0.5 - 300.0).abs() < 20.0);
+        assert!((y + layout.height * 0.5 - 200.0).abs() < 30.0);
+        Ok(())
+    }
+
+    #[test]
+    fn balloon_fit_gives_way_to_the_box_below_the_readability_floor() -> Result<()> {
+        let font = any_system_font();
+        let balloon = ellipse_balloon(80, 50);
+        let builder = TextLayout::new(&font, None).without_hyphenation();
+        let fitted = fit_balloon_font_size(
+            &builder.with_balloon(&balloon),
+            "a much longer sentence than this little balloon can hold",
+            None,
+            12.0,
+            100.0,
+        )?;
+        assert!(fitted.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn balloon_fit_keeps_an_explicit_size_that_fits() -> Result<()> {
+        let font = any_system_font();
+        let balloon = ellipse_balloon(600, 400);
+        let builder = TextLayout::new(&font, None).without_hyphenation();
+        let layout = fit_balloon_font_size(
+            &builder.with_balloon(&balloon),
+            "Hello there",
+            Some(24.0),
+            12.0,
+            MAX_AUTO_FONT_SIZE,
+        )?
+        .expect("fits");
+        assert_eq!(layout.font_size, 24.0);
+        Ok(())
+    }
+
+    #[test]
+    fn only_unlocked_boxes_with_text_inside_a_bubble_get_a_balloon() {
+        let mut mask = GrayImage::from_pixel(400, 300, Luma([0u8]));
+        paint_rect(&mut mask, 20, 20, 180, 280, 1);
+        paint_rect(&mut mask, 220, 20, 380, 280, 2);
+        let index = BubbleIndex::new(mask);
+        let unlocked = block(60.0, 100.0, 80.0, 60.0, "hello");
+        let mut locked = block(260.0, 100.0, 80.0, 60.0, "world");
+        locked.lock_layout_box = true;
+        let over_art = block(185.0, 2.0, 30.0, 12.0, "hey");
+        let empty = block(60.0, 200.0, 40.0, 30.0, "  ");
+
+        let balloons = resolve_balloons(&[unlocked, locked, over_art, empty], Some(&index));
+
+        let frame = balloons[0]
+            .as_ref()
+            .expect("unlocked box in bubble 1")
+            .frame;
+        assert!(
+            frame.x >= 19.0 && frame.x + frame.width <= 181.0,
+            "{frame:?}"
+        );
+        assert!(balloons[1].is_none());
+        assert!(balloons[2].is_none());
+        assert!(balloons[3].is_none());
+    }
+
+    #[test]
+    fn a_locked_neighbour_keeps_its_lobe_of_a_joined_bubble() {
+        let mut mask = GrayImage::from_pixel(300, 420, Luma([0u8]));
+        paint_rect(&mut mask, 20, 20, 220, 200, 1);
+        paint_rect(&mut mask, 80, 180, 280, 400, 1);
+        let index = BubbleIndex::new(mask);
+        let top = block(60.0, 60.0, 100.0, 80.0, "hello");
+        let mut bottom = block(130.0, 260.0, 100.0, 80.0, "world");
+        bottom.lock_layout_box = true;
+
+        let balloons = resolve_balloons(&[top, bottom], Some(&index));
+
+        let frame = balloons[0].as_ref().expect("top lobe").frame;
+        assert!(frame.y + frame.height <= 215.0, "{frame:?}");
+        assert!(balloons[1].is_none());
     }
 
     fn block(x: f32, y: f32, width: f32, height: f32, translation: &str) -> RenderBlockInput {

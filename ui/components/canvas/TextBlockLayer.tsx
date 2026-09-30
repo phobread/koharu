@@ -14,6 +14,7 @@ import {
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
 import type { NodeDataPatch, Transform } from '@/lib/api/schemas'
+import { displayBox } from '@/lib/displayBox'
 import { applyOp, deleteTextNodes, queueAutoRender } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import {
@@ -87,7 +88,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
       useSelectionStore.getState().select(next.id, false)
       if (!useEditorUiStore.getState().autoFitEnabled) {
-        zoomCanvasToBox(next.transform, QUICK_EDITOR_RESERVE)
+        zoomCanvasToBox(displayBox(next.transform, next.data), QUICK_EDITOR_RESERVE)
       }
       if (field) {
         requestAnimationFrame(() =>
@@ -301,7 +302,9 @@ function TextBlockItem({
   const toggleRef = useRef(false)
   const rotateStart = useRef({ cx: 0, cy: 0, pointerDeg: 0, boxDeg: 0 })
 
-  const t = node.transform
+  // Shown and edited around the text when the renderer laid it out in its
+  // bubble (see `displayBox`); the stored box changes only on a move/resize.
+  const t = displayBox(node.transform, node.data)
   // Slant: boxes rotate about their centre, matching the baked-in sprite
   // rotation on the render side.
   const deg = t.rotationDeg ?? 0

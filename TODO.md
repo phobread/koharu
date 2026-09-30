@@ -2,6 +2,13 @@
 
 ## Done recently
 
+- **Bubble-shaped lettering (2026-09-30).** Unlocked boxes inside a speech
+  bubble lay their text out in the bubble's shape (ported from upstream
+  Koharu), with joined bubbles split at their seams. Used only when it gives
+  bigger text than the box; on hand-resized bubble lines it lands closer to
+  the finished size (10.9 0.87x -> 1.04x, BadEnd 0.87x -> 0.99x). Some black
+  caption boxes are missed by the bubble detector and keep the box layout
+  (possible fallback: find the box's flat-colour patch on the cleaned page).
 - **UI batch (2026-09-29, 374fdc58):** project name and back arrow in the menu
   bar, box selection and Delete/Backspace deletion as one undo step, process
   only what's missing (current, selected or unfinished pages) with step ticks
@@ -35,6 +42,19 @@
   and could flag obvious OCR slips (온몸을 타해 → 다해). Only if leftover OCR
   errors keep costing proofreading time.
 - Hand-lettered moans and SFX remain out of scope.
+
+## Lettering
+
+- **Text over artwork is too small.** The owner enlarged 24 of 25 such lines
+  (fork auto ≈ half the final size). Let free-standing text grow past the
+  detected box.
+- **Other upstream layout extras (not evaluated).** Upstream's `layout.rs` is
+  3.5k lines vs our 1.4k, but ~2.1k of it is tests; its real code is ~400
+  lines bigger. Besides the balloon mode it adds: justify alignment,
+  line-height and letter/word spacing controls, balanced line breaks with
+  "don't break after the/to/of" penalties, hyphenation only as a last resort,
+  and CJK punctuation/emphasis layout (not needed for English output). Worth a
+  look once the bubble port has settled.
 
 ## Inpainting
 
