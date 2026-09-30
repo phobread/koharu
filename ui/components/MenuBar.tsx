@@ -36,7 +36,13 @@ import {
 import { useScene } from '@/hooks/useScene'
 import { getConfig, startPipeline } from '@/lib/api/default/default'
 import { isTauri, openExternalUrl } from '@/lib/backend'
-import { exportCurrentProjectAs, exportPageImages, importPages } from '@/lib/io/pagesIo'
+import {
+  addOfficialRelease,
+  exportCurrentProjectAs,
+  exportPageImages,
+  importPages,
+  pickOfficialRelease,
+} from '@/lib/io/pagesIo'
 import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { renderDefaultsForPipeline } from '@/lib/io/renderDefaults'
 import {
@@ -149,6 +155,15 @@ export function MenuBar() {
     }
   }
 
+  const addOfficialPages = async () => {
+    try {
+      const paths = await pickOfficialRelease()
+      if (paths.length > 0) await addOfficialRelease(paths, t)
+    } catch (err) {
+      useEditorUiStore.getState().showError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const exportImages = async (pages?: string[]) => {
     const summary = await exportPageImages(pages)
     if (summary) useEditorUiStore.getState().showNotice(exportNotice(summary, t))
@@ -210,6 +225,18 @@ export function MenuBar() {
               onSelect={() => void importPages('replace', 'folder')}
             >
               {t('menu.openFolder')}
+            </MenubarItem>
+            <MenubarItem
+              data-testid='menu-file-add-official'
+              className='text-[13px]'
+              disabled={!hasScene || !isTauri()}
+              title={t(
+                'menu.addOfficialHint',
+                "Pick the folder of this chapter's official release. Each page gets its matching release page, and cleanup keeps the release's onomatopoeia wherever you have no text.",
+              )}
+              onSelect={() => void addOfficialPages()}
+            >
+              {t('menu.addOfficial', 'Add Official Release...')}
             </MenubarItem>
             <MenubarSeparator />
             {/* Click exports every page as far as it got; hover (or the right

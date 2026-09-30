@@ -36,6 +36,10 @@ const MAX_FRAME_LEN: u32 = 512 * 1024 * 1024;
 /// `MAX_FRAME_LEN`, so a guarded length prefix can never be mistaken for the
 /// magic and the formats are unambiguous.
 const HISTORY_LOG_MAGIC: [u8; 4] = *b"KHLG";
+/// `ImageRole::Official` (scene v9) only appended an enum variant, so v3
+/// frames decode unchanged and the log version stays 3. Older builds would
+/// cut the log off at a frame naming it; the session keeps such frames
+/// behind a v9 `scene.bin`, which those builds refuse before replaying.
 const HISTORY_LOG_VERSION: u16 = 3;
 
 // ---------------------------------------------------------------------------

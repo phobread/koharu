@@ -4,6 +4,8 @@
  */
 
 export * from './addImageLayerResponse'
+export * from './addOfficialPagesRequest'
+export * from './addOfficialPagesResponse'
 export * from './apiError'
 export * from './appConfig'
 export * from './appEvent'
@@ -76,6 +78,7 @@ export * from './nodeDataPatch'
 export * from './nodeId'
 export * from './nodeKind'
 export * from './nodePatch'
+export * from './officialPageMatch'
 export * from './op'
 export * from './openProjectRequest'
 export * from './page'

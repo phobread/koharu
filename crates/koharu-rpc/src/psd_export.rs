@@ -105,6 +105,9 @@ fn resolve_page_blobs(
                         // don't have a dedicated PSD slot in the current export,
                         // so they land in the final composite only.
                     }
+                    // The official release is a hidden reference; what it
+                    // contributes already lives in the inpainted layer.
+                    ImageRole::Official => {}
                 }
             }
             NodeKind::Mask(mask) => {

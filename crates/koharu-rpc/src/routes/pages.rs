@@ -1,6 +1,7 @@
 //! Page + page-subresource byte-ingress routes.
 //!
 //! - `POST /pages`                           — multipart: create pages from N image files
+//! - `POST /pages/official/from-paths`       — pair an official release with the pages
 //! - `POST /pages/{id}/image-layers`         — multipart: add one Custom image node
 //! - `PUT  /pages/{id}/masks/{role}`         — raw PNG body: upsert a mask node
 //!   (role ∈ `segment`, `brushInpaint`)
@@ -43,6 +44,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default()
         .routes(routes!(create_pages))
         .routes(routes!(create_pages_from_paths))
+        .routes(routes!(add_official_pages_from_paths))
         .routes(routes!(add_image_layer))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
@@ -326,6 +328,101 @@ async fn create_pages_from_paths(
     .map_err(ApiError::internal)?;
 
     Ok(Json(CreatePagesResponse { pages: created_ids }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /pages/official/from-paths — pair an official release with the pages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AddOfficialPagesRequest {
+    /// Image files of the official release (any order, extra pages fine).
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialPageMatch {
+    pub page: PageId,
+    /// File name of the release page it got.
+    pub file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AddOfficialPagesResponse {
+    pub matched: Vec<OfficialPageMatch>,
+    /// Pages no file clearly matched (different size or picture).
+    pub unmatched_pages: Vec<PageId>,
+    /// Files that matched no page or could not be read.
+    pub unused_files: Vec<String>,
+    /// Pages whose cleaned image took the release's onomatopoeia; their
+    /// rendered image was dropped and needs rendering again.
+    pub rerender: Vec<PageId>,
+}
+
+/// Give the project's pages their official release: each file is paired
+/// with the page showing the same picture (same size, near-identical art),
+/// stored as the page's hidden `Image { Official }`, and — on pages already
+/// cleaned — its onomatopoeia are copied into the cleaned image. One undo
+/// step. Cleanup then keeps the release's lettering wherever the owner has
+/// no text.
+#[utoipa::path(
+    post,
+    path = "/pages/official/from-paths",
+    request_body = AddOfficialPagesRequest,
+    responses((status = 200, body = AddOfficialPagesResponse))
+)]
+async fn add_official_pages_from_paths(
+    State(app): State<AppState>,
+    Json(req): Json<AddOfficialPagesRequest>,
+) -> ApiResult<Json<AddOfficialPagesResponse>> {
+    let session = app
+        .current_session()
+        .ok_or_else(|| ApiError::bad_request("no project open"))?;
+    let (_, scene) = session.snapshot_with_epoch();
+    let blobs = session.blobs.clone();
+    let plan = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let files = req
+            .paths
+            .into_par_iter()
+            .map(|path| -> ApiResult<_> {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| ApiError::bad_request(format!("read `{name}`: {e}")))?;
+                Ok(koharu_app::official::ReleaseFile { name, bytes })
+            })
+            .collect::<ApiResult<Vec<_>>>()?;
+        koharu_app::official::plan_release(&scene, &blobs, &files).map_err(ApiError::internal)
+    })
+    .await
+    .map_err(|e| ApiError::internal(anyhow::anyhow!("official pages task panicked: {e}")))??;
+
+    if !plan.ops.is_empty() {
+        app.apply_to(
+            &session,
+            Op::Batch {
+                ops: plan.ops,
+                label: "Add official pages".into(),
+            },
+        )
+        .map_err(ApiError::internal)?;
+    }
+    Ok(Json(AddOfficialPagesResponse {
+        matched: plan
+            .matched
+            .into_iter()
+            .map(|(page, file)| OfficialPageMatch { page, file })
+            .collect(),
+        unmatched_pages: plan.unmatched_pages,
+        unused_files: plan.unused_files,
+        rerender: plan.rerender,
+    }))
 }
 
 // ---------------------------------------------------------------------------

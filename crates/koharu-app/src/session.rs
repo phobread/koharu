@@ -18,6 +18,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use atomicwrites::{AtomicFile, OverwriteBehavior};
@@ -54,9 +55,25 @@ const SCENE_MAGIC: [u8; 4] = *b"KSCN";
 /// v6: `TextData` gained `rendered_text_color` — the colour the renderer
 ///     actually painted, so the UI swatch stops guessing.
 /// v7: `TextData` gained character-level `style_ranges`.
-/// v8: current layout (`TextData` gained the explicit `writing_direction`
-///     override).
-const SCENE_FORMAT_VERSION: u16 = 8;
+/// v8: `TextData` gained the explicit `writing_direction` override.
+/// v9: current layout — `ImageRole` gained a trailing `Official` variant.
+///     Nothing else moved, so a v8 payload decodes as v9 byte for byte.
+///     A future layout change must route both 8 and 9 through the same
+///     frozen copy.
+const SCENE_FORMAT_VERSION: u16 = 9;
+/// The newest format builds before v9 read. A scene that uses nothing newer
+/// (no official release images) is still written as v8, so rolling back to
+/// an older build keeps opening every project that never used the feature.
+const SCENE_FORMAT_VERSION_PRE_OFFICIAL: u16 = 8;
+
+/// The format a scene is written in: v9 only when it needs v9.
+fn scene_format_version(scene: &Scene) -> u16 {
+    if scene.has_official_images() {
+        SCENE_FORMAT_VERSION
+    } else {
+        SCENE_FORMAT_VERSION_PRE_OFFICIAL
+    }
+}
 
 /// Snapshot written to `scene.bin`.
 #[derive(Serialize, Deserialize)]
@@ -71,6 +88,13 @@ pub struct ProjectSession {
     pub scene: RwLock<Scene>,
     pub history: Mutex<History>,
     pub blobs: Arc<BlobStore>,
+    /// Whether `scene.bin` on disk is written in the v9 format. While it is
+    /// v8, older builds open the project and replay `history.log` — and they
+    /// stop at (and cut off) the first frame naming `ImageRole::Official`.
+    /// So the first edit that brings official images into a v8 project
+    /// compacts at once: the log is emptied and `scene.bin` becomes v9,
+    /// which older builds refuse before touching the log.
+    official_format_on_disk: AtomicBool,
     /// Held for the lifetime of the session.
     _lock: File,
 }
@@ -127,6 +151,8 @@ impl ProjectSession {
 
         // Load or synthesize the scene + epoch.
         let (mut scene, mut epoch) = load_snapshot(&dir, creating)?;
+        // Only v9 snapshots can hold official images (see `scene_format_version`).
+        let official_on_disk = scene.has_official_images();
         // Replay any log frames past the snapshot epoch.
         let log_path = dir.join(LOG_FILE);
         epoch = history::replay(log_path.as_std_path(), epoch, &mut scene)
@@ -134,13 +160,18 @@ impl ProjectSession {
 
         let history_obj = History::open(log_path.as_std_path(), epoch)?;
 
-        Ok(Arc::new(Self {
+        let session = Arc::new(Self {
             dir,
             scene: RwLock::new(scene),
             history: Mutex::new(history_obj),
             blobs,
+            official_format_on_disk: AtomicBool::new(official_on_disk),
             _lock: lock,
-        }))
+        });
+        // A crash between logging official images and the compaction that
+        // follows leaves them only in the log of a v8 project; close that gap.
+        session.protect_official_format()?;
+        Ok(session)
     }
 
     // --- scene mutation ----------------------------------------------------
@@ -161,19 +192,49 @@ impl ProjectSession {
         let mut history = self.history.lock();
         let mut scene = self.scene.write();
         let op = crate::text_erase::sync_deleted_text_erase(&scene, &self.blobs, op)?;
-        history.apply(&mut scene, op)
+        let epoch = history.apply(&mut scene, op)?;
+        self.protect_official_format_locked(&mut history, &scene);
+        Ok(epoch)
     }
 
     pub fn undo(&self) -> Result<Option<(u64, Op)>> {
         let mut history = self.history.lock();
         let mut scene = self.scene.write();
-        history.undo(&mut scene)
+        let undone = history.undo(&mut scene)?;
+        self.protect_official_format_locked(&mut history, &scene);
+        Ok(undone)
     }
 
     pub fn redo(&self) -> Result<Option<(u64, Op)>> {
         let mut history = self.history.lock();
         let mut scene = self.scene.write();
-        history.redo(&mut scene)
+        let redone = history.redo(&mut scene)?;
+        self.protect_official_format_locked(&mut history, &scene);
+        Ok(redone)
+    }
+
+    /// Compact now if official images exist while `scene.bin` is still v8
+    /// (see `official_format_on_disk`).
+    fn protect_official_format(&self) -> Result<()> {
+        let mut history = self.history.lock();
+        let scene = self.scene.read();
+        if !self.official_format_on_disk.load(Ordering::Acquire) && scene.has_official_images() {
+            self.compact_locked(&mut history, &scene)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::protect_official_format`] inside an edit that already holds
+    /// both locks. The edit itself is committed either way; a failure here
+    /// only leaves an older build unable to replay the log, so it is logged
+    /// rather than reported as a failed edit (the next compaction retries).
+    fn protect_official_format_locked(&self, history: &mut History, scene: &Scene) {
+        if self.official_format_on_disk.load(Ordering::Acquire) || !scene.has_official_images() {
+            return;
+        }
+        if let Err(err) = self.compact_locked(history, scene) {
+            tracing::warn!(error = %format!("{err:#}"), dir = %self.dir, "could not save the v9 snapshot right after adding official images");
+        }
     }
 
     pub fn epoch(&self) -> u64 {
@@ -202,17 +263,20 @@ impl ProjectSession {
     /// The history guard spans write + truncate, serializing concurrent edits.
     pub fn compact(&self) -> Result<()> {
         let mut history = self.history.lock();
-        let snap = {
-            let scene = self.scene.read();
-            Snapshot {
-                epoch: history.epoch(),
-                scene: scene.clone(),
-            }
+        let scene = self.scene.read();
+        self.compact_locked(&mut history, &scene)
+    }
+
+    fn compact_locked(&self, history: &mut History, scene: &Scene) -> Result<()> {
+        let version = scene_format_version(scene);
+        let snap = Snapshot {
+            epoch: history.epoch(),
+            scene: scene.clone(),
         };
         let payload = postcard::to_allocvec(&snap).context("encode snapshot")?;
         let mut bytes = Vec::with_capacity(SCENE_MAGIC.len() + 2 + payload.len());
         bytes.extend_from_slice(&SCENE_MAGIC);
-        bytes.extend_from_slice(&SCENE_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&version.to_le_bytes());
         bytes.extend_from_slice(&payload);
         AtomicFile::new(
             self.dir.join(SCENE_FILE).as_std_path(),
@@ -220,8 +284,15 @@ impl ProjectSession {
         )
         .write(|f| f.write_all(&bytes))
         .context("write scene.bin atomically")?;
+        // From here a v9 scene.bin keeps older builds away from the log.
+        if version == SCENE_FORMAT_VERSION {
+            self.official_format_on_disk.store(true, Ordering::Release);
+        }
         // Log truncation only after snapshot is durably on disk.
         history.truncate_log()?;
+        // With the log empty, a v8 scene.bin is safe for older builds again.
+        self.official_format_on_disk
+            .store(version == SCENE_FORMAT_VERSION, Ordering::Release);
         Ok(())
     }
 }
@@ -302,7 +373,9 @@ fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
         let (ver, payload) = rest.split_at(2);
         let version = u16::from_le_bytes([ver[0], ver[1]]);
         return match version {
-            SCENE_FORMAT_VERSION => decode_postcard_exact(payload, "v8"),
+            SCENE_FORMAT_VERSION => decode_postcard_exact(payload, "v9"),
+            // v9 only appended an `ImageRole` variant: v8 bytes are v9 bytes.
+            SCENE_FORMAT_VERSION_PRE_OFFICIAL => decode_postcard_exact(payload, "v8"),
             // The first vertical-writing build accidentally reused v7 for
             // the v8 layout. Exact consumption distinguishes the real v7
             // shape from snapshots written during that collision window.
@@ -1648,10 +1721,137 @@ mod tests {
         }
         let bytes = std::fs::read(path.join(SCENE_FILE).as_std_path()).unwrap();
         assert_eq!(&bytes[..4], &SCENE_MAGIC);
+        // Nothing here needs v9, so older builds can still open it.
         assert_eq!(
             u16::from_le_bytes([bytes[4], bytes[5]]),
-            SCENE_FORMAT_VERSION
+            SCENE_FORMAT_VERSION_PRE_OFFICIAL
         );
+    }
+
+    fn scene_bin_version(path: &Utf8Path) -> u16 {
+        let bytes = std::fs::read(path.join(SCENE_FILE).as_std_path()).unwrap();
+        assert_eq!(&bytes[..4], &SCENE_MAGIC);
+        u16::from_le_bytes([bytes[4], bytes[5]])
+    }
+
+    fn log_is_empty(path: &Utf8Path) -> bool {
+        std::fs::metadata(path.join(LOG_FILE).as_std_path())
+            .unwrap()
+            .len()
+            == 6
+    }
+
+    #[test]
+    fn official_images_switch_scene_bin_to_v9_at_once_and_back_after_removal() {
+        let (_tmp, path) = tmp_dir();
+        let page = Page::new("p1", 800, 600);
+        let page_id = page.id;
+        let official = Node {
+            id: NodeId::new(),
+            transform: Transform::default(),
+            visible: false,
+            kind: NodeKind::Image(ImageData {
+                role: ImageRole::Official,
+                blob: BlobRef::new("feed"),
+                opacity: 1.0,
+                natural_width: 800,
+                natural_height: 600,
+                name: Some("001 eng.jpg".into()),
+            }),
+        };
+        {
+            let session = ProjectSession::create(&path, "official").unwrap();
+            session.apply(Op::AddPage { page, at: 0 }).unwrap();
+            session.compact().unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION_PRE_OFFICIAL);
+
+            // Adding the image compacts immediately: no log frame an older
+            // build could choke on, and scene.bin now turns such builds away.
+            session
+                .apply(Op::AddNode {
+                    page: page_id,
+                    node: official.clone(),
+                    at: 0,
+                })
+                .unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION);
+            assert!(log_is_empty(&path));
+
+            // Undo removes it; scene.bin stays v9 while the log holds the
+            // removal (whose inverse names the official image).
+            session.undo().unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION);
+            assert!(!log_is_empty(&path));
+            // Redo brings it back without another compaction.
+            session.redo().unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION);
+            session.compact().unwrap();
+        }
+        {
+            let session = ProjectSession::open(&path).unwrap();
+            let scene = session.scene_snapshot();
+            assert!(scene.has_official_images());
+            session
+                .apply(Op::RemoveNode {
+                    page: page_id,
+                    id: official.id,
+                    prev_node: official.clone(),
+                    prev_index: 0,
+                })
+                .unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION);
+            // Once saved without official images, older builds open it again.
+            session.compact().unwrap();
+            assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION_PRE_OFFICIAL);
+            assert!(log_is_empty(&path));
+        }
+        let session = ProjectSession::open(&path).unwrap();
+        assert!(!session.scene_snapshot().has_official_images());
+    }
+
+    #[test]
+    fn open_compacts_official_images_left_only_in_the_log() {
+        // A crash right after logging official images, before the compaction
+        // that follows, leaves a v8 scene.bin and the image only in the log.
+        let (_tmp, path) = tmp_dir();
+        let page = Page::new("p1", 800, 600);
+        let page_id = page.id;
+        {
+            let session = ProjectSession::create(&path, "crash").unwrap();
+            session.apply(Op::AddPage { page, at: 0 }).unwrap();
+            session.compact().unwrap();
+            // Append the frame the way the log does, bypassing the session's
+            // compaction.
+            let mut history = session.history.lock();
+            let mut scene = session.scene.write();
+            history
+                .apply(
+                    &mut scene,
+                    Op::AddNode {
+                        page: page_id,
+                        node: Node {
+                            id: NodeId::new(),
+                            transform: Transform::default(),
+                            visible: false,
+                            kind: NodeKind::Image(ImageData {
+                                role: ImageRole::Official,
+                                blob: BlobRef::new("feed"),
+                                opacity: 1.0,
+                                natural_width: 800,
+                                natural_height: 600,
+                                name: None,
+                            }),
+                        },
+                        at: 0,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION_PRE_OFFICIAL);
+        let session = ProjectSession::open(&path).unwrap();
+        assert!(session.scene_snapshot().has_official_images());
+        assert_eq!(scene_bin_version(&path), SCENE_FORMAT_VERSION);
+        assert!(log_is_empty(&path));
     }
 
     #[test]

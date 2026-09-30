@@ -1,10 +1,13 @@
 'use client'
 
+import type { TFunction } from 'i18next'
+
 import { getGetSceneJsonQueryKey, getSceneJson } from '@/lib/api/default/default'
-import type { SceneSnapshot } from '@/lib/api/schemas'
+import type { AddOfficialPagesResponse, SceneSnapshot } from '@/lib/api/schemas'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
 import { prepareExportDirectory, saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
 import {
+  addOfficialPagesByPaths,
   awaitPendingSceneEdits,
   exportProject,
   settleAutoRenders,
@@ -35,6 +38,65 @@ export async function importPages(
   }
   if (picked.files.length === 0) return
   await uploadPages(picked.files, replace)
+}
+
+/**
+ * Pick the folder of a chapter's official release: its image files' paths
+ * (empty = cancelled). Desktop only: the backend reads the files by path.
+ */
+export async function pickOfficialRelease(): Promise<string[]> {
+  const picked = await openImageFolder()
+  if (picked.kind !== 'paths') {
+    throw new Error('Adding an official release needs the desktop app.')
+  }
+  return picked.paths
+}
+
+/**
+ * Pair an official release (`paths` from {@link pickOfficialRelease}) with
+ * the open project's pages, telling the user what happened.
+ */
+export async function addOfficialRelease(paths: string[], t: TFunction): Promise<void> {
+  const ui = useEditorUiStore.getState()
+  ui.showNotice(t('official.adding', 'Adding the official release…'))
+  const res = await addOfficialPagesByPaths(paths)
+  ui.showNotice(officialPagesNotice(res, t))
+}
+
+/** What adding an official release did, in a sentence or two. */
+export function officialPagesNotice(res: AddOfficialPagesResponse, t: TFunction): string {
+  const snapshot = queryClient.getQueryData<SceneSnapshot>(getGetSceneJsonQueryKey())
+  const order = Object.keys(snapshot?.scene.pages ?? {})
+  const total = order.length || res.matched.length + res.unmatchedPages.length
+  if (res.matched.length === 0) {
+    return t(
+      'official.noneMatched',
+      'No page matched the official release. Its pages must be the same size and picture as yours.',
+    )
+  }
+  const added = t('official.added', {
+    count: res.matched.length,
+    total,
+    defaultValue: 'Official release added to {{count}} of {{total}} pages.',
+  })
+  if (res.unmatchedPages.length === 0) return added
+  const numbers = res.unmatchedPages
+    .map((id) => order.indexOf(id) + 1)
+    .filter((n) => n > 0)
+    .sort((a, b) => a - b)
+  const pages =
+    numbers.length > 10
+      ? t('menu.exportPagesMore', {
+          pages: numbers.slice(0, 10).join(', '),
+          more: numbers.length - 10,
+          defaultValue: '{{pages}} and {{more}} more',
+        })
+      : numbers.join(', ')
+  return `${added} ${t('official.unmatched', {
+    count: numbers.length,
+    pages,
+    defaultValue: 'No match for pages {{pages}}.',
+  })}`
 }
 
 /**

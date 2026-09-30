@@ -2,6 +2,13 @@
 
 ## Done recently
 
+- **Official release onomatopoeia (2026-10-01).** A project can carry its
+  chapter's official English release (New project: "Raw pages" +
+  "Official release" folders; File → Add Official Release...). Pages pair
+  by picture, and wherever you have no text the cleaned page keeps the
+  release's onomatopoeia, moans and "..." bubbles. On BadEnd 1-20 every
+  copied piece was onomatopoeia; the release's narration stays out, even
+  when placed far from your box.
 - **Bubble-shaped lettering (2026-09-30).** Unlocked boxes inside a speech
   bubble lay their text out in the bubble's shape (ported from upstream
   Koharu), with joined bubbles split at their seams. Used only when it gives
@@ -31,6 +38,16 @@
   of large areas", on by default.
 - **Text hearts (2026-09-29):** flat fill outside bubbles (1fb6c709) and the
   "Repair with LaMa" brush switch (9b5f8a21).
+
+## Official release
+
+- **Try it on other chapters.** Tuned on BadEnd 1-20 only. Watch for the
+  release's dialogue coming over (a short narration line far from any box
+  isn't caught as typeset) and for onomatopoeia that stay Korean (one
+  overlapping your box, a long typeset-looking one). Fix a wrong piece by
+  drawing a box over it and cleaning the page again.
+- Deleting a box on a cleaned page with a release takes ~2.5 s (the rule
+  runs again); a deleted box can leave ~50 faint edge pixels of the raw.
 
 ## OCR
 

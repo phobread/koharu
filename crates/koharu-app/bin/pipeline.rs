@@ -446,6 +446,7 @@ fn dump_artifacts(
                     ImageRole::Source => "source.png",
                     ImageRole::Inpainted => "inpainted.png",
                     ImageRole::Rendered => "rendered.png",
+                    ImageRole::Official => "official.png",
                     ImageRole::Custom => continue,
                 };
                 save_blob_image(session, &img.blob, &out_dir.join(name))?;

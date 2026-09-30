@@ -172,6 +172,12 @@ expression: paths
         ],
     ),
     (
+        "/pages/official/from-paths",
+        [
+            "post",
+        ],
+    ),
+    (
         "/pages/{id}/image-layers",
         [
             "post",

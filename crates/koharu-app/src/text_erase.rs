@@ -11,8 +11,11 @@
 //! mask, restores the affected `Image { Inpainted }` pixels from `Source`, and
 //! drops the now-stale `Image { Rendered }` composite. One batch = one history
 //! entry, so node, mask, pixels and composite commit or fail together and
-//! undo/redo/replay stay correct. Nothing here changes the scene v8 or
-//! history v3 layouts — it only emits existing `UpdateNode`/`RemoveNode` ops.
+//! undo/redo/replay stay correct. Nothing here changes the scene or history
+//! layouts — it only emits existing `UpdateNode`/`RemoveNode` ops. On a page
+//! with an official release the restored pixels are the source with the
+//! release's pieces ([`crate::official`]), so deleting a box over an
+//! onomatopoeia brings the release's version in.
 //!
 //! Three rules keep this from eating work the user meant to keep:
 //!   - footprints are derived from the *before/after* scenes, so a batch that
@@ -408,6 +411,9 @@ fn cleanup_ops(
     }
 
     let mut ops = Vec::new();
+    // The erase mask as it will be after the deletion; an official release
+    // decides its pieces from it.
+    let mut erase_after = None;
 
     // The cached composite still shows the deleted translation over the old
     // background, and a deletion made straight through the API never
@@ -440,13 +446,14 @@ fn cleanup_ops(
             }
             if changed {
                 let new_blob = blobs
-                    .put_webp(&DynamicImage::ImageLuma8(luma))
+                    .put_webp(&DynamicImage::ImageLuma8(luma.clone()))
                     .context("store cleared segment mask")?;
                 if new_blob != blob {
                     ops.push(update_mask_blob_op(page_id, node_id, new_blob));
                 }
             }
         }
+        erase_after = Some(luma);
     }
 
     let Some((node_id, blob)) = find_image(page, ImageRole::Inpainted) else {
@@ -501,7 +508,16 @@ fn cleanup_ops(
         return Ok(ops);
     }
     let mut out = base.to_rgba8();
-    let src = source.to_rgba8();
+    let mut src = source.to_rgba8();
+    // With an official release, the page shows the release wherever the
+    // owner has no text: the deleted footprint goes back to the source with
+    // the release's pieces, and a piece the deleted box was blocking comes
+    // over whole, even where it reaches past the footprint.
+    let pieces = crate::official::page_pieces(page, blobs, erase_after.as_ref())
+        .context("find the official release's pieces")?;
+    if let Some(pieces) = &pieces {
+        pieces.apply_to(&mut src, None);
+    }
     let mut changed = false;
     for (index, set) in region.bits.iter().enumerate() {
         if !set {
@@ -519,6 +535,9 @@ fn cleanup_ops(
             out.put_pixel(x, y, restored);
             changed = true;
         }
+    }
+    if let Some(pieces) = &pieces {
+        changed |= pieces.apply_to(&mut out, brush.as_ref());
     }
     if changed {
         let restored = DynamicImage::ImageRgba8(out);

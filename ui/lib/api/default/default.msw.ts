@@ -23,6 +23,7 @@ import {
 } from '../schemas'
 import type {
   AddImageLayerResponse,
+  AddOfficialPagesResponse,
   AppConfig,
   AppEvent,
   BootstrapStatus,
@@ -775,6 +776,28 @@ export const getCreatePagesFromPathsResponseMock = (
 ): CreatePagesResponse => ({
   pages: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
     faker.string.uuid(),
+  ),
+  ...overrideResponse,
+})
+
+export const getAddOfficialPagesFromPathsResponseMock = (
+  overrideResponse: Partial<Extract<AddOfficialPagesResponse, object>> = {},
+): AddOfficialPagesResponse => ({
+  matched: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => ({
+      file: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      page: faker.string.uuid(),
+    }),
+  ),
+  rerender: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+    faker.string.uuid(),
+  ),
+  unmatchedPages: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.uuid()),
+  unusedFiles: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => faker.string.alpha({ length: { min: 10, max: 20 } }),
   ),
   ...overrideResponse,
 })
@@ -1955,6 +1978,30 @@ export const getCreatePagesFromPathsMockHandler = (
   )
 }
 
+export const getAddOfficialPagesFromPathsMockHandler = (
+  overrideResponse?:
+    | AddOfficialPagesResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<AddOfficialPagesResponse> | AddOfficialPagesResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/pages/official/from-paths',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getAddOfficialPagesFromPathsResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getAddImageLayerMockHandler = (
   overrideResponse?:
     | AddImageLayerResponse
@@ -2401,6 +2448,7 @@ export const getDefaultMock = () => [
   getCancelOperationMockHandler(),
   getCreatePagesMockHandler(),
   getCreatePagesFromPathsMockHandler(),
+  getAddOfficialPagesFromPathsMockHandler(),
   getAddImageLayerMockHandler(),
   getPutMaskMockHandler(),
   getGetPageThumbnailMockHandler(),

@@ -19,11 +19,12 @@ use koharu_core::{ImageRole, MaskRole, Op, Region};
 use koharu_ml::inpainting::{UndetectedBlockFallback, expand_mask_for_inpainting};
 use koharu_ml::lama::Lama;
 
+use crate::official::cleanup_base;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, load_source_image,
-    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
+    find_image_node, find_mask_node, image_dimensions, restore_region_from_source,
+    text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(Lama);
@@ -38,28 +39,27 @@ impl Engine for Model {
         let mask = ctx.blobs.load_image(&mask_ref)?;
         let bubble_mask = ctx.blobs.load_image(&bubble_ref)?;
 
+        // The source, with an official release's onomatopoeia if the page
+        // has one (`official`).
+        let (source, pieces) = cleanup_base(ctx.scene, ctx.page, ctx.blobs)?;
         let (image, mask, bubble_mask) = match ctx.options.region {
             Some(r) => {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
                     Some((_, blob)) => {
                         let inpainted = ctx.blobs.load_image(&blob)?;
                         if ctx.options.restore_source_region.unwrap_or(true) {
-                            let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
                             restore_region_from_source(&inpainted, &source, &r)
                         } else {
                             inpainted
                         }
                     }
-                    None => load_source_image(ctx.scene, ctx.page, ctx.blobs)?,
+                    None => source,
                 };
                 let clipped_mask = clip_mask_to_region(&mask, &r);
                 let clipped_bubble = clip_mask_to_region(&bubble_mask, &r);
                 (base, clipped_mask, clipped_bubble)
             }
-            None => {
-                let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-                (image, mask, bubble_mask)
-            }
+            None => (source, mask, bubble_mask),
         };
 
         let text_blocks = text_nodes(ctx.scene, ctx.page)
@@ -82,6 +82,10 @@ impl Engine for Model {
         } else {
             self.0
                 .inference_with_blocks(&image, &mask, &bubble_mask, &text_blocks)?
+        };
+        let result = match &pieces {
+            Some(pieces) => pieces.apply(&result),
+            None => result,
         };
         let (w, h) = image_dimensions(&result);
         let blob = ctx.blobs.put_webp(&result)?;

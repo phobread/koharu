@@ -10,4 +10,5 @@ export const ImageRole = {
   inpainted: 'inpainted',
   rendered: 'rendered',
   custom: 'custom',
+  official: 'official',
 } as const

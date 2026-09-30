@@ -5,6 +5,7 @@ import {
   ArrowRightIcon,
   ClockIcon,
   FileArchiveIcon,
+  FolderOpenIcon,
   ImageIcon,
   PlusIcon,
   TrashIcon,
@@ -40,8 +41,10 @@ import {
   useListProjects,
 } from '@/lib/api/default/default'
 import type { ProjectSummary } from '@/lib/api/schemas'
-import { importKhrFile } from '@/lib/io/pagesIo'
-import { createAndOpenProject, switchProject } from '@/lib/io/scene'
+import { isTauri } from '@/lib/backend'
+import { openImageFolder } from '@/lib/io/openFiles'
+import { addOfficialRelease, importKhrFile } from '@/lib/io/pagesIo'
+import { createAndOpenProject, switchProject, uploadPagesByPaths } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 
@@ -95,18 +98,31 @@ export function WelcomeScreen() {
     }
   }, [projectToDelete, deleteProjectMutation, refetchProjects])
 
-  const onCreate = useCallback(async (name: string) => {
-    setError(null)
-    setBusy('new')
-    try {
-      await createAndOpenProject({ name })
-    } catch (e) {
-      setError(`New failed: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
+  const onCreate = useCallback(
+    async ({ name, rawPaths, officialPaths }: NewProjectRequest) => {
+      setError(null)
+      setBusy('new')
+      try {
+        await createAndOpenProject({ name })
+      } catch (e) {
+        setError(`New failed: ${e instanceof Error ? e.message : String(e)}`)
+        setBusy(false)
+        setNewDialogOpen(false)
+        return
+      }
       setBusy(false)
       setNewDialogOpen(false)
-    }
-  }, [])
+      // The project is open now (this screen goes away): report through the
+      // editor's notices.
+      try {
+        if (rawPaths.length > 0) await uploadPagesByPaths(rawPaths, false)
+        if (officialPaths.length > 0) await addOfficialRelease(officialPaths, t)
+      } catch (e) {
+        useEditorUiStore.getState().showError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [t],
+  )
 
   const importKhr = useCallback(async () => {
     setError(null)
@@ -372,6 +388,19 @@ function formatRelative(d: Date): string {
 
 // ---------------------------------------------------------------------------
 
+export type NewProjectRequest = {
+  name: string
+  /** Raw page files to import (desktop), in folder order. */
+  rawPaths: string[]
+  /** The chapter's official release (desktop), paired by picture. */
+  officialPaths: string[]
+}
+
+type PickedFolder = { folder: string; paths: string[] }
+
+const folderOf = (path: string) => path.replace(/[\\/][^\\/]*$/, '')
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path
+
 function NewProjectDialog({
   open,
   onOpenChange,
@@ -380,21 +409,50 @@ function NewProjectDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (name: string) => void
+  onSubmit: (request: NewProjectRequest) => void
   busy: boolean
 }) {
   const { t } = useTranslation()
   const [name, setName] = useState('')
+  const [raw, setRaw] = useState<PickedFolder | null>(null)
+  const [official, setOfficial] = useState<PickedFolder | null>(null)
+  const [pickError, setPickError] = useState<string | null>(null)
+  // Folders are read by path, which only the desktop app can do.
+  const desktop = isTauri()
 
   const trimmed = name.trim()
   const canSubmit = trimmed.length > 0 && !busy
+
+  const pick = async (which: 'raw' | 'official') => {
+    setPickError(null)
+    try {
+      const picked = await openImageFolder()
+      if (picked.kind !== 'paths' || picked.paths.length === 0) return
+      const folder = folderOf(picked.paths[0])
+      if (which === 'raw') {
+        setRaw({ folder, paths: picked.paths })
+        if (!trimmed) setName(baseName(folder))
+      } else {
+        setOfficial({ folder, paths: picked.paths })
+      }
+    } catch (e) {
+      setPickError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const reset = () => {
+    setName('')
+    setRaw(null)
+    setOfficial(null)
+    setPickError(null)
+  }
 
   return (
     <Dialog
       open={open}
       onOpenChange={(o) => {
         onOpenChange(o)
-        if (!o) setName('')
+        if (!o) reset()
       }}
     >
       <DialogContent className='sm:max-w-md'>
@@ -405,7 +463,12 @@ function NewProjectDialog({
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            if (canSubmit) onSubmit(trimmed)
+            if (canSubmit)
+              onSubmit({
+                name: trimmed,
+                rawPaths: raw?.paths ?? [],
+                officialPaths: official?.paths ?? [],
+              })
           }}
           className='flex flex-col gap-4'
         >
@@ -415,6 +478,29 @@ function NewProjectDialog({
             onChange={(e) => setName(e.target.value)}
             placeholder={t('welcome.newDialogPlaceholder')}
           />
+          {desktop && (
+            <div className='flex flex-col gap-3'>
+              <FolderField
+                testId='new-project-raw-folder'
+                label={t('welcome.rawPages', 'Raw pages')}
+                picked={raw}
+                onPick={() => void pick('raw')}
+                onClear={() => setRaw(null)}
+              />
+              <FolderField
+                testId='new-project-official-folder'
+                label={t('welcome.officialPages', 'Official release (optional)')}
+                hint={t(
+                  'welcome.officialPagesHint',
+                  "The same chapter's official pages. Wherever you have no text, the cleaned page keeps their onomatopoeia.",
+                )}
+                picked={official}
+                onPick={() => void pick('official')}
+                onClear={() => setOfficial(null)}
+              />
+              {pickError && <p className='text-xs text-destructive'>{pickError}</p>}
+            </div>
+          )}
           <DialogFooter>
             <Button type='button' variant='outline' onClick={() => onOpenChange(false)}>
               {t('common.cancel')}
@@ -427,5 +513,62 @@ function NewProjectDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** A folder to import, with the button that picks it. */
+function FolderField({
+  testId,
+  label,
+  hint,
+  picked,
+  onPick,
+  onClear,
+}: {
+  testId: string
+  label: string
+  hint?: string
+  picked: PickedFolder | null
+  onPick: () => void
+  onClear: () => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className='flex flex-col gap-1'>
+      <div className='flex items-center gap-2'>
+        <span className='w-40 shrink-0 text-xs font-medium text-foreground'>{label}</span>
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          data-testid={testId}
+          onClick={onPick}
+          className='min-w-0 flex-1 justify-start'
+          title={picked?.folder}
+        >
+          <FolderOpenIcon className='size-3.5 shrink-0' />
+          <span className='truncate'>
+            {picked
+              ? t('welcome.folderPicked', {
+                  name: baseName(picked.folder),
+                  count: picked.paths.length,
+                  defaultValue: '{{name}} ({{count}} images)',
+                })
+              : t('welcome.chooseFolder', 'Choose folder…')}
+          </span>
+        </Button>
+        {picked && (
+          <button
+            type='button'
+            onClick={onClear}
+            aria-label={t('welcome.clearFolder', 'Clear')}
+            className='cursor-pointer text-muted-foreground hover:text-foreground'
+          >
+            <XIcon className='size-3.5' />
+          </button>
+        )}
+      </div>
+      {hint && <p className='text-[11px] text-muted-foreground'>{hint}</p>}
+    </div>
   )
 }

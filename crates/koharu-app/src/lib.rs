@@ -16,6 +16,7 @@ pub mod custom_fonts;
 pub mod google_fonts;
 pub mod history;
 pub mod llm;
+pub mod official;
 pub mod pipeline;
 pub mod projects;
 pub mod renderer;

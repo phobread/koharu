@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  addOfficialPagesFromPaths,
   applyCommand,
   createPages,
   createPagesFromPaths,
@@ -24,6 +25,7 @@ import {
 } from '@/lib/api/default/default'
 import { ApiError } from '@/lib/api/fetch'
 import type {
+  AddOfficialPagesResponse,
   ConfigPatch,
   CreateProjectRequest,
   ExportProjectRequest,
@@ -325,6 +327,20 @@ export async function uploadPagesByPaths(paths: string[], replace: boolean): Pro
   if (replace) resetSelection()
   await invalidateScene()
   return res.pages
+}
+
+/**
+ * Give the pages their official release (desktop: files by path). The
+ * backend pairs each file with the page showing the same picture; cleaned
+ * pages take the release's onomatopoeia at once, and lose their rendered
+ * image, which is rendered again here.
+ */
+export async function addOfficialPagesByPaths(paths: string[]): Promise<AddOfficialPagesResponse> {
+  await awaitPendingSceneEdits()
+  const res = await addOfficialPagesFromPaths({ paths })
+  await invalidateScene()
+  for (const pageId of res.rerender) queueAutoRender(pageId)
+  return res
 }
 
 export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {

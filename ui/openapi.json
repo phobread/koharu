@@ -672,6 +672,34 @@
         }
       }
     },
+    "/pages/official/from-paths": {
+      "post": {
+        "summary": "Give the project's pages their official release: each file is paired\nwith the page showing the same picture (same size, near-identical art),\nstored as the page's hidden `Image { Official }`, and — on pages already\ncleaned — its onomatopoeia are copied into the cleaned image. One undo\nstep. Cleanup then keeps the release's lettering wherever the owner has\nno text.",
+        "operationId": "add_official_pages_from_paths",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddOfficialPagesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddOfficialPagesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pages/{id}/image-layers": {
       "post": {
         "operationId": "add_image_layer",
@@ -1158,6 +1186,52 @@
         "properties": {
           "node": {
             "$ref": "#/components/schemas/NodeId"
+          }
+        }
+      },
+      "AddOfficialPagesRequest": {
+        "type": "object",
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Image files of the official release (any order, extra pages fine)."
+          }
+        }
+      },
+      "AddOfficialPagesResponse": {
+        "type": "object",
+        "required": ["matched", "unmatchedPages", "unusedFiles", "rerender"],
+        "properties": {
+          "matched": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OfficialPageMatch"
+            }
+          },
+          "rerender": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageId"
+            },
+            "description": "Pages whose cleaned image took the release's onomatopoeia; their\nrendered image was dropped and needs rendering again."
+          },
+          "unmatchedPages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageId"
+            },
+            "description": "Pages no file clearly matched (different size or picture)."
+          },
+          "unusedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files that matched no page or could not be read."
           }
         }
       },
@@ -2229,7 +2303,7 @@
       },
       "ImageRole": {
         "type": "string",
-        "enum": ["source", "inpainted", "rendered", "custom"]
+        "enum": ["source", "inpainted", "rendered", "custom", "official"]
       },
       "JobFinishedEvent": {
         "type": "object",
@@ -2688,6 +2762,19 @@
           },
           "visible": {
             "type": ["boolean", "null"]
+          }
+        }
+      },
+      "OfficialPageMatch": {
+        "type": "object",
+        "required": ["page", "file"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "File name of the release page it got."
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageId"
           }
         }
       },

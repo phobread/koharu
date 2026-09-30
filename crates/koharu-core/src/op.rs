@@ -671,6 +671,9 @@ fn page_invariants_allow(page: &Page, candidate: &Node) -> OpResult {
                     ImageRole::Rendered => {
                         OpError::Invariant("more than one Rendered image on page")
                     }
+                    ImageRole::Official => {
+                        OpError::Invariant("more than one Official image on page")
+                    }
                     ImageRole::Custom => unreachable!(),
                 });
             }
@@ -752,6 +755,7 @@ fn validate_node_invariants<'a>(nodes: impl Iterator<Item = &'a Node>) -> OpResu
     let mut source = 0usize;
     let mut inpainted = 0usize;
     let mut rendered = 0usize;
+    let mut official = 0usize;
     let mut seg = 0usize;
     let mut brush = 0usize;
     let mut bubble = 0usize;
@@ -761,6 +765,7 @@ fn validate_node_invariants<'a>(nodes: impl Iterator<Item = &'a Node>) -> OpResu
                 ImageRole::Source => source += 1,
                 ImageRole::Inpainted => inpainted += 1,
                 ImageRole::Rendered => rendered += 1,
+                ImageRole::Official => official += 1,
                 ImageRole::Custom => {}
             },
             NodeKind::Mask(mask) => match mask.role {
@@ -780,6 +785,9 @@ fn validate_node_invariants<'a>(nodes: impl Iterator<Item = &'a Node>) -> OpResu
     }
     if rendered > 1 {
         return Err(OpError::Invariant("more than one Rendered image on page"));
+    }
+    if official > 1 {
+        return Err(OpError::Invariant("more than one Official image on page"));
     }
     if seg > 1 {
         return Err(OpError::Invariant("more than one Segment mask on page"));
@@ -1257,6 +1265,52 @@ mod tests {
         assert!(matches!(result, Err(OpError::Invariant(_))));
         assert_eq!(scene.pages[&page_id].nodes.len(), 1);
         assert!(!scene.pages[&page_id].nodes.contains_key(&src2_id));
+    }
+
+    #[test]
+    fn one_official_image_per_page() {
+        let mut scene = seed_scene();
+        let page = blank_page();
+        let page_id = page.id;
+        Op::AddPage { page, at: 0 }.apply(&mut scene).unwrap();
+        assert!(!scene.has_official_images());
+
+        let official = |blob: &str| Node {
+            id: NodeId::new(),
+            transform: Transform::default(),
+            visible: false,
+            kind: NodeKind::Image(ImageData {
+                role: ImageRole::Official,
+                blob: BlobRef::new(blob),
+                opacity: 1.0,
+                natural_width: 800,
+                natural_height: 1200,
+                name: Some("001 eng.jpg".into()),
+            }),
+        };
+        let first = official("a");
+        let first_id = first.id;
+        Op::AddNode {
+            page: page_id,
+            node: first,
+            at: 0,
+        }
+        .apply(&mut scene)
+        .unwrap();
+        assert!(scene.has_official_images());
+        assert_eq!(
+            scene.pages[&page_id].official_node().map(|(id, _)| *id),
+            Some(first_id)
+        );
+
+        let result = Op::AddNode {
+            page: page_id,
+            node: official("b"),
+            at: 1,
+        }
+        .apply(&mut scene);
+        assert!(matches!(result, Err(OpError::Invariant(_))));
+        assert_eq!(scene.pages[&page_id].nodes.len(), 1);
     }
 
     #[test]

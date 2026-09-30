@@ -13,12 +13,12 @@ use koharu_ml::inpainting::{
     mask::{expand_mask_for_inpainting, expand_mask_to_bubble_region_for_inpainting},
 };
 
+use crate::official::cleanup_base;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, load_source_image,
-    restore_masked_from_source, restore_region_from_source, text_node_to_region, text_nodes,
-    upsert_image_blob,
+    find_image_node, find_mask_node, image_dimensions, restore_masked_from_source,
+    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(Flux2Klein);
@@ -33,6 +33,9 @@ impl Engine for Model {
         let mask = ctx.blobs.load_image(&mask_ref)?;
         let bubble_mask = ctx.blobs.load_image(&bubble_ref)?;
 
+        // The source, with an official release's onomatopoeia if the page
+        // has one (`official`).
+        let (source, pieces) = cleanup_base(ctx.scene, ctx.page, ctx.blobs)?;
         // Set when a repair stroke builds on the cleaned image: the original
         // page, to show Flux2 under the pixels the stroke repaints.
         let mut repaint_from_source = None;
@@ -41,7 +44,6 @@ impl Engine for Model {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
                     Some((_, blob)) => {
                         let inpainted = ctx.blobs.load_image(&blob)?;
-                        let source = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
                         if ctx.options.restore_source_region.unwrap_or(true) {
                             restore_region_from_source(&inpainted, &source, &r)
                         } else {
@@ -49,16 +51,13 @@ impl Engine for Model {
                             inpainted
                         }
                     }
-                    None => load_source_image(ctx.scene, ctx.page, ctx.blobs)?,
+                    None => source,
                 };
                 let clipped_mask = clip_mask_to_region(&mask, &r);
                 let clipped_bubble = clip_mask_to_region(&bubble_mask, &r);
                 (base, clipped_mask, clipped_bubble)
             }
-            None => {
-                let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-                (image, mask, bubble_mask)
-            }
+            None => (source, mask, bubble_mask),
         };
 
         let text_blocks = text_nodes(ctx.scene, ctx.page)
@@ -114,6 +113,10 @@ impl Engine for Model {
             None,
             &options,
         )?;
+        let result = match &pieces {
+            Some(pieces) => pieces.apply(&result),
+            None => result,
+        };
         let (w, h) = image_dimensions(&result);
         let store_started = Instant::now();
         let blob = ctx.blobs.put_webp(&result)?;

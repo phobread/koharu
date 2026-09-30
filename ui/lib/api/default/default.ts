@@ -21,6 +21,8 @@ import type {
 import { fetchApi } from '.././fetch'
 import type {
   AddImageLayerResponse,
+  AddOfficialPagesRequest,
+  AddOfficialPagesResponse,
   ApiError,
   AppConfig,
   AppEvent,
@@ -2707,6 +2709,99 @@ export const useCreatePagesFromPaths = <TError = unknown, TContext = unknown>(
   TContext
 > => {
   return useMutation(getCreatePagesFromPathsMutationOptions(options), queryClient)
+}
+export const getAddOfficialPagesFromPathsUrl = () => {
+  return `/api/v1/pages/official/from-paths`
+}
+
+/**
+ * @summary Give the project's pages their official release: each file is paired
+with the page showing the same picture (same size, near-identical art),
+stored as the page's hidden `Image { Official }`, and — on pages already
+cleaned — its onomatopoeia are copied into the cleaned image. One undo
+step. Cleanup then keeps the release's lettering wherever the owner has
+no text.
+ */
+export const addOfficialPagesFromPaths = async (
+  addOfficialPagesRequest: AddOfficialPagesRequest,
+  options?: RequestInit,
+): Promise<AddOfficialPagesResponse> => {
+  return fetchApi<AddOfficialPagesResponse>(getAddOfficialPagesFromPathsUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(addOfficialPagesRequest),
+  })
+}
+
+export const getAddOfficialPagesFromPathsMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addOfficialPagesFromPaths>>,
+    TError,
+    { data: AddOfficialPagesRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof addOfficialPagesFromPaths>>,
+  TError,
+  { data: AddOfficialPagesRequest },
+  TContext
+> => {
+  const mutationKey = ['addOfficialPagesFromPaths']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof addOfficialPagesFromPaths>>,
+    { data: AddOfficialPagesRequest }
+  > = (props) => {
+    const { data } = props ?? {}
+
+    return addOfficialPagesFromPaths(data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type AddOfficialPagesFromPathsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof addOfficialPagesFromPaths>>
+>
+export type AddOfficialPagesFromPathsMutationBody = AddOfficialPagesRequest
+export type AddOfficialPagesFromPathsMutationError = unknown
+
+/**
+ * @summary Give the project's pages their official release: each file is paired
+with the page showing the same picture (same size, near-identical art),
+stored as the page's hidden `Image { Official }`, and — on pages already
+cleaned — its onomatopoeia are copied into the cleaned image. One undo
+step. Cleanup then keeps the release's lettering wherever the owner has
+no text.
+ */
+export const useAddOfficialPagesFromPaths = <TError = unknown, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof addOfficialPagesFromPaths>>,
+      TError,
+      { data: AddOfficialPagesRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof addOfficialPagesFromPaths>>,
+  TError,
+  { data: AddOfficialPagesRequest },
+  TContext
+> => {
+  return useMutation(getAddOfficialPagesFromPathsMutationOptions(options), queryClient)
 }
 export const getAddImageLayerUrl = (id: PageId) => {
   return `/api/v1/pages/${id}/image-layers`

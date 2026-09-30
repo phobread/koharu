@@ -14,6 +14,8 @@
     "openFile": "Open File...",
     "addFile": "Add File...",
     "openFolder": "Open Folder...",
+    "addOfficial": "Add Official Release...",
+    "addOfficialHint": "Pick the folder of this chapter's official release. Each page gets its matching release page, and cleanup keeps the release's onomatopoeia wherever you have no text.",
     "addFolder": "Add Folder...",
     "save": "Save...",
     "open": "Open",
@@ -115,7 +117,22 @@
     "newDialogTitle": "New project",
     "newDialogDescription": "Give your project a name. It will be stored under the managed projects directory.",
     "newDialogPlaceholder": "Project name",
-    "newDialogSubmit": "Create"
+    "newDialogSubmit": "Create",
+    "rawPages": "Raw pages",
+    "officialPages": "Official release (optional)",
+    "officialPagesHint": "The same chapter's official pages. Wherever you have no text, the cleaned page keeps their onomatopoeia.",
+    "chooseFolder": "Choose folder…",
+    "folderPicked_one": "{{name}} (1 image)",
+    "folderPicked_other": "{{name}} ({{count}} images)",
+    "clearFolder": "Clear"
+  },
+  "official": {
+    "adding": "Adding the official release…",
+    "added_one": "Official release added to 1 of {{total}} pages.",
+    "added_other": "Official release added to {{count}} of {{total}} pages.",
+    "noneMatched": "No page matched the official release. Its pages must be the same size and picture as yours.",
+    "unmatched_one": "No match for page {{pages}}.",
+    "unmatched_other": "No match for pages {{pages}}."
   },
   "operations": {
     "title": "Working",

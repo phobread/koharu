@@ -243,6 +243,34 @@ pub enum ImageRole {
     Rendered,
     /// User-imported free layer, movable / selectable.
     Custom,
+    /// The official release of this page: same size and artwork as `Source`,
+    /// only the lettering differs. Hidden; cleanup copies its onomatopoeia
+    /// into the cleaned page. At most one per page. Appended last so every
+    /// older scene/log byte stream still decodes unchanged (postcard encodes
+    /// the variant index).
+    Official,
+}
+
+impl Page {
+    /// The page's official release image, if one was added.
+    pub fn official_node(&self) -> Option<(&NodeId, &Node)> {
+        self.nodes.iter().find(|(_, node)| {
+            matches!(
+                &node.kind,
+                NodeKind::Image(img) if img.role == ImageRole::Official
+            )
+        })
+    }
+}
+
+impl Scene {
+    /// Whether any page carries an official release image. Builds that
+    /// predate `ImageRole::Official` cannot decode such a scene.
+    pub fn has_official_images(&self) -> bool {
+        self.pages
+            .values()
+            .any(|page| page.official_node().is_some())
+    }
 }
 
 // ---------------------------------------------------------------------------
