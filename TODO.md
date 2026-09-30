@@ -1,49 +1,44 @@
 # To do
 
-## UI
+## Done recently
 
-- **General UI refresh.** The interface has too many buttons, dials and
-  dropdown menus; simplify it and ease the everyday translate-and-touch-up
-  workflow.
-- **Show the project name inside a project.** Once a project is open, its
-  name is not visible anywhere.
-- **One-click way out of a project.** Leaving a project today takes Ctrl+W or
-  File → Close project. Add a visible close (X) or back button, ideally next
-  to the project name above.
-- **Quicker text-box deletion.** Today a box is removed one at a time through
-  its right-click menu or the Delete button in the text-blocks panel. That is
-  tedious when clearing onomatopoeia boxes. Add a Delete/Backspace shortcut on
-  the canvas that removes every selected box (multi-selection already exists)
-  as one undo step, plus a one-click delete control. The Delete key already
-  deletes pages in the navigator, so the shortcut must be scoped to whichever
-  panel has focus and must not fire while typing in a text box.
-- **Process only what's missing.** "Process all pages" reruns every step on
-  every page, so finishing the remaining pages redoes OCR and overwrites
-  finished work. Make "Process unprocessed pages" the primary action, skipping
-  steps a page already has (existing text boxes, an inpainted layer). Keep
-  "Process all pages" as the explicit redo. Also allow processing a hand-picked
-  set of pages. The navigator already supports multi-select (used by batch
-  delete), and `POST /pipelines` already accepts a `pages` list.
-- **Clear batch progress.** During a multi-page run (e.g. "Custom pipeline →
-  all pages") the progress card should say which page it is on and what it is
-  doing, e.g. "Page 4 / 12 · OCR", with a real percentage. The bug part was
-  fixed on 2026-09-28: progress ticks now reach the UI during GPU steps (they
-  used to wait for the whole run), and all-pages runs say "Processing all
-  images". Left for the overhaul: wording and layout, and if runs keep going
-  in chunks of pages, showing the stage and page range ("OCR · pages 1–8 of
-  23") instead of a page number that cycles.
+- **UI batch (2026-09-29, 374fdc58):** project name and back arrow in the menu
+  bar, box selection and Delete/Backspace deletion as one undo step, process
+  only what's missing (current, selected or unfinished pages) with step ticks
+  and "Page X of Y" progress, decluttered toolbar and tabs, one Export entry
+  with an export folder in Settings, mouse back/forward, project covers on the
+  home page, Free up space for unused project images, open/close fade.
+- **Box editing (2026-09-30):** the side panel shows the border width the
+  renderer really uses (85a98866); Tab / Shift+Tab steps through a page's text
+  boxes (17541483); arrow keys move the caret in the box editor again
+  (0c7b7348).
+- **Exports keep the original file names** (d5ad58c0).
+- **OCR of thick-outlined lettering (2026-09-30, 0874959f).** Coloured or dark
+  text with a thick white outline over artwork is redrawn black-on-white before
+  both OCR readers. Hangul errors: Dmon 22→9, Domina 32→7, BadEnd 106→65,
+  10.9 34→23, held-out BadEnd cont 14→8.
+- **Faster Flux2 cleanup of large areas (2026-09-30).** Crops above 0.3 MP
+  are generated at half their width and height and scaled back up: the Flux2
+  step on Dmon + 10.9 + BadEnd went 761 s → 418 s (−45 %). Blind A/B: 6 better,
+  6 worse, 8 same (half area: 7/10/13). Settings → Engines → "Faster cleanup
+  of large areas", on by default.
+- **Text hearts (2026-09-29):** flat fill outside bubbles (1fb6c709) and the
+  "Repair with LaMa" brush switch (9b5f8a21).
+
+## OCR
+
+- **Black-on-black outlined text** still has trapped background pockets that
+  can't be told from ink by colour (in one font 다 reads as 타 even in the
+  original image). Idea (Astra): read ambiguous lines with and without the
+  pockets and accept only agreeing repairs. Modest gain, not started.
+- **Context correction (idea).** The translation model sees the whole sentence
+  and could flag obvious OCR slips (온몸을 타해 → 다해). Only if leftover OCR
+  errors keep costing proofreading time.
+- Hand-lettered moans and SFX remain out of scope.
 
 ## Inpainting
 
-- ~~**Text hearts come back.**~~ Done 2026-09-29. Flux2 sees the original
-  page and sometimes redraws the ♡/♥ typed at the end of Korean lines. Text on
-  plain black or white panels outside bubbles is now filled flat, so those
-  hearts no longer come back (1fb6c709), and the repair brush has a "Repair
-  with LaMa" switch that removes the rest with one stroke (6 of 6 left on 926;
-  Flux2 strokes redrew 7 of 12) (9b5f8a21). Possible later fix if the manual
-  stroke gets tedious: clean the text area with LaMa before Flux2 generates,
-  so Flux2 never sees the heart (Astra's second option; changes every crop,
-  needs its own A/B).
-- **Crop-downscale A/B (perf idea #6).** Generate Flux2 crops above ~0.3 MP at
-  half resolution and upscale the fill. Planned as a final blind A/B, since it
-  risks damaging screentone and fine lines.
+- **LaMa before Flux2 (idea).** Clean the text area with LaMa before Flux2
+  generates, so Flux2 never sees a typed heart and can't redraw it. Changes
+  every crop; needs its own A/B. Only if the manual "Repair with LaMa" stroke
+  gets tedious.
