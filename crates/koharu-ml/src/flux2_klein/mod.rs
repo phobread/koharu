@@ -123,6 +123,9 @@ pub struct Flux2InpaintOptions {
     /// Fill crops whose bubbles are plainly one colour with that colour
     /// instead of running Flux2 (see `flat_fill`). Needs bubble IDs.
     pub flat_fill: bool,
+    /// Generate crops above [`FAST_CROP_MIN_PIXELS`] at half their width and
+    /// height and scale the fill back up (see [`crop_options_for`]).
+    pub fast_large_crops: bool,
 }
 
 impl Default for Flux2InpaintOptions {
@@ -133,6 +136,7 @@ impl Default for Flux2InpaintOptions {
             max_pixels: 1024 * 1024,
             mask_padding: 16,
             flat_fill: false,
+            fast_large_crops: false,
         }
     }
 }
@@ -476,7 +480,7 @@ impl Flux2Klein {
                     &image_crop,
                     &generation_mask_crop,
                     reference_image,
-                    &crop_options,
+                    &crop_options_for(&crop_options, bounds),
                     crop_index,
                 )?,
             };
@@ -859,6 +863,32 @@ fn crop_generation_options(options: &Flux2InpaintOptions) -> Flux2InpaintOptions
         max_pixels: match options.max_pixels {
             0 => cap,
             max_pixels => max_pixels.min(cap),
+        },
+        ..options.clone()
+    }
+}
+
+/// Crops at least this big are generated at reduced resolution when
+/// [`Flux2InpaintOptions::fast_large_crops`] is on.
+const FAST_CROP_MIN_PIXELS: u64 = 300_000;
+
+/// `options` for generating the crop `bounds`. With `fast_large_crops`, a
+/// crop above [`FAST_CROP_MIN_PIXELS`] is generated at a quarter of its area
+/// (half its width and height) and scaled back up. Only the erased text area
+/// takes the fill, so the lower resolution shows only there. On Dmon, 10.9
+/// and BadEnd (2026-09-30, 125 crops) the Flux2 step ran 45 % faster, and in
+/// a blind A/B the owner preferred it 6 times, today's 6 times and saw no
+/// difference 8 times; it also redraws typed hearts less often.
+fn crop_options_for(options: &Flux2InpaintOptions, bounds: CropBounds) -> Flux2InpaintOptions {
+    let area = u64::from(bounds.width) * u64::from(bounds.height);
+    if !options.fast_large_crops || area <= FAST_CROP_MIN_PIXELS {
+        return options.clone();
+    }
+    let quarter = u32::try_from(area / 4).unwrap_or(u32::MAX);
+    Flux2InpaintOptions {
+        max_pixels: match options.max_pixels {
+            0 => quarter,
+            max_pixels => max_pixels.min(quarter),
         },
         ..options.clone()
     }
@@ -1883,6 +1913,37 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(options.max_pixels, 100_000);
+    }
+
+    #[test]
+    fn fast_large_crops_generate_big_crops_at_half_their_size() {
+        let bounds = |width, height| CropBounds {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let fast = crop_generation_options(&Flux2InpaintOptions {
+            fast_large_crops: true,
+            ..Default::default()
+        });
+        // Big crop: a quarter of its area, i.e. half its width and height.
+        assert_eq!(
+            crop_options_for(&fast, bounds(800, 600)).max_pixels,
+            120_000
+        );
+        // Small crops and the switch off keep the usual cap.
+        assert_eq!(
+            crop_options_for(&fast, bounds(500, 500)).max_pixels,
+            fast.max_pixels
+        );
+        let normal = crop_generation_options(&Flux2InpaintOptions::default());
+        assert_eq!(
+            crop_options_for(&normal, bounds(800, 600)).max_pixels,
+            normal.max_pixels
+        );
+        // Never above the usual cap for huge crops.
+        assert!(crop_options_for(&fast, bounds(3000, 3000)).max_pixels <= fast.max_pixels);
     }
 
     #[test]

@@ -155,6 +155,7 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       renderer: cfg.pipeline.renderer,
       flux2Steps: cfg.pipeline.flux2_steps,
       flux2FlatFill: cfg.pipeline.flux2_flat_fill,
+      flux2FastLargeCrops: cfg.pipeline.flux2_fast_large_crops,
     }
   }
   if (cfg.providers) {
@@ -1106,6 +1107,21 @@ function EnginesPane({
                   id='settings-flux2-flat-fill'
                   checked={pipeline.flux2_flat_fill ?? true}
                   onCheckedChange={(v) => onChange({ ...pipeline, flux2_flat_fill: v })}
+                />
+              </div>
+              <div className='flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5'>
+                <div className='space-y-0.5'>
+                  <Label htmlFor='settings-flux2-fast-large-crops' className='text-xs'>
+                    {t('settings.flux2FastLargeCrops')}
+                  </Label>
+                  <p className='text-[11px] leading-relaxed text-muted-foreground'>
+                    {t('settings.flux2FastLargeCropsDescription')}
+                  </p>
+                </div>
+                <Switch
+                  id='settings-flux2-fast-large-crops'
+                  checked={pipeline.flux2_fast_large_crops ?? true}
+                  onCheckedChange={(v) => onChange({ ...pipeline, flux2_fast_large_crops: v })}
                 />
               </div>
             </div>

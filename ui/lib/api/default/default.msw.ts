@@ -177,6 +177,7 @@ export const getGetConfigResponsePipelineConfigMock = (
   ...{
     bubble_segmenter: faker.string.alpha({ length: { min: 10, max: 20 } }),
     detector: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    flux2_fast_large_crops: faker.datatype.boolean(),
     flux2_flat_fill: faker.datatype.boolean(),
     flux2_steps: faker.number.int({ min: 0 }),
     flux2_strength: faker.number.float({ fractionDigits: 2 }),
@@ -254,6 +255,7 @@ export const getPatchConfigResponsePipelineConfigMock = (
   ...{
     bubble_segmenter: faker.string.alpha({ length: { min: 10, max: 20 } }),
     detector: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    flux2_fast_large_crops: faker.datatype.boolean(),
     flux2_flat_fill: faker.datatype.boolean(),
     flux2_steps: faker.number.int({ min: 0 }),
     flux2_strength: faker.number.float({ fractionDigits: 2 }),

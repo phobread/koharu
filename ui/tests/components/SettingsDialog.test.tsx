@@ -151,6 +151,28 @@ describe('SettingsDialog Flux.2 Klein quality', () => {
     expect(patches[0].pipeline).toMatchObject({ inpainter: 'flux2-klein', flux2FlatFill: false })
   })
 
+  it('turns faster large-area cleanup off through PATCH', async () => {
+    const patches: ConfigPatch[] = []
+    installSettingsHandlers(
+      {
+        pipeline: { ...pipeline, inpainter: 'flux2-klein', flux2_fast_large_crops: true },
+        providers: [],
+      },
+      patches,
+    )
+    renderWithQuery(<SettingsDialog open={true} onOpenChange={() => {}} defaultTab='engines' />)
+
+    const fast = await screen.findByRole('switch', { name: 'settings.flux2FastLargeCrops' })
+    expect(fast).toBeChecked()
+    await userEvent.click(fast)
+
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0].pipeline).toMatchObject({
+      inpainter: 'flux2-klein',
+      flux2FastLargeCrops: false,
+    })
+  })
+
   it('hides the flat-fill switch for other inpainters', async () => {
     renderSettings('lama-manga', 2)
     await screen.findByText('settings.enginesDescription')

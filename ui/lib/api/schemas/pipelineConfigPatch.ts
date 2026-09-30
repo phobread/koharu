@@ -9,6 +9,8 @@ export interface PipelineConfigPatch {
   /** @nullable */
   detector?: string | null
   /** @nullable */
+  flux2FastLargeCrops?: boolean | null
+  /** @nullable */
   flux2FlatFill?: boolean | null
   /**
    * @minimum 0

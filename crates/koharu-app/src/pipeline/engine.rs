@@ -81,6 +81,8 @@ pub struct PipelineRunOptions {
     pub flux2_steps: Option<u32>,
     /// Fill plain single-colour bubbles flat instead of running Flux2.
     pub flux2_flat_fill: Option<bool>,
+    /// Generate large Flux2 crops at reduced resolution.
+    pub flux2_fast_large_crops: Option<bool>,
     pub reading_order: Option<ReadingOrder>,
     /// Global render defaults (renderer engine only). Applied when a text node
     /// has no explicit per-node override; otherwise the renderer auto-fits the

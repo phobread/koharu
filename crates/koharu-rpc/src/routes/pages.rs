@@ -577,12 +577,13 @@ async fn put_mask(
             }
             None => false,
         };
-        let (flux2_strength, flux2_steps, flux2_flat_fill) = {
+        let (flux2_strength, flux2_steps, flux2_flat_fill, flux2_fast_large_crops) = {
             let config = app.config.load();
             (
                 config.pipeline.flux2_strength,
                 config.pipeline.flux2_steps,
                 config.pipeline.flux2_flat_fill,
+                config.pipeline.flux2_fast_large_crops,
             )
         };
         let options = PipelineRunOptions {
@@ -591,6 +592,7 @@ async fn put_mask(
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             flux2_flat_fill: Some(flux2_flat_fill),
+            flux2_fast_large_crops: Some(flux2_fast_large_crops),
             ..Default::default()
         };
         let ctx = EngineCtx {

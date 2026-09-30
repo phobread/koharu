@@ -543,6 +543,8 @@
     "appConfig": "App Config",
     "runtime": "Runtime",
     "privacy": "Privacy",
+    "flux2FastLargeCrops": "Faster cleanup of large areas",
+    "flux2FastLargeCropsDescription": "Large text areas are redrawn at half size and scaled back up, which makes Flux.2 cleanup about 45% faster. The fill can be slightly softer; in a blind comparison the difference could not be told apart. Turn it off for maximum detail.",
     "flux2FlatFill": "Skip Flux on plain backgrounds",
     "flux2FlatFillDescription": "Text on one plain colour (a speech bubble of any colour, or a plain black or white panel) is filled with that colour instead of being redrawn by Flux.2. It is much faster and stops Flux.2 bringing back symbols like hearts there. Shading, texture, outlines or artwork behind the text still go to Flux.2.",
     "crashReports": "Crash reports",

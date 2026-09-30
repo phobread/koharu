@@ -114,12 +114,13 @@ pub(crate) fn launch(
     for id in &req.steps {
         pipeline::Registry::find(id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     }
-    let (flux2_strength, flux2_steps, flux2_flat_fill) = {
+    let (flux2_strength, flux2_steps, flux2_flat_fill, flux2_fast_large_crops) = {
         let config = app.config.load();
         (
             config.pipeline.flux2_strength,
             config.pipeline.flux2_steps,
             config.pipeline.flux2_flat_fill,
+            config.pipeline.flux2_fast_large_crops,
         )
     };
     let only_missing = req.only_missing.unwrap_or(false);
@@ -162,6 +163,7 @@ pub(crate) fn launch(
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             flux2_flat_fill: Some(flux2_flat_fill),
+            flux2_fast_large_crops: Some(flux2_fast_large_crops),
             reading_order: req.reading_order,
             default_font_size: req.default_font_size,
             box_padding: req.box_padding,
