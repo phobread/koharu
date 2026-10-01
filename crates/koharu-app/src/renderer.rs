@@ -496,54 +496,67 @@ impl Renderer {
         // Unlocked boxes in a speech bubble flow into the bubble's shape when
         // that lets the text be at least as big as in the box; otherwise (or
         // if it can't fit the bubble at a readable size) the box layout
-        // stands. A tight box, like a small black caption box the lettering
-        // already filled, gains nothing from the bubble's margins.
+        // stands (`fit_bubble_layout`).
         if let Some(shape) =
             balloon.filter(|_| !writing_mode.is_vertical() && rotation_deg.is_none())
         {
-            let region = Balloon {
-                width: shape.frame.width,
-                height: shape.frame.height,
-                rows: shape.rows.clone(),
-                min_air: BALLOON_MIN_AIR + box_padding.max(0.0) + fit_clearance,
-            };
-            let fitted = fit_balloon_font_size(
-                &layout_builder.clone().with_balloon(&region),
-                translation,
-                style.font_size,
-                min_font_size.max(layout.font_size),
-                max_font,
-            )?;
-            if let Some(fitted) = fitted {
-                // Synthetic bold/italic need extra room around the ink.
-                let effect_clearance = self.renderer.effect_padding(
-                    &fitted,
-                    &RenderOptions {
-                        font_size: fitted.font_size,
-                        effect: shader_core_to_renderer(block_effect),
-                        style_ranges: render_style_ranges.clone(),
-                        ..Default::default()
-                    },
-                )?;
-                let widened;
-                let fitted = if effect_clearance > 0.0 {
-                    widened = Balloon {
-                        min_air: region.min_air + effect_clearance,
-                        ..region.clone()
-                    };
-                    fit_balloon_font_size(
-                        &layout_builder.clone().with_balloon(&widened),
+            // The box fit without the outline and synthetic bold/italic, for
+            // choosing between box and bubble on the bare text.
+            let bare_box_size = if fit_clearance > 0.0 || effect_clearance > 0.0 {
+                Some(
+                    fit_font_size(
+                        &layout_builder,
                         translation,
-                        Some(fitted.font_size),
-                        min_font_size.max(layout.font_size),
-                        fitted.font_size,
+                        layout_box.width,
+                        layout_box.height,
+                        style.font_size,
+                        min_font_size,
+                        max_font,
                     )?
-                } else {
-                    Some(fitted)
+                    .font_size,
+                )
+            } else {
+                None
+            };
+            let fitted = fit_bubble_layout(
+                &layout_builder,
+                translation,
+                shape,
+                BubbleFit {
+                    air: BALLOON_MIN_AIR + box_padding.max(0.0),
+                    clearance: fit_clearance,
+                    explicit_size: style.font_size,
+                    min_size: min_font_size,
+                    max_size: max_font,
+                    box_size: layout.font_size,
+                    bare_box_size,
+                },
+                // Synthetic bold/italic need extra room around the ink.
+                |fitted| {
+                    self.renderer.effect_padding(
+                        fitted,
+                        &RenderOptions {
+                            font_size: fitted.font_size,
+                            effect: shader_core_to_renderer(block_effect),
+                            style_ranges: render_style_ranges.clone(),
+                            ..Default::default()
+                        },
+                    )
+                },
+            )?;
+            if let Some((font_size, min_air)) = fitted {
+                let region = Balloon {
+                    width: shape.frame.width,
+                    height: shape.frame.height,
+                    rows: shape.rows.clone(),
+                    min_air,
                 };
-                if let Some(layout) = fitted
-                    && let Some((origin_x, origin_y)) = layout.balloon_origin
-                {
+                let layout = layout_builder
+                    .clone()
+                    .with_balloon(&region)
+                    .with_font_size(font_size)
+                    .run(translation)?;
+                if let Some((origin_x, origin_y)) = layout.balloon_origin {
                     tracing::debug!(
                         node = %block.node_id,
                         font_size = layout.font_size,
@@ -818,6 +831,98 @@ fn fit_balloon_font_size<'a>(
             return Ok(None);
         }
         size = (size - step).max(min_size);
+    }
+}
+
+/// Sizes for `fit_bubble_layout`.
+struct BubbleFit {
+    /// Air kept inside the bubble outline before any text outline.
+    air: f32,
+    /// Room the text outline paints outside the glyphs (0 without one).
+    clearance: f32,
+    explicit_size: Option<f32>,
+    /// Readability floor.
+    min_size: f32,
+    max_size: f32,
+    /// The box fit with the outline and synthetic bold/italic.
+    box_size: f32,
+    /// The box fit without them; `None` when the text has neither.
+    bare_box_size: Option<f32>,
+}
+
+/// Font size and air at which a block's text flows into its bubble, or
+/// `None` when it keeps its box.
+///
+/// The bubble is used when the text can be at least as big there as in its
+/// box; a tight box, like a small black caption box the lettering already
+/// filled, gains nothing from the bubble's margins. The two layouts sit in
+/// different places, so that choice is made for the bare text — no outline,
+/// no synthetic bold/italic — and toggling a border only resizes the text
+/// where it is instead of moving it between its box and its bubble (BadEnd3
+/// p31: a 4 px border took the box fit from 49 to 48 px, where the bubble
+/// fitted and the text jumped 60 px). A decorated text that can't beat its
+/// decorated box in the bubble may still shrink there to the floor.
+fn fit_bubble_layout(
+    layout_builder: &TextLayout<'_>,
+    text: &str,
+    shape: &BalloonShape,
+    fit: BubbleFit,
+    effect_padding: impl Fn(&LayoutRun<'_>) -> Result<f32>,
+) -> Result<Option<(f32, f32)>> {
+    let fit_at = |min_size: f32, air: f32, effects: bool| -> Result<Option<(f32, f32)>> {
+        let region = Balloon {
+            width: shape.frame.width,
+            height: shape.frame.height,
+            rows: shape.rows.clone(),
+            min_air: air,
+        };
+        let Some(fitted) = fit_balloon_font_size(
+            &layout_builder.clone().with_balloon(&region),
+            text,
+            fit.explicit_size,
+            min_size,
+            fit.max_size,
+        )?
+        else {
+            return Ok(None);
+        };
+        let effect_clearance = if effects {
+            effect_padding(&fitted)?
+        } else {
+            0.0
+        };
+        if effect_clearance <= 0.0 {
+            return Ok(Some((fitted.font_size, air)));
+        }
+        let widened = Balloon {
+            min_air: air + effect_clearance,
+            ..region.clone()
+        };
+        Ok(fit_balloon_font_size(
+            &layout_builder.clone().with_balloon(&widened),
+            text,
+            Some(fitted.font_size),
+            min_size,
+            fitted.font_size,
+        )?
+        .map(|layout| (layout.font_size, widened.min_air)))
+    };
+    let decorated_air = fit.air + fit.clearance;
+    let fitted = fit_at(fit.min_size.max(fit.box_size), decorated_air, true)?;
+    let Some(bare_box_size) = fit.bare_box_size else {
+        return Ok(fitted);
+    };
+    let bare_fits = fit_at(fit.min_size.max(bare_box_size), fit.air, false)?.is_some();
+    if fitted.is_some() != bare_fits {
+        tracing::debug!(
+            bubble = bare_fits,
+            "outline or bold/italic alone would switch between box and bubble; keeping the bare text's choice"
+        );
+    }
+    match (fitted, bare_fits) {
+        (Some(_), false) => Ok(None),
+        (None, true) => fit_at(fit.min_size, decorated_air, true),
+        (fitted, _) => Ok(fitted),
     }
 }
 
@@ -2007,6 +2112,62 @@ mod tests {
         )?
         .expect("fits");
         assert_eq!(layout.font_size, 24.0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_border_never_moves_text_between_its_box_and_its_bubble() -> Result<()> {
+        // BadEnd3 p31: a 4 px border shrank the box fit by 1 px, the bubble
+        // then won and the text jumped. Box sizes around that tie must make
+        // the same choice with and without a border.
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, None).without_hyphenation();
+        let shape = BalloonShape {
+            frame: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 420.0,
+                height: 440.0,
+            },
+            rows: ellipse_balloon(420, 440).rows,
+        };
+        let text = "You're useless, and all you know how to do is act like a spoiled baby";
+        let clearance = stroke_clearance(Some(&RenderStrokeOptions {
+            color: [0, 0, 0, 255],
+            width_px: 4.0,
+        }));
+        let box_fit = |width: f32, height: f32| -> Result<f32> {
+            Ok(fit_font_size(&builder, text, width, height, None, 12.0, 120.0)?.font_size)
+        };
+        let in_bubble = |width: f32, height: f32, clearance: f32| -> Result<bool> {
+            let fit = BubbleFit {
+                air: BALLOON_MIN_AIR,
+                clearance,
+                explicit_size: None,
+                min_size: 12.0,
+                max_size: 120.0,
+                box_size: box_fit(width - 2.0 * clearance, height - 2.0 * clearance)?,
+                bare_box_size: (clearance > 0.0)
+                    .then(|| box_fit(width, height))
+                    .transpose()?,
+            };
+            Ok(fit_bubble_layout(&builder, text, &shape, fit, |_| Ok(0.0))?.is_some())
+        };
+        let (mut boxes, mut bubbles) = (0, 0);
+        for width in (180..=380).step_by(10) {
+            for height in [260.0, 320.0, 380.0] {
+                let width = width as f32;
+                let bare = in_bubble(width, height, 0.0)?;
+                assert_eq!(
+                    in_bubble(width, height, clearance)?,
+                    bare,
+                    "{width}x{height}"
+                );
+                if bare { bubbles += 1 } else { boxes += 1 }
+            }
+        }
+        // The sweep spans both outcomes, so it crosses the tie.
+        assert!(boxes > 0 && bubbles > 0, "box {boxes}, bubble {bubbles}");
         Ok(())
     }
 
