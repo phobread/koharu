@@ -2,6 +2,13 @@
 
 ## Done recently
 
+- **Official release underneath (2026-10-01).** A page with a release now *is*
+  the release except where your boxes are: their bubble part, or the box over
+  art. THUD-style effects come over whole (fills, no Korean showing through),
+  Korean the release painted out under your box is gone, and a moan the bubble
+  finder merged into your bubble gets the release's version. Near-identical
+  pages (all-black ones) pair by file order. Re-run File → Add Official
+  Release on a project to update its cleaned pages.
 - **Official release onomatopoeia (2026-10-01).** A project can carry its
   chapter's official English release (New project: "Raw pages" +
   "Official release" folders; File → Add Official Release...). Pages pair
@@ -41,13 +48,13 @@
 
 ## Official release
 
-- **Try it on other chapters.** Tuned on BadEnd 1-20 only. Watch for the
-  release's dialogue coming over (a short narration line far from any box
-  isn't caught as typeset) and for onomatopoeia that stay Korean (one
-  overlapping your box, a long typeset-looking one). Fix a wrong piece by
-  drawing a box over it and cleaning the page again.
-- Deleting a box on a cleaned page with a release takes ~2.5 s (the rule
-  runs again); a deleted box can leave ~50 faint edge pixels of the raw.
+- **Try it on other chapters.** Tuned on BadEnd 1-20 and BadEnd3 page 1. Watch
+  for the release's English peeking out next to your text (a line of theirs
+  the rule didn't tie to your box) and for small Korean bits where Korean
+  crosses a dark art line under your box (a repair stroke clears them).
+  Telling a merged moan from your own line needs Detect's erase mask.
+- Deleting a box on a cleaned page with a release takes ~2.5-3 s (the rule
+  runs again).
 
 ## OCR
 
