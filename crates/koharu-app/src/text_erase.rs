@@ -4,7 +4,7 @@
 //! `Mask { Segment }` node, so every later inpaint kept erasing lettering the
 //! user had already dismissed, and the pixels that block's last inpaint had
 //! already overwritten stayed overwritten
-//! (`.recovery/inpaint-109-2026-09-11/findings.md`).
+//! (2026-09-11 findings; the `.recovery/` evidence was deleted 2026-09-15).
 //!
 //! [`sync_deleted_text_erase`] wraps any op that actually removes text nodes
 //! into one `Op::Batch` that also clears those footprints from the segment

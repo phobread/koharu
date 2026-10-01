@@ -1,48 +1,37 @@
 # AGENTS.md — Handoff & build guide for this fork
 
-## Everyday-use installation and cleanup (2026-09-15)
-
-The finished personal app is installed at `D:\apps\Koharu\KoharuFORK.exe`,
-launched by **Koharu - Translate (FINAL)**. This is the sole retained app build.
-`.maintenance/release.json` records its final hash and verification. Automatic upstream update checks are disabled;
-Settings → Runtime → Clear cache removes only regenerable project thumbnails.
-
-The user authorized development cleanup. Large build products and disposable
-test environments were removed after final verification. On September 15 the
-user also made the final build definitive: the old STABLE installation, frozen
-recovery executable and old shortcuts were permanently deleted. The definitive
-source commit and Windows executable are publicly backed up at
-`https://github.com/phobread/koharu/releases/tag/definitive-2026-09-15`.
-Local Git history, recovery evidence and the redundant source snapshot were then
-deleted. The current source tree and normal app data/models/fonts remain.
-
-## Definitive personal translation build (updated 2026-09-15)
-
-The sole executable is `D:\apps\Koharu\KoharuFORK.exe`, SHA256
-`FE7B5460F9D9029AD5696EE0D6CB6D9ED2A9EED29D9CF6B36EC2D981528D86E1`.
-It shares the user's normal saved projects and settings. Use isolated data roots
-for any future development tests, verify process executable paths before stopping
-apps, and never send test mutations to an arbitrary port 4000 instance.
-
 This is a personal fork of [Koharu](https://github.com/mayocream/koharu) (a manga
 translation desktop app: Rust + Tauri backend, Next.js UI in `ui/`, local HTTP/RPC/MCP
-server shared by GUI and headless modes). It is being edited for personal use on a
+server shared by GUI and headless modes). It is edited for personal use on a
 **Windows 11** machine with an **NVIDIA RTX 4050 Laptop GPU (6 GB, compute 8.9)**.
+Project contribution rules are in [`CONTRIBUTING.md`](CONTRIBUTING.md) (note the AI
+usage policy). Open work is in [`TODO.md`](TODO.md).
 
-The GPU build environment was set up on 2026-06-18 and **re-verified end-to-end with
-CUDA 13.3 on 2026-07-18**. The rest of this file is what any agent (Codex, Claude,
-etc.) or human needs to keep
-building and running the app with CUDA without rediscovering the gotchas.
+## Installed app
 
-For full reproducible install steps see
-[`docs/en-US/how-to/build-with-cuda-windows.md`](docs/en-US/how-to/build-with-cuda-windows.md).
-Project contribution rules are in [`CONTRIBUTING.md`](CONTRIBUTING.md) (note the AI usage policy).
+- The everyday app is `D:\apps\Koharu\KoharuFORK.exe`, launched by the
+  **Koharu - Translate (FINAL)** desktop shortcut. It is the only retained build.
+  `.maintenance/release.json` (local, gitignored) records the installed hash, source
+  commit and verification; update it whenever the installed exe changes.
+- It uses the owner's real data under `%LOCALAPPDATA%\koharu` (projects, config, fonts,
+  models, runtime). **Use an isolated data root (`KOHARU_DATA_ROOT`) for every
+  development test**, verify process executable paths before stopping apps, and never
+  send test mutations to an arbitrary port-4000 instance.
+- Automatic upstream update checks are disabled. Settings → Runtime → Clear cache
+  removes only regenerable thumbnails; Free up space removes unreferenced project images.
+- Branch **`KoharuFORK`** on `origin` (github.com/phobread/koharu). `main` tracks
+  upstream, not this build. Upstream 0.83+ is a near-total rewrite, so port ideas by
+  hand; do not merge. Push only when the owner asks; the owner runs git
+  add/commit/push themselves.
+- Public backup of the 2026-09-15 build:
+  `https://github.com/phobread/koharu/releases/tag/definitive-2026-09-15`.
 
 ---
 
 ## Critical build environment (read before building)
 
-These are non-obvious and were the source of every build failure during setup:
+These are non-obvious and were the source of every build failure during setup
+(full install steps: [`docs/en-US/how-to/build-with-cuda-windows.md`](docs/en-US/how-to/build-with-cuda-windows.md)):
 
 1. **CUDA Toolkit must currently be ≤ 13.3.** The locked `cudarc` crate (0.19.8)
    supports CUDA through 13.3 via an exact `major.minor` match on `nvcc --version`.
@@ -59,54 +48,19 @@ These are non-obvious and were the source of every build failure during setup:
    - `NVCC_PREPEND_FLAGS=-Xcompiler=/Zc:preprocessor`
    - `NVCC_APPEND_FLAGS=-std=c++17`
 5. **MSVC** (Visual Studio 2022 Community) and **Rust ≥ 1.95** / **Bun ≥ 1.0** are
-   installed. `scripts/dev.ts` auto-discovers `nvcc` and `cl.exe` on Windows.
+   installed. `scripts/dev.ts` auto-discovers `nvcc` and `cl.exe` on Windows. Its
+   directory-walk fallback for MSVC is fork-only (upstream's vswhere path assumes a VS
+   Installer dir that doesn't exist here) — keep it when porting upstream changes.
 6. **`cuda` is NOT a default feature** of the `koharu` crate — you must pass
    `--features cuda` explicitly, or use `bun run build` / `bun run dev` (the default
    desktop feature path on Windows/Linux is `cuda`).
 
-## Isolated upstream taste test (2026-09-10)
-
-Official **0.81.7** was extracted and tested without merging or rebuilding this
-fork. Artifacts and notes are retained under
-`.recovery/upstream-taste-0.81.7/`; start with `comparison-notes.md` or open
-`comparison.html` in a browser. The viewer compares original M001–003,
-upstream RF-DETR/Hayai/LaMa exports, and fresh September 12 fork two-step Flux2
-results for all three pages. The older September 7 M003 result remains selectable.
-Saved fork OCR text is only a reference, not a fresh automatic OCR baseline.
-The September 12 rerun uses an isolated copy of the development executable with
-the same SHA256 as current STABLE; the protected installation was not tested.
-
-- September 12 rerun: fresh segment/bubble masks 45.01 s; Flux2 M001/M002/M003
-  119.22 / 127.71 / 41.58 s, total 333.52 s including masks. Verified two steps,
-  strength 1.0; retained fork boxes 9/15/11, no detection/OCR/translation rerun.
-  M002/M003 inspected balloons are cleaner than upstream LaMa; M001 is mixed,
-  and punctuation remnants remain. See `flux2-sept12/findings.md` and
-  `timings.json` under the taste-test directory. These are different processing
-  paths, not an engine-only speed comparison.
-
-- All three 3000×4000 pages completed: detection 3.59 s total, subsequent
-  Hayai/LaMa 22.14 s total. These are single-run timings, not a speedup claim.
-- Cleanup and OCR were mixed; no consistent quality advantage sufficient to
-  justify migration was established. Upstream RORem/Flux2/PaddleOCR and
-  translation/typesetting were not tested.
-- The new Torch runtime initially mixed bundled cuDNN 9.20 with the system's
-  `cudnn_engines_tensor_ir64_9.dll`. A process-local restricted PATH resolved
-  this. Do not change the machine's CUDA installation or permanent PATH for it.
-- Official test projects use the Windows Documents/Koharu location (here,
-  OneDrive/Documents/Koharu), not the fork's LocalAppData project format.
-  A completed test-project copy is retained under `upstream-project-after`.
-- Original M metadata hashes matched at the end of the test, before the user
-  resumed translation. Later user edits can legitimately change those hashes.
-- The local comparison server, if needed, is
-  `bun run .recovery/upstream-taste-0.81.7/serve-comparison.ts` on 127.0.0.1:4873.
-  It serves only the comparison's explicit asset list.
-
 ## Build & run
 
 ```bash
-bun install                       # JS deps (UI)
+bun install                       # JS deps; REQUIRED before any tauri build (tauri CLI is a devDependency)
 
-# Full desktop app (recommended) — produces target/release/KoharuFORK.exe
+# Full desktop app — produces target/release/KoharuFORK.exe
 bun run build                     # = tauri build --no-bundle, with cuda
 bun run dev                       # dev loop: tauri dev + fixed-port server
 
@@ -114,6 +68,21 @@ bun run dev                       # dev loop: tauri dev + fixed-port server
 bun cargo build --release -p koharu     --features cuda
 bun cargo build --release -p koharu-ml  --features cuda   # vision/OCR ML crate only
 ```
+
+Build gotchas:
+
+- **Ship only via the full Tauri build** (`bun run build`, i.e.
+  `bun run scripts/dev.ts tauri build --no-bundle --features cuda`).
+  `bun cargo build -p koharu` writes only `koharu.exe`, not the launched `KoharuFORK.exe`.
+- **Stop the running app first** if it runs from `target/` or the final binary rename
+  fails with "Access is denied (os error 5)". The compile cache makes the rerun fast.
+  `target/` was deleted on 2026-10-01, so the next build is a full rebuild.
+- Agent shells may set `NoDefaultCurrentDirectoryInExePath=1`, which breaks vswhere
+  discovery in `scripts/dev.ts`: clear it for the build
+  (`env -u NoDefaultCurrentDirectoryInExePath bun run build`).
+- While the owner is using the PC, build at below-normal priority with
+  `CARGO_BUILD_JOBS=10`.
+- Keep scratch target/store directories on short paths (MSBuild breaks past 260 chars).
 
 Run modes (`KoharuFORK.exe`): GUI (default), `--headless --port 4000`, `--cpu` (force CPU),
 `--download` (prefetch runtime libs + default models then exit), `--debug` (console logs).
@@ -149,198 +118,71 @@ standalone wart, it lives in upstream `cudarc`/the `mayocream/candle` fork, not 
 
 ## App behavior notes (learned while debugging)
 
-- **Export needs the layer to exist.** `Export rendered/inpainted` calls
-  `POST /api/v1/projects/current/export` which returns **400 `no pages have the
-  requested layer populated`** unless those pages were actually rendered/inpainted
-  (run **Process → Process All** first). `.khr` and source export work on any non-empty
-  project. The desktop window loads the UI from `http://127.0.0.1:<port>` (a remote
-  origin in the Tauri capability), and `isTauri()` is true there.
+- **Export needs the layer to exist.** `POST /api/v1/projects/current/export` returns
+  **400 `no pages have the requested layer populated`** unless those pages were actually
+  rendered/inpainted. The UI's "Export all pages" falls back per page from rendered to
+  inpainted to source. `.khr` and source export work on any non-empty project. The
+  desktop window loads the UI from `http://127.0.0.1:<port>` (a remote origin in the
+  Tauri capability), and `isTauri()` is true there.
 - **Debugging the webview:** launch with env
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, then drive CDP at
-  `http://127.0.0.1:9222/json` (Bun has WebSocket built in). The release binary is
-  `windows_subsystem=windows`; capture logs with `Start-Process -RedirectStandardError`.
+  `http://127.0.0.1:9222/json` (Bun has WebSocket built in). `scripts/cdp/` has smoke-test
+  scripts (README has usage). The release binary is `windows_subsystem=windows`; capture
+  logs with `Start-Process -RedirectStandardError`.
+- The app does **not** auto-reopen the last project after a restart:
+  `PUT /api/v1/projects/current {"id":"<project>"}`.
 
-## Saved-project compatibility audit (2026-09-05)
+## Hard rules (violating these corrupts saved projects)
 
-The working tree now uses **scene v8** (`style_ranges` added in v7,
-`writing_direction` in v8) and **history log v3**. The July snapshot below is
-historical: substantial rich-text/OCR/inpainting changes remain uncommitted.
-This audit added tests and documentation only; it did not rebuild or replace
-the desktop executable.
-
-- Opus 4.8 reviewed persistence and added three session regression tests;
-  Codex reviewed its changes and independently verified them. Claude connected
-  with `--model claude-opus-4-8` and network-enabled execution. The wrapper's
-  default model was not changed.
-- 104 CUDA-feature app unit tests and the independent historical-fixture test
-  passed. Twelve disposable copies (four pre-v8 recovery snapshots and eight
-  current projects) passed migration, current text-bearing history replay,
-  undo/redo, compaction and reopen; their source metadata remained byte-identical.
-- Historical v1/v6 fixtures are generated from the actual old git types, not
-  the current compat structs. Shared project/image/mask/transform/font/blob
-  layouts were checked against the original scene-model commit `0cf9ac6e`.
-- Details, limits and repeatable commands:
-  [`docs/en-US/how-to/verify-project-compatibility.md`](docs/en-US/how-to/verify-project-compatibility.md).
-
-## Rich-text and vertical-writing verification (2026-09-05)
-
-Rich-text editing, split/merge behavior, vertical punctuation styling, and
-synthetic bold/italic rendering were completed and independently reviewed by
-Opus 4.8 and Luna Max. Scene v8 and history v3 remain unchanged.
-
-- Splits use exact original translation spans, preserve repeated-word/CJK/emoji
-  formatting and direction metadata, and wait for queued saves before reading
-  the scene. Vertical fragments retain right-to-left column order. Merges also
-  build from the latest saved scene.
-- Focused rich-text drafts ignore stale save acknowledgements but accept undo,
-  and toolbar selection offsets stay synchronized after replacement edits.
-- Vertical punctuation normalization remaps renderer clusters to original UTF-8
-  offsets. Bold/italic sprites reserve measured effect clearance and refit inside
-  their text boxes instead of clipping.
-- 260 UI tests, TypeScript checking, 203 Rust app/core/renderer/PSD tests and the
-  full CUDA Tauri build passed. A disposable live project passed held-response
-  split timing, focused undo, render, PNG/PSD/KHR export and reopen checks; its
-  PNG and PSD composites were pixel-identical. The project was deleted and the
-  original eight projects remained unchanged. No app process was left running.
-- Details, repeatable commands and the editable-PSD limitation:
-  [`docs/en-US/how-to/verify-rich-text.md`](docs/en-US/how-to/verify-rich-text.md).
-
-## Flux2 inpainting background verification (2026-09-07)
-
-Flux2 generates with the broad text-region mask but pastes through the tighter
-glyph mask. The September 7 build used four directional colour-matching scans.
-The September 11 fix replaces those scans with a robust affine trend and smooth
-local residual interpolation; the old scans projected boundary drawing details
-into visible grid-like streaks on project 10.9 page 13.
-
-- Text deletion now retires the corresponding segment-mask footprint, restores
-  source pixels in that part of the inpainted layer, and invalidates the rendered
-  composite in one undoable transaction. Surviving boxes and BrushInpaint pixels
-  are protected. Segment brush strokes inside a deleted footprint cannot be
-  distinguished from detected glyph pixels; those are cleared with the block.
-- Segmentation completes partially detected high-contrast glyph components
-  anchored in the model mask. Ordinary inpainting keeps manual mask edits.
-- Existing stale masks need **Process → Rebuild masks and inpaint** once. It uses
-  the kept boxes and replaces segment-mask edits without redetecting text boxes,
-  rerunning OCR, or translating. Pipeline starts wait for queued scene saves.
-- Real-page evidence and repair checks are retained under
-  `.recovery/inpaint-109-2026-09-11/`. The user subsequently authorized installing
-  this verified build into STABLE on September 12. The original September 7
-  executable is retained as the backup described above; see `stable-promotion.json`.
-
-Historical September 7 verification:
-
-- A disposable copy of project M, page `003.jpg` (3000x4000, eleven detected
-  blocks) completed in 44.3 seconds on the RTX 4050. Correction from the timing
-  audit: the effective step count was not recorded. `/pipelines` uses saved
-  configuration and ignores the attempted `flux2Steps` request override.
-- Remaining glyph fragments were visible; the earlier claim that an entire
-  outside-bubble block was deliberately retained was incorrect. Visual quality
-  still needs a repeatable comparison with retained artifacts.
-- 79 passed and 2 ignored CUDA-feature `koharu-ml` tests, 104 `koharu-app` tests and
-  the required full Tauri CUDA build passed. The disposable
-  project was removed and the original projects were not changed.
-- Details and repeatable checks:
-  [`docs/en-US/how-to/verify-flux2-inpainting.md`](docs/en-US/how-to/verify-flux2-inpainting.md).
-
-## Fork state (as of 2026-07-18)
-
-Branch **`KoharuFORK`**, tip `0b2d93e9`; `target/release/KoharuFORK.exe` embeds
-`0.61.2-123-g0b2d93e9` (current tip; no app process was left running at handoff).
-**Never push — all commits stay local.** On 2026-07-18 the machine was upgraded from
-CUDA 13.2 to **CUDA 13.3 Update 1 (`nvcc` V13.3.73)**; 13.2 was uninstalled and its
-cuDNN-only leftover directory removed, so `v13.3` is now the sole toolkit and the
-machine `CUDA_PATH`/CUDA `PATH` entries point only to it. cuDNN 9.23.2 remains in the
-13.3 tree. A full Tauri build rebuilt `cudarc`, candle/flash-attn, ML/app/RPC, and the
-desktop executable; 74 ML, 29 non-ignored LLM, and 90 app tests passed. A disposable
-headless detector job completed on the RTX 4050 in 4.48s and logged CUDA 13.3 support,
-compute capability 8.9, and one CUDA device; its project, process, and installer temp
-files were removed afterward. The tracked working tree only has the corresponding
-uncommitted Windows CUDA build-guide update. The final 07-17 commits improved OCR crops
-for plain detector boxes (`bea29a27`) and removed PaddleOCR-VL's no-op repetition
-penalty (`b07dabc9`). Both are built; 74 ML, 29 LLM, and 90 app tests pass, the
-app/LLM bins check cleanly, and a headless smoke test served `/meta` from this exact
-commit with the RTX 4050 CUDA backend loaded. A real-page OCR A/B remains to
-live-verify the crop change and the optional Korean prompt hint.
-Earlier on 07-17: op failure-atomicity
-(`0a771a55`, History clone-apply-swap + log-tail self-heal — NITS "needs design"
-now fully closed), canvas auto-fit on resize (`f69edfed`), flux2-klein
-per-bubble tiled inpainting + `pipeline.flux2_strength`/`flux2_steps` config
-(`6b8497e1`), Ctrl+W close-project (`dc5c3f82`), Settings Klein quality toggle
-+ orval client regen (`2cdb49ed`). Since 07-14: a full-codebase review campaign landed 17 fixes
-(`REVIEW-TRIAGE-2026-07-14.md` = verdicts+hashes; `NITS.md` = deferred items,
-fixed ones struck through), then follow-ups: rotated-split geometry, sprite
-object-URL leak, permissive-CORS removal (deliberate: NO CORS layer — don't
-reintroduce on merges), config "[REDACTED]"-to-disk, history.log versioning
-("KHLG" header mirroring scene.bin — future Op-layout changes need a frozen
-compat decode in history.rs), and the whole config-write race family (backend
-mutex in routes/config.rs + SettingsDialog committedConfigRef/intent-queue +
-dedicated secret endpoints). The invasive failure-atomicity item is closed;
-`NITS.md` now contains only the lower-risk deferred tail. Dev tooling:
-`scripts/cdp/` has webview CDP smoke-test scripts
-(README has usage). This fork uses fully-local inpainting only.
-Remote `upstream` = mayocream/koharu, **merged through `00966bee` (2026-07-08)** — the
-repo now uses the **`crates/` layout** (all Rust crates under `crates/`), has the
-koharu-secrets crate, and runs harfrust 0.10 / cudarc 0.19.8 / oxfmt 0.56. candle is
-still pinned 0.9.2 via the mayocream fork; this path is verified with CUDA 13.3 Update 1.
-Fork-only fix in `scripts/dev.ts`: upstream's vswhere MSVC discovery assumes a VS
-Installer dir that doesn't exist on this machine — the directory-walk fallback was
-restored. **Keep that fallback in any future merge.**
-
-### Hard rules (violating these corrupts saved projects)
-
-- **Scene format is postcard (positional encoding), currently `SCENE_FORMAT_VERSION = 8`.**
-  Any change to a persisted koharu-core struct requires bumping the version AND freezing
-  the old layout in `crates/koharu-app/src/session.rs::mod compat`.
-- **History log is currently `HISTORY_LOG_VERSION = 3`.** Persisted Op-layout
-  changes also require a frozen decoder and migration in `history.rs`.
+- **Scene format is postcard (positional encoding).** `SCENE_FORMAT_VERSION = 9`
+  (`crates/koharu-app/src/session.rs`), written only when a scene has official-release
+  images; other scenes are still written as v8 so older builds can open them. Any
+  change to a persisted koharu-core struct requires bumping the version AND freezing
+  the old layout in `session.rs::mod compat`.
+- **History log is `HISTORY_LOG_VERSION = 3`** (`history.rs`, "KHLG" header).
+  Persisted Op-layout changes also require a frozen decoder and migration there.
 - **Never use serde `double_option` on persisted types.**
 - Clearing a translation via the API must send the empty string `""`, not JSON `null`.
+- **No CORS layer** on the local API (removed deliberately; cross-origin and
+  DNS-rebinding requests are rejected). Don't reintroduce one.
 
-### Workflow rules
+Persistence checks and fixtures:
+[`docs/en-US/how-to/verify-project-compatibility.md`](docs/en-US/how-to/verify-project-compatibility.md).
 
-- **Ship ONLY via the full Tauri build:**
-  `bun run scripts/dev.ts tauri build --no-bundle --features cuda`.
-  `bun cargo build -p koharu` writes only `koharu.exe`, NOT the launched `KoharuFORK.exe`.
-- **Stop the running app first** (`Stop-Process -Name KoharuFORK`) or the final binary
-  rename fails with "Access is denied (os error 5)". Compile cache makes the rerun fast.
-- After UI edits: `bun run format` (oxfmt). After Rust edits: `bun cargo fmt`.
+## Workflow rules
+
+- After UI edits: `bun run format` (oxfmt) **from the repo root** (it fails with
+  "Script not found" inside `ui/`). After Rust edits: `bun cargo fmt`.
   UI tests: `bun run test` from `ui/` (vitest) — NOT `bun test`.
-- Server binds 127.0.0.1:4000, hops to 4001+ if busy. The app does **not** auto-reopen
-  the last project — `PUT /api/v1/projects/current {"id":"<project>"}` after restart.
+- Server binds 127.0.0.1:4000, hops to 4001+ if busy — API debugging must scan ports.
 - **Any commit that changes the HTTP API shape** (routes, request/response/config
   structs) must also regenerate the client in the same commit:
   `bun run generate:api` from `ui/` (orval; regenerates `ui/openapi.json` +
-  `ui/lib/api/**`), then `bun run format` (raw orval output violates style).
-  Otherwise the NEXT regen picks up your stale diff (bit us at 2cdb49ed).
-- Commit trailer: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+  `ui/lib/api/**`), then `bun run format`. Orval drops the
+  `CodexAuthAttemptStatus`/`GradientDirection`/`TextAlign` value imports in
+  `ui/lib/api/default/default.{msw,faker}.ts` — re-add them by hand.
+- Commit trailer: a `Co-Authored-By:` line naming the model that wrote the change
+  (e.g. `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`).
 
-### Engine lineup (current)
+## Engine lineup (current)
 
 - Detector `comic-text-bubble-detector` → seg `comic-text-detector-seg` (glyph-level,
   only inside detected boxes) → bubbles `speech-bubble-segmentation` (**mask is an ID
   map**: pixel value = bubble number 1..N, 0 = none).
-- OCR: `paddle-ocr-vl-1.6` via `crates/koharu-llm/src/paddleocr_vl.rs` (llama.cpp GGUF)
-  — this is the latest release. The candle path in `crates/koharu-ml/src/paddleocr_vl/`
-  is dev-bin only, also aligned to 1.6.
-- Inpainter default: **lama-manga**. **`flux2-klein` is the QUALITY pick as of
-  2026-07-14**: on real pages it now produces cleaner flat bubble fills than LaMa
-  with no text regeneration (an earlier "regenerates text" verdict from 07-08 no
-  longer reproduces — likely fixed by the mask-fallback work). Since `6b8497e1`
-  it inpaints per-bubble crops at native resolution (~40s/page at the
-  user-preferred `flux2_steps=2`, ~70-105s at 4; config knob PATCHes as
-  camelCase `flux2Steps`, GET returns snake_case) on this 6 GB GPU; models
-  (~2.7 GB) present in `%LOCALAPPDATA%\Koharu\models`. Its prompt
-  is a precomputed embedding compiled into the exe (`koharu-ml/src/flux2_klein/
-  precomputed.rs`) — model re-downloads cannot affect it.
-- FLUX.1 Fill (12B) was trialed (2026-07-14) and REJECTED for bubble cleanup:
-  generative fill invents content (objects/text) in flat masked bubbles
-  regardless of prompt/mask config. Do not revisit it. This fork does only local
-  inpainting (lama-manga / flux2-klein).
-- **Rendered-colour write-back** (scene v6): the renderer persists the text colour it
-  actually painted into `TextData.rendered_text_color` (beside `rendered_font_size_px`),
-  and the UI swatch prefers it over the black guess for auto blocks. Blocks rendered
-  before v6 lack the field until re-rendered once.
+- OCR: `paddle-ocr-vl-1.6` via `crates/koharu-llm/src/paddleocr_vl.rs` (llama.cpp GGUF),
+  with a PP-OCRv5 line checker/repair and black-on-white redraw of thick-outlined
+  lettering before both readers. The candle path in `crates/koharu-ml/src/paddleocr_vl/`
+  is dev-bin only.
+- Inpainter default: **lama-manga**; **`flux2-klein`** is the quality pick. Flux2
+  inpaints per-bubble crops (large crops at half size by default: Settings → Engines →
+  "Faster cleanup of large areas"), plain bubbles and plain panels get a flat fill, and
+  its prompt is a precomputed embedding compiled into the exe
+  (`koharu-ml/src/flux2_klein/precomputed.rs`). The repair brush can use LaMa
+  ("Repair with LaMa"). FLUX.1 Fill (12B) was rejected for bubble cleanup (it invents
+  content); this fork does only local inpainting.
+- Renderer: unlocked boxes inside a bubble use bubble-shaped lettering when it gives
+  bigger text than the box. A page with an official English release keeps the
+  release everywhere except the owner's boxes (`crates/koharu-app/src/official.rs`).
 - **Fallback for undetected glyphs** (`crates/koharu-ml/src/inpainting/mask.rs`): a detected
   text block whose seg mask is empty (e.g. white-on-black lettering) gets its rect
   erased clipped to the bubble covering ≥25 % of it; blocks outside any bubble are
@@ -349,31 +191,21 @@ restored. **Keep that fallback in any future merge.**
   inpainter silently no-ops — if inpainting "does nothing", check the page has text
   nodes first.
 
+Verification write-ups: `docs/en-US/how-to/verify-*.md` (Flux2 inpainting, rich text,
+project compatibility, model pins, OpenRouter translation, frontend shell).
+
 ### API quick reference (base `http://127.0.0.1:4000/api/v1`)
 
 - `POST /pipelines {"steps":[engine ids],"pages":[id],"sourceLanguage":...}`
-- `PATCH /config {"pipeline":{"inpainter":"lama-manga"}}`
+- `PATCH /config {"pipeline":{"inpainter":"lama-manga"}}` (PATCH takes camelCase keys,
+  GET returns snake_case)
 - `PUT /projects/current {"id":"badend"}`
-- `GET /operations` = status only; job **warnings only appear on the SSE stream**
-  `GET /events` (`jobWarning`).
+- `GET /operations` = status only; match the operation **by id** (the list is not
+  chronological). Job **warnings only appear on the SSE stream** `GET /events`
+  (`jobWarning`).
 - Masks/images are scene nodes: `GET /scene.json` → blob hash → `GET /blobs/{hash}`.
   `/pages/{id}/masks/{role}` is PUT (upload) only.
 - `GET /meta` version = git hash at build time (`-dirty` when uncommitted).
-
-### Known backlog
-
-- Repeat the Flux2 background-quality comparison with retained images and
-  verified configuration; inspect remaining glyph fragments.
-- Troubleshoot long processing times through the detector/inpainter pathway.
-- Simplify the UI by reducing visual clutter and easing the overall workflow.
-- Consider flux2-klein as default inpainter and/or batch detect+inpaint the
-  unprocessed BadEnd pages (7, 9, 12-15, 17, 19, 20) — user undecided.
-- Auto-reopen last project on startup (friction hit repeatedly; no mechanism exists).
-- When polling `GET /operations`, match the operation **by id** — the list is not
-  chronological; `ops[-1]` can be a stale completed op while yours still runs.
-
-Fuller history and per-project (BadEnd) status live in Claude's memory dir:
-`C:\Users\amiru\.claude\projects\D--projects-koharuFORK\memory\fork-dev-state.md`.
 
 ## Claude coordination and worker orchestration
 
@@ -399,9 +231,6 @@ worktrees. Keep Claude's handoff current whenever Codex makes a change.
   well. A written handoff is not proof that Claude has read it; distinguish
   recorded updates from delivered/acknowledged messages. Do not launch a new
   Claude worker just to announce a change.
-- Initial OCR evidence and review prompt are under
-  `exports/ocr-badend-017-2026-09-25/`; these are investigation artifacts,
-  not an implemented or inference-validated fix.
 
 ### Bounded Claude worker use
 

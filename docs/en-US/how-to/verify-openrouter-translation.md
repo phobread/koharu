@@ -1,7 +1,7 @@
 # OpenRouter structured translation — 2026-09-14
 
-The user selected OpenRouter-only implementation after reviewing
-`BACKEND-HANDOFF.md`. Local models and other provider endpoints retain the
+The user selected OpenRouter-only implementation after reviewing the
+2026-09-14 backend handoff. Local models and other provider endpoints retain the
 tagged-text path. No persisted scene/history types or HTTP API shapes changed.
 
 ## Behavior
@@ -53,7 +53,8 @@ existing build cache and passed.
 
 ## Disposable M comparison
 
-Evidence: `.recovery/structured-translation-2026-09-14/comparison/`.
+Evidence was kept in `.recovery/structured-translation-2026-09-14/comparison/`
+(deleted in the 2026-09-15 cleanup).
 Nine nonempty text blocks from retained M page `001.jpg` were translated with
 `anthropic/claude-opus-4.6`, English, the user's saved custom guidance, and
 unchanged provider defaults (temperature and max_tokens omitted).

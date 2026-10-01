@@ -113,7 +113,7 @@ $env:KOHARU_PIN_CACHE_ROOT = "$env:LOCALAPPDATA/Koharu"
 bun cargo test --release -p koharu-app --features cuda --test model_pins existing_image_packages_resolve_offline -- --ignored --nocapture
 ```
 
-Retained evidence is under `.recovery/model-pins-2026-09-14/`: `audit.json`,
+Evidence was kept under `.recovery/model-pins-2026-09-14/` (deleted in the 2026-09-15 cleanup): `audit.json`,
 `cache-after.json`, the audit scripts, source backups, and the previous development
 executable. No real project was opened or changed. Protected STABLE was not
 promoted or used for testing.

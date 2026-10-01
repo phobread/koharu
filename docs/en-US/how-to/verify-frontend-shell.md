@@ -20,8 +20,8 @@ The personal STABLE executable and green shortcut must remain protected as
 described in AGENTS.md. This integration targets the development fork only.
 
 Before-edit copies of the affected UI files, the complete pre-existing working
-tree diff, and the previous development executable are retained in
-`.recovery/frontend-integration-2026-09-14/`. Preserve the user's other dirty
+tree diff, and the previous development executable were kept in
+`.recovery/frontend-integration-2026-09-14/` (deleted in the 2026-09-15 cleanup). Preserve the user's other dirty
 changes when reviewing or reverting this integration.
 
 The test launcher `start-ui-preview.ps1` in that directory uses only its local
@@ -52,8 +52,8 @@ undo/redo within a session. Closing a project clears the existing undo stack;
 document changes themselves persist. Automatic rendering has a separate
 history transaction from the initiating text edit.
 
-Build hashes and live verification evidence are retained with the isolated
-preview in `.recovery/frontend-integration-2026-09-14/`.
+Build hashes and live verification evidence were kept with the isolated
+preview in `.recovery/frontend-integration-2026-09-14/` (deleted in the 2026-09-15 cleanup).
 
 The full CUDA Tauri build passed. Its packaged frontend was opened on the
 isolated M copy; translation editing, bold formatting, inspector switching

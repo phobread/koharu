@@ -77,8 +77,9 @@ remain undoable. Ordinary **Inpaint** preserves the edited mask. Existing stale
 masks cannot identify previously deleted boxes retrospectively, so those pages
 need this explicit rebuild once.
 
-For the 2026-09-11 regression, retained copies, raw Flux2 crops and a comparison
-using identical generated pixels are under `.recovery/inpaint-109-2026-09-11/`.
+For the 2026-09-11 regression, copies, raw Flux2 crops and a comparison using
+identical generated pixels were kept under `.recovery/inpaint-109-2026-09-11/`
+(deleted in the 2026-09-15 cleanup).
 The opt-in `retained_inpaint_crops` GPU test takes `KOHARU_INPAINT_QA`,
 `KOHARU_FLUX_TRANSFORMER` and `KOHARU_FLUX_VAE`. It requires explicitly supplied
 source/generation/composite PNG fixtures. On this machine the standalone test
