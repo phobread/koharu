@@ -19,6 +19,7 @@ use koharu_ml::{
         KoreanOcr, contains_lexical_hangul, is_dark_panel, repair_hangul, space_at_line_breaks,
     },
     outlined_text::{clean_outlined_text, outline_window},
+    quad_bbox, rotated_box_corners,
 };
 use koharu_runtime::RuntimeManager;
 use tokio::sync::OnceCell;
@@ -279,20 +280,14 @@ fn region_bounds(region: &TextRegion) -> [f32; 4] {
             region.y + region.height,
         ];
     }
-    let (sin, cos) = angle.to_radians().sin_cos();
-    let cx = region.x + region.width * 0.5;
-    let cy = region.y + region.height * 0.5;
-    let (hw, hh) = (region.width * 0.5, region.height * 0.5);
-    let corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]
-        .map(|[lx, ly]| [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly]);
-    let xs = corners.map(|c| c[0]);
-    let ys = corners.map(|c| c[1]);
-    [
-        xs.iter().copied().fold(f32::MAX, f32::min),
-        ys.iter().copied().fold(f32::MAX, f32::min),
-        xs.iter().copied().fold(f32::MIN, f32::max),
-        ys.iter().copied().fold(f32::MIN, f32::max),
-    ]
+    quad_bbox(&rotated_box_corners(
+        [
+            region.x + region.width * 0.5,
+            region.y + region.height * 0.5,
+        ],
+        [region.width, region.height],
+        angle,
+    ))
 }
 
 fn korean_verification_crop(image: &DynamicImage, region: &TextRegion) -> DynamicImage {

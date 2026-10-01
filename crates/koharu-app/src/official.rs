@@ -42,6 +42,7 @@ use koharu_core::{
     BlobRef, ImageData, ImageDataPatch, ImageRole, MaskRole, Node, NodeDataPatch, NodeId, NodeKind,
     NodePatch, Op, Page, PageId, Scene, Transform,
 };
+use koharu_ml::{quad_bbox, rotated_box_corners};
 use koharu_renderer::text::latin::{BalloonShape, BubbleIndex, LayoutBox};
 use rayon::prelude::*;
 
@@ -537,23 +538,11 @@ struct Rect {
 impl Rect {
     /// Axis-aligned page bounds of a (possibly rotated) box, clipped.
     fn of(t: &Transform, w: u32, h: u32) -> Self {
-        let (cx, cy) = (t.x + t.width / 2.0, t.y + t.height / 2.0);
-        let (sin, cos) = t.rotation_deg.to_radians().sin_cos();
-        let (hw, hh) = (t.width / 2.0, t.height / 2.0);
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = (
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        );
-        for (dx, dy) in [(-hw, -hh), (hw, -hh), (-hw, hh), (hw, hh)] {
-            let x = cx + dx * cos - dy * sin;
-            let y = cy + dx * sin + dy * cos;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
+        let [min_x, min_y, max_x, max_y] = quad_bbox(&rotated_box_corners(
+            [t.x + t.width / 2.0, t.y + t.height / 2.0],
+            [t.width, t.height],
+            t.rotation_deg,
+        ));
         let clip = |v: f32, hi: u32| (v.max(0.0) as u32).min(hi);
         Self {
             x0: clip(min_x.floor(), w),

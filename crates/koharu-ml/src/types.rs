@@ -16,6 +16,32 @@ pub enum TextDirection {
 /// A four-point polygon, ordered clockwise from the top-left.
 pub type Quad = [[f32; 2]; 4];
 
+/// Corners of a `size` box turned by `rotation_deg` about `centre`, clockwise
+/// from the top-left (screen convention: y-down, positive = clockwise). This
+/// is how a rotated `TextRegion` (and the scene's `Transform`) sits on the page.
+pub fn rotated_box_corners(centre: [f32; 2], size: [f32; 2], rotation_deg: f32) -> Quad {
+    let [cx, cy] = centre;
+    let (hw, hh) = (size[0] * 0.5, size[1] * 0.5);
+    let (sin, cos) = rotation_deg.to_radians().sin_cos();
+    [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]
+        .map(|[lx, ly]| [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly])
+}
+
+/// Axis-aligned bounds `[min_x, min_y, max_x, max_y]` of a quad.
+pub fn quad_bbox(quad: &Quad) -> [f32; 4] {
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for point in quad {
+        min_x = min_x.min(point[0]);
+        min_y = min_y.min(point[1]);
+        max_x = max_x.max(point[0]);
+        max_y = max_y.max(point[1]);
+    }
+    [min_x, min_y, max_x, max_y]
+}
+
 /// A rectangle-ish detected text region with geometry + detector metadata.
 /// This is what detectors emit; the app layer maps it into a scene `TextData` node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

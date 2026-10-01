@@ -21,7 +21,10 @@ pub mod probability_map;
 pub mod speech_bubble_segmentation;
 pub mod types;
 
-pub use types::{FontPrediction, NamedFontPrediction, Quad, TextDirection, TextRegion, TopFont};
+pub use types::{
+    FontPrediction, NamedFontPrediction, Quad, TextDirection, TextRegion, TopFont, quad_bbox,
+    rotated_box_corners,
+};
 
 use anyhow::Result;
 use candle_core::utils::{cuda_is_available, metal_is_available};

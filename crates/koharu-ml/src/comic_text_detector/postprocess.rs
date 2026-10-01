@@ -1,5 +1,5 @@
 use super::lettering::complete_text_lines;
-use crate::types::{TextDirection, TextRegion};
+use crate::types::{TextDirection, TextRegion, quad_bbox, rotated_box_corners};
 use image::{
     DynamicImage, GrayImage, Luma, Rgb, RgbImage,
     imageops::{self},
@@ -248,20 +248,13 @@ pub fn crop_text_block_exact(image: &DynamicImage, block: &TextRegion) -> Dynami
 fn warp_block_upright(image: &DynamicImage, block: &TextRegion, pad: f32) -> Option<DynamicImage> {
     let w = block.width + 2.0 * pad;
     let h = block.height + 2.0 * pad;
-    let cx = block.x + block.width * 0.5;
-    let cy = block.y + block.height * 0.5;
-    let angle = block.rotation_deg.unwrap_or(0.0);
-    let (sin, cos) = angle.to_radians().sin_cos();
 
-    // Corners of the padded upright rect rotated into image space
-    // (clockwise from top-left, screen convention: y-down, CW-positive).
-    let local = [
-        [-w * 0.5, -h * 0.5],
-        [w * 0.5, -h * 0.5],
-        [w * 0.5, h * 0.5],
-        [-w * 0.5, h * 0.5],
-    ];
-    let quad: Quad = local.map(|[lx, ly]| [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly]);
+    // Corners of the padded upright rect rotated into image space.
+    let quad = rotated_box_corners(
+        [block.x + block.width * 0.5, block.y + block.height * 0.5],
+        [w, h],
+        block.rotation_deg.unwrap_or(0.0),
+    );
 
     // Warp from a crop of the quad's bounding box, not the whole page, so
     // the source stays small; pixels outside the page fill white (manga
@@ -666,20 +659,6 @@ fn clip_quad(quad: &Quad, width: f32, height: f32) -> Quad {
         point[1] = point[1].clamp(0.0, height);
     }
     clipped
-}
-
-fn quad_bbox(quad: &Quad) -> [f32; 4] {
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-    for point in quad {
-        min_x = min_x.min(point[0]);
-        min_y = min_y.min(point[1]);
-        max_x = max_x.max(point[0]);
-        max_y = max_y.max(point[1]);
-    }
-    [min_x, min_y, max_x, max_y]
 }
 
 fn quad_to_tuples(quad: &Quad) -> [(f32, f32); 4] {
