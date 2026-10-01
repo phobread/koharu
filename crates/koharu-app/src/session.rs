@@ -284,15 +284,13 @@ impl ProjectSession {
         )
         .write(|f| f.write_all(&bytes))
         .context("write scene.bin atomically")?;
-        // From here a v9 scene.bin keeps older builds away from the log.
-        if version == SCENE_FORMAT_VERSION {
-            self.official_format_on_disk.store(true, Ordering::Release);
-        }
-        // Log truncation only after snapshot is durably on disk.
-        history.truncate_log()?;
-        // With the log empty, a v8 scene.bin is safe for older builds again.
+        // Track the version now on disk before truncating: if truncation
+        // fails after a v8 write, a stale `true` would let a later edit add
+        // official images without the protecting compaction.
         self.official_format_on_disk
             .store(version == SCENE_FORMAT_VERSION, Ordering::Release);
+        // Log truncation only after snapshot is durably on disk.
+        history.truncate_log()?;
         Ok(())
     }
 }
