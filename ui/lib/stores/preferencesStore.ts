@@ -62,6 +62,13 @@ type PreferencesState = {
   /** Where exports go (a folder per project inside); undefined = Pictures/Koharu. */
   exportFolder?: string
   setExportFolder: (folder?: string) => void
+  /**
+   * Where the next open dialog starts (pages, folders, archives). Kept apart
+   * from the export folder: Windows otherwise reopens whichever folder any of
+   * the app's dialogs used last, which after an export is the export folder.
+   */
+  lastOpenFolder?: string
+  setLastOpenFolder: (folder?: string) => void
   /** Steps the Process actions run (each only where it's still missing). */
   processSteps: ProcessSteps
   setProcessSteps: (steps: Partial<ProcessSteps>) => void
@@ -151,6 +158,7 @@ export const usePreferencesStore = create<PreferencesState>()(
           },
         })),
       setExportFolder: (folder) => set({ exportFolder: folder || undefined }),
+      setLastOpenFolder: (folder) => set({ lastOpenFolder: folder || undefined }),
       setProcessSteps: (steps) =>
         set((state) => ({
           processSteps: {
@@ -223,6 +231,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         shortcuts: state.shortcuts,
         processSteps: state.processSteps,
         exportFolder: state.exportFolder,
+        lastOpenFolder: state.lastOpenFolder,
       }),
     },
   ),

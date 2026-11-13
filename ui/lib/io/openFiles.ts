@@ -12,6 +12,7 @@
  */
 
 import { isTauri } from '@/lib/backend'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'] as const
 const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp']
@@ -34,9 +35,11 @@ export async function openImageFiles(): Promise<ImagePickerResult> {
     const picked = await open({
       multiple: true,
       filters: [{ name: 'Images', extensions: [...IMAGE_EXTENSIONS] }],
+      defaultPath: lastOpenFolder(),
     })
     if (!picked) return { kind: 'paths', paths: [] }
     const paths = Array.isArray(picked) ? picked : [picked]
+    rememberOpenFolder(parentFolder(paths[0]))
     return { kind: 'paths', paths }
   }
 
@@ -59,8 +62,10 @@ export async function openImageFiles(): Promise<ImagePickerResult> {
 export async function openImageFolder(): Promise<ImagePickerResult> {
   if (isTauri()) {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const folder = await open({ directory: true, multiple: false })
+    const folder = await open({ directory: true, multiple: false, defaultPath: lastOpenFolder() })
     if (!folder || typeof folder !== 'string') return { kind: 'paths', paths: [] }
+    // Next time start one level up, where the next chapter's folder sits.
+    rememberOpenFolder(parentFolder(folder) ?? folder)
     const { readDir } = await import('@tauri-apps/plugin-fs')
     const entries = await readDir(folder)
     const paths = entries
@@ -91,8 +96,10 @@ export async function openKhrFile(): Promise<File | null> {
     const picked = await open({
       multiple: false,
       filters: [{ name: 'Koharu archive', extensions: ['khr'] }],
+      defaultPath: lastOpenFolder(),
     })
     if (!picked || typeof picked !== 'string') return null
+    rememberOpenFolder(parentFolder(picked))
     const [file] = await readTauriFiles([picked])
     return file ?? null
   }
@@ -114,6 +121,22 @@ export async function openKhrFile(): Promise<File | null> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** The folder a path sits in, or `undefined` for a bare name or a drive root. */
+export function parentFolder(path: string | undefined): string | undefined {
+  if (!path) return undefined
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return cut > 0 ? trimmed.slice(0, cut) : undefined
+}
+
+function lastOpenFolder(): string | undefined {
+  return usePreferencesStore.getState().lastOpenFolder || undefined
+}
+
+function rememberOpenFolder(folder: string | undefined): void {
+  if (folder) usePreferencesStore.getState().setLastOpenFolder(folder)
+}
 
 async function readTauriFiles(paths: string[]): Promise<File[]> {
   if (paths.length === 0) return []

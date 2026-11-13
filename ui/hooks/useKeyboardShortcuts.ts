@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react'
 
 import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import type { SceneSnapshot } from '@/lib/api/schemas'
+import { stepBrushSize } from '@/lib/brushSize'
 import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
 import { getPlatform, formatShortcut, isModifierKey } from '@/lib/shortcutUtils'
@@ -96,10 +97,10 @@ export function useKeyboardShortcuts() {
       // Brush Size
       if (shortcut === shortcuts.increaseBrushSize) {
         const currentSize = usePreferencesStore.getState().brushConfig.size
-        setBrushConfig({ size: Math.min(128, currentSize + 4) })
+        setBrushConfig({ size: stepBrushSize(currentSize, 1) })
       } else if (shortcut === shortcuts.decreaseBrushSize) {
         const currentSize = usePreferencesStore.getState().brushConfig.size
-        setBrushConfig({ size: Math.max(8, currentSize - 4) })
+        setBrushConfig({ size: stepBrushSize(currentSize, -1) })
       }
     }
 

@@ -100,4 +100,31 @@ describe('SubToolRail', () => {
     renderWithQuery(<SubToolRail />)
     expect(screen.getByDisplayValue('64')).toBeInTheDocument()
   })
+
+  it('lets a stroke pass under the panel while the pointer is held', () => {
+    useEditorUiStore.setState({ mode: 'repairBrush' })
+    renderWithQuery(<SubToolRail />)
+    const rail = screen.getByTestId('sub-tool-rail')
+    expect(rail.className).not.toContain('pointer-events-none')
+
+    // A press on the panel itself (dragging the slider) leaves it usable.
+    fireEvent.pointerDown(rail)
+    expect(rail.className).not.toContain('pointer-events-none')
+    fireEvent.pointerUp(rail)
+
+    fireEvent.pointerDown(document.body)
+    expect(rail.className).toContain('pointer-events-none')
+    fireEvent.pointerUp(document.body)
+    expect(rail.className).not.toContain('pointer-events-none')
+  })
+
+  it('lets the slider go from 1 to 128 in steps of 1', () => {
+    useEditorUiStore.setState({ mode: 'brush' })
+    renderWithQuery(<SubToolRail />)
+    const thumb = screen.getByRole('slider')
+    expect(thumb).toHaveAttribute('aria-valuemin', '1')
+    expect(thumb).toHaveAttribute('aria-valuemax', '128')
+    fireEvent.keyDown(thumb, { key: 'ArrowLeft' })
+    expect(usePreferencesStore.getState().brushConfig.size).toBe(35)
+  })
 })

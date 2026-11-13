@@ -10,6 +10,12 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import {
+  DetectOptions,
+  InpaintOptions,
+  OcrOptions,
+  TranslateOptions,
+} from '@/components/canvas/StepOptions'
 import { ViewControls } from '@/components/canvas/ViewControls'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -133,6 +139,7 @@ function WorkflowButtons() {
         )}
         {t('processing.detect')}
       </Button>
+      <DetectOptions />
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
         variant='ghost'
@@ -149,6 +156,7 @@ function WorkflowButtons() {
         )}
         {t('processing.ocr')}
       </Button>
+      <OcrOptions />
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
         variant='ghost'
@@ -184,6 +192,7 @@ function WorkflowButtons() {
           />
         )}
       </Button>
+      <TranslateOptions />
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
         variant='ghost'
@@ -200,6 +209,7 @@ function WorkflowButtons() {
         )}
         {t('mask.inpaint')}
       </Button>
+      <InpaintOptions />
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
         variant='ghost'

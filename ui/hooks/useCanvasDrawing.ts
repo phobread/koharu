@@ -5,6 +5,7 @@ import { useEffect, useRef, type RefObject } from 'react'
 
 import { type DocumentPointer, type PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import type { Region } from '@/lib/api/schemas'
+import { stampLine } from '@/lib/brushSize'
 
 /** Minimum canvas context needed by the drawing loop. */
 export type CanvasDims = { width: number; height: number; key?: string }
@@ -19,6 +20,8 @@ export type CanvasDrawingConfig = {
   getColor: () => string
   blendMode: GlobalCompositeOperation
   getBrushSize: () => number
+  /** Brushes thinner than this draw whole pixels instead of a smooth line. */
+  hardEdgeBelow?: number
   onFinalize: (patch: Uint8Array, region: Region) => Promise<void>
   /** Called after finalize with the full-canvas PNG and the patch region. */
   onFinalizeFullCanvas?: (fullPng: Uint8Array, patchRegion: Region) => Promise<void>
@@ -168,9 +171,17 @@ export function useCanvasDrawing(
   const drawStroke = (from: DocumentPointer, to: DocumentPointer) => {
     const color = config.getColor()
     const brushSize = config.getBrushSize()
+    const hardEdge = config.hardEdgeBelow !== undefined && brushSize < config.hardEdgeBelow
 
     const stroke = (ctx: CanvasRenderingContext2D) => {
       ctx.save()
+      if (hardEdge) {
+        ctx.fillStyle = color
+        ctx.globalCompositeOperation = config.blendMode
+        stampLine(ctx, from, to, brushSize)
+        ctx.restore()
+        return
+      }
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.lineWidth = brushSize

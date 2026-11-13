@@ -6,6 +6,7 @@ import { useCanvasDrawing, type CanvasDims } from '@/hooks/useCanvasDrawing'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import { getConfig } from '@/lib/api/default/default'
 import type { Page } from '@/lib/api/schemas'
+import { BRUSH_HARD_EDGE_BELOW } from '@/lib/brushSize'
 import { invalidateScene, queueAutoRender } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -61,6 +62,7 @@ export function useMaskDrawing({
     getColor: () => (isEraseMode ? '#000000' : '#ffffff'),
     blendMode: 'source-over',
     getBrushSize: () => usePreferencesStore.getState().brushConfig.size,
+    hardEdgeBelow: BRUSH_HARD_EDGE_BELOW,
     enabled: showMask,
     onCanvasInit: (ctx, d) => {
       if (segmentData) {

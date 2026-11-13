@@ -6,6 +6,8 @@ import { HexColorInput, HexColorPicker } from 'react-colorful'
 
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { isTauri } from '@/lib/backend'
+import { PICK_IGNORE_ATTRIBUTE, pickColorFromPage, pickJustCancelled } from '@/lib/pickColor'
 import { cn } from '@/lib/utils'
 
 type ColorPickerProps = {
@@ -86,12 +88,25 @@ export function ColorPicker({
     onChange(localColor)
   }, [localColor, onChange])
 
-  const canUseEyeDropper =
-    typeof window !== 'undefined' && typeof (window as EyeDropperWindow).EyeDropper === 'function'
+  // True while the next click on the page picks a colour.
+  const [picking, setPicking] = useState(false)
 
   const handlePickFromScreen = async () => {
-    const EyeDropperCtor = (window as EyeDropperWindow).EyeDropper
-    if (!EyeDropperCtor) return
+    // The desktop app's WebView has `EyeDropper`, but there it cancels itself
+    // the moment it opens. Pick from the page inside the window instead.
+    const EyeDropperCtor = isTauri() ? undefined : (window as EyeDropperWindow).EyeDropper
+    if (!EyeDropperCtor) {
+      // A second click on the button only stops the pick it started.
+      if (pickJustCancelled()) return
+      setPicking(true)
+      const picked = await pickColorFromPage()
+      setPicking(false)
+      if (!picked) return
+      const color = normalizeHex(picked)
+      setLocalColor(color)
+      onChange(color)
+      return
+    }
 
     try {
       const eyeDropper = new EyeDropperCtor()
@@ -126,7 +141,7 @@ export function ColorPicker({
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent className='w-64 p-3' sideOffset={8}>
+      <PopoverContent className='w-64 p-3' sideOffset={8} {...{ [PICK_IGNORE_ATTRIBUTE]: '' }}>
         <div className='space-y-3'>
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
           <div data-testid={pickerTestId} onPointerUp={handlePointerUp}>
@@ -156,24 +171,23 @@ export function ColorPicker({
               }}
             />
 
-            {canUseEyeDropper && (
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                data-testid={pickButtonTestId}
-                disabled={disabled}
-                aria-label={pickButtonLabel}
-                title={pickButtonLabel}
-                className='h-8 shrink-0 gap-1 px-2 text-xs'
-                onClick={() => {
-                  void handlePickFromScreen()
-                }}
-              >
-                <PipetteIcon className='size-3.5' />
-                {pickButtonLabel}
-              </Button>
-            )}
+            <Button
+              type='button'
+              size='sm'
+              variant={picking ? 'default' : 'outline'}
+              data-testid={pickButtonTestId}
+              disabled={disabled}
+              aria-label={pickButtonLabel}
+              aria-pressed={picking}
+              title={pickButtonLabel}
+              className='h-8 shrink-0 gap-1 px-2 text-xs'
+              onClick={() => {
+                void handlePickFromScreen()
+              }}
+            >
+              <PipetteIcon className='size-3.5' />
+              {pickButtonLabel}
+            </Button>
           </div>
         </div>
       </PopoverContent>

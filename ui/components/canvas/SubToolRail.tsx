@@ -8,6 +8,7 @@ import { ColorPicker } from '@/components/ui/color-picker'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
+import { BRUSH_SIZE_MAX, BRUSH_SIZE_MIN } from '@/lib/brushSize'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
@@ -29,15 +30,45 @@ export function SubToolRail() {
     setLocalSize(brushConfig.size)
   }, [brushConfig.size])
 
+  // While a press that began outside the panel is held (a brush stroke), the
+  // panel lets the pointer through and fades, so a stroke can pass under it.
+  const railRef = React.useRef<HTMLDivElement | null>(null)
+  const [strokeUnderway, setStrokeUnderway] = React.useState(false)
+  React.useEffect(() => {
+    if (!isBrushTool) {
+      setStrokeUnderway(false)
+      return
+    }
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as globalThis.Node | null
+      if (target && railRef.current?.contains(target)) return
+      setStrokeUnderway(true)
+    }
+    const onEnd = () => setStrokeUnderway(false)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('pointerup', onEnd, true)
+    window.addEventListener('pointercancel', onEnd, true)
+    window.addEventListener('blur', onEnd)
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointerup', onEnd, true)
+      window.removeEventListener('pointercancel', onEnd, true)
+      window.removeEventListener('blur', onEnd)
+    }
+  }, [isBrushTool])
+
   return (
     <AnimatePresence>
       {isBrushTool && (
         <motion.div
+          ref={railRef}
           initial={{ x: -20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
+          animate={{ x: 0, opacity: strokeUnderway ? 0.25 : 1 }}
           exit={{ x: -20, opacity: 0 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
-          className='absolute top-14 left-11 z-50 ml-1 flex w-[260px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl'
+          className={`absolute top-14 left-11 z-50 ml-1 flex w-[260px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ${
+            strokeUnderway ? 'pointer-events-none' : ''
+          }`}
           data-testid='sub-tool-rail'
         >
           <div className='space-y-4 p-4'>
@@ -48,9 +79,9 @@ export function SubToolRail() {
               </p>
               <div className='flex items-center gap-2'>
                 <Slider
-                  min={8}
-                  max={128}
-                  step={4}
+                  min={BRUSH_SIZE_MIN}
+                  max={BRUSH_SIZE_MAX}
+                  step={1}
                   value={[localSize]}
                   onValueChange={(vals) => setLocalSize(vals[0] ?? localSize)}
                   onValueCommit={(vals) => setBrushConfig({ size: vals[0] ?? localSize })}

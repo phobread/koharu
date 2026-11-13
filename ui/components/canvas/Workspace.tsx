@@ -40,6 +40,7 @@ import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import type { Node, Transform } from '@/lib/api/schemas'
+import { BRUSH_RING_MIN_VISIBLE_PX } from '@/lib/brushSize'
 import { applyOp, deleteTextNodes } from '@/lib/io/scene'
 import { mergeBlocks, splitBlock } from '@/lib/io/splitNode'
 import { uninpaintBlocks } from '@/lib/io/uninpaintBlock'
@@ -370,9 +371,12 @@ export function Workspace() {
     handleContextMenu(event)
   }
 
+  // A tiny ring is hard to see, so keep the system crosshair under it.
+  const brushCursor =
+    brushSize * scaleRatio < BRUSH_RING_MIN_VISIBLE_PX ? 'crosshair' : BRUSH_CURSOR
   const canvasCursor = useMemo(
-    () => (isBrushMode ? BRUSH_CURSOR : mode === 'block' ? 'cell' : 'default'),
-    [isBrushMode, mode],
+    () => (isBrushMode ? brushCursor : mode === 'block' ? 'cell' : 'default'),
+    [isBrushMode, mode, brushCursor],
   )
 
   const canvasDimensions = useMemo(
