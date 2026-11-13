@@ -16,15 +16,14 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage, Luma};
 use koharu_core::{ImageRole, MaskRole, Op, Region};
-use koharu_ml::inpainting::{UndetectedBlockFallback, expand_mask_for_inpainting};
 use koharu_ml::lama::Lama;
 
 use crate::official::cleanup_base;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, restore_region_from_source,
-    text_node_to_region, text_nodes, upsert_image_blob,
+    find_image_node, find_mask_node, glyph_erase_mask, image_dimensions,
+    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(Lama);
@@ -66,12 +65,7 @@ impl Engine for Model {
             .into_iter()
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect::<Vec<_>>();
-        let fallback = if ctx.options.region.is_some() {
-            UndetectedBlockFallback::Skip
-        } else {
-            UndetectedBlockFallback::FillBubble
-        };
-        let expanded = expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks, fallback);
+        let expanded = glyph_erase_mask(ctx.options, &mask, &bubble_mask, &text_blocks);
         let mask = match ctx.options.region {
             Some(r) => clip_mask_to_region(&DynamicImage::ImageLuma8(expanded), &r),
             None => DynamicImage::ImageLuma8(expanded),

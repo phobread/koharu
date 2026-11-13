@@ -10,7 +10,9 @@ pub mod mask;
 pub mod strategy;
 
 pub use balloon::{BubbleFillResult, apply_bubble_fill};
-pub use mask::{UndetectedBlockFallback, expand_mask_for_inpainting};
+pub use mask::{
+    UndetectedBlockFallback, expand_hand_stroke_mask_for_inpainting, expand_mask_for_inpainting,
+};
 pub use strategy::{
     HdStrategy, HdStrategyConfig, InpaintForward, run_inpaint, run_inpaint_with_windows,
 };

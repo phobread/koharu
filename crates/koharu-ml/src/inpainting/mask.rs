@@ -53,6 +53,35 @@ pub fn expand_mask_for_inpainting(
     text_blocks: &[TextRegion],
     fallback: UndetectedBlockFallback,
 ) -> GrayImage {
+    expand_glyph_mask(mask, bubble_mask, text_blocks, fallback, false)
+}
+
+/// [`expand_mask_for_inpainting`] for a repair-brush stroke that adds to the
+/// mask. The stroke says exactly what to erase, so every mask pixel grows by
+/// the minimum only. Growing with the size of the text box the stroke falls in
+/// (up to 8px) or with the stroke's own size (up to 6px) reaches whatever sits
+/// next to the traced lettering, such as a hand-drawn heart beside an SFX.
+pub fn expand_hand_stroke_mask_for_inpainting(
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+    text_blocks: &[TextRegion],
+) -> GrayImage {
+    expand_glyph_mask(
+        mask,
+        bubble_mask,
+        text_blocks,
+        UndetectedBlockFallback::Skip,
+        true,
+    )
+}
+
+fn expand_glyph_mask(
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+    text_blocks: &[TextRegion],
+    fallback: UndetectedBlockFallback,
+    as_drawn: bool,
+) -> GrayImage {
     let base = binarize_mask(mask);
     let bubbles = bubble_mask.to_luma8();
     if base.dimensions() != bubbles.dimensions() {
@@ -68,7 +97,11 @@ pub fn expand_mask_for_inpainting(
             continue;
         }
         let block_support = expanded_text_block_crop_bounds(width, height, block);
-        let radius = legacy_block_dilate_radius(block);
+        let radius = if as_drawn {
+            LEGACY_MIN_DILATE_RADIUS
+        } else {
+            legacy_block_dilate_radius(block)
+        };
         let support = expand_rect(block_support, width, height, u32::from(radius));
         if count_nonzero_in_rect(&base, block_support) == 0 {
             if fallback == UndetectedBlockFallback::FillBubble {
@@ -105,6 +138,7 @@ pub fn expand_mask_for_inpainting(
         &covered,
         &bubbles,
         ExpansionMode::LegacyGlyphOnly,
+        as_drawn,
     );
 
     expanded
@@ -157,6 +191,7 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
         &covered,
         &bubbles,
         ExpansionMode::ModernRegionFill,
+        false,
     );
 
     expanded
@@ -165,12 +200,16 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
 /// Grow base-mask pixels the per-block pass didn't cover. Skips all work when
 /// the base mask is empty (the undetected-block fallback path), so blank
 /// segmenter output doesn't pay for a whole-image residual build-and-scan.
+///
+/// `as_drawn` is for a repair-brush stroke: the pixels grow by the minimum
+/// only, not with the stroke's size.
 fn expand_residuals(
     expanded: &mut GrayImage,
     base: &GrayImage,
     covered: &GrayImage,
     bubbles: &GrayImage,
     mode: ExpansionMode,
+    as_drawn: bool,
 ) {
     if base.pixels().all(|pixel| pixel.0[0] == 0) {
         return;
@@ -184,7 +223,7 @@ fn expand_residuals(
         }
     });
     if residual.pixels().any(|pixel| pixel.0[0] > 0) {
-        expand_residual_components(expanded, &residual, bubbles, mode);
+        expand_residual_components(expanded, &residual, bubbles, mode, as_drawn);
     }
 }
 
@@ -193,10 +232,12 @@ fn expand_residual_components(
     residual: &GrayImage,
     bubbles: &GrayImage,
     mode: ExpansionMode,
+    as_drawn: bool,
 ) {
     let (width, height) = residual.dimensions();
     for component in boxes_from_mask(residual) {
         let radius = match mode {
+            ExpansionMode::LegacyGlyphOnly if as_drawn => LEGACY_MIN_DILATE_RADIUS,
             ExpansionMode::LegacyGlyphOnly => legacy_component_dilate_radius(component),
             ExpansionMode::ModernRegionFill => modern_component_dilate_radius(component),
         };
@@ -943,6 +984,67 @@ mod tests {
         assert_eq!(expanded.get_pixel(18, 22).0[0], 255);
         assert_eq!(expanded.get_pixel(22, 18).0[0], 255);
         assert_eq!(expanded.get_pixel(10, 10).0[0], 0);
+    }
+
+    #[test]
+    fn hand_stroke_grows_by_the_minimum_only() {
+        // A 40x40 stroke: grown with its size it would spread 6px.
+        let mut mask = GrayImage::new(96, 96);
+        let bubbles = GrayImage::new(96, 96);
+        for y in 28..68 {
+            for x in 28..68 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        let mask = DynamicImage::ImageLuma8(mask);
+        let bubbles = DynamicImage::ImageLuma8(bubbles);
+
+        // Any other run keeps the size-scaled growth, a regional one included.
+        for fallback in [
+            UndetectedBlockFallback::FillBubble,
+            UndetectedBlockFallback::Skip,
+        ] {
+            let sized = expand_mask_for_inpainting(&mask, &bubbles, &[], fallback);
+            assert_eq!(sized.get_pixel(22, 48).0[0], 255);
+        }
+
+        let stroke = expand_hand_stroke_mask_for_inpainting(&mask, &bubbles, &[]);
+        assert_eq!(stroke.get_pixel(26, 48).0[0], 255);
+        assert_eq!(stroke.get_pixel(25, 48).0[0], 0);
+        assert_eq!(stroke.get_pixel(48, 70).0[0], 0);
+    }
+
+    #[test]
+    fn hand_stroke_inside_a_text_box_grows_by_the_minimum_only() {
+        // LOLExtras 0028: an SFX traced inside its hand-added 54x69 box. The
+        // box has no detected font size, so its growth is 8px, which took the
+        // lobe of a heart drawn 8px from the lettering.
+        let mut mask = GrayImage::new(128, 128);
+        let bubbles = GrayImage::new(128, 128);
+        for y in 40..90 {
+            for x in 60..68 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        let mask = DynamicImage::ImageLuma8(mask);
+        let bubbles = DynamicImage::ImageLuma8(bubbles);
+        let block = TextRegion {
+            x: 36.0,
+            y: 30.0,
+            width: 54.0,
+            height: 69.0,
+            ..Default::default()
+        };
+        let blocks = [block];
+
+        let sized =
+            expand_mask_for_inpainting(&mask, &bubbles, &blocks, UndetectedBlockFallback::Skip);
+        assert_eq!(sized.get_pixel(52, 60).0[0], 255);
+
+        let stroke = expand_hand_stroke_mask_for_inpainting(&mask, &bubbles, &blocks);
+        assert_eq!(stroke.get_pixel(58, 60).0[0], 255);
+        assert_eq!(stroke.get_pixel(57, 60).0[0], 0);
+        assert_eq!(stroke.get_pixel(52, 60).0[0], 0);
     }
 
     #[test]

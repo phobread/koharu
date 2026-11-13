@@ -9,17 +9,27 @@ use image::{DynamicImage, GrayImage, Luma};
 use koharu_core::{ImageRole, MaskRole, Op, Region};
 use koharu_ml::flux2_klein::{Flux2InpaintOptions, Flux2Klein};
 use koharu_ml::inpainting::{
-    UndetectedBlockFallback,
-    mask::{expand_mask_for_inpainting, expand_mask_to_bubble_region_for_inpainting},
+    UndetectedBlockFallback, mask::expand_mask_to_bubble_region_for_inpainting,
 };
 
 use crate::official::cleanup_base;
 use crate::pipeline::artifacts::Artifact;
+use crate::pipeline::engine::PipelineRunOptions;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, restore_masked_from_source,
-    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
+    differs_under_mask, find_image_node, find_mask_node, glyph_erase_mask, grow_region,
+    image_dimensions, mask_bounds, mask_intersection, mask_pieces_touching,
+    restore_masked_from_source, restore_region_from_source, text_node_to_region, text_nodes,
+    upsert_image_blob,
 };
+
+/// How far around a repair stroke the lettering it lies on is followed.
+/// Flux2 has to see enough of the lettering to read it as text: on LOLExtras
+/// 0026 (2026-11-12) the leftover came back with 64px in 3 of 5 strokes and
+/// with 128px in 1 of 5, and with 256px in none. Further out only costs time.
+const REDO_CONTEXT_PX: u32 = 256;
+/// Flux2's region reaches this far past the erased lettering.
+const REDO_REGION_MARGIN_PX: u32 = 32;
 
 pub struct Model(Flux2Klein);
 
@@ -78,8 +88,7 @@ impl Engine for Model {
         // Give FLUX the broad block-shaped context it needs to generate a
         // clean fill, but paste through the tighter glyph mask. Using the
         // broad mask for both stages leaves a flat, discoloured rectangle.
-        let composite_mask =
-            expand_mask_for_inpainting(&mask, &bubble_mask, &text_blocks, fallback);
+        let composite_mask = glyph_erase_mask(ctx.options, &mask, &bubble_mask, &text_blocks);
         let (generation_mask, composite_mask) = match ctx.options.region {
             Some(r) => (
                 clip_gray_mask_to_region(&generation_mask, &r),
@@ -89,12 +98,57 @@ impl Engine for Model {
         };
         // Everything the stroke repaints is generated from the original page,
         // as in a full run, so an earlier fill that went wrong isn't copied.
-        let image = match (repaint_from_source, ctx.options.region) {
-            (Some(source), Some(r)) => {
-                restore_masked_from_source(&image, &source, &composite_mask, &r)
+        //
+        // Where the stroke goes over pixels cleaned earlier, the original
+        // comes back under the whole piece of lettering it lies on, and that
+        // piece is cleaned again as a full run would clean it. Shown only
+        // the part inside the stroke's rectangle, Flux2 does not read a
+        // clipped scrap of hand-drawn lettering as text: it keeps it as an
+        // object and recolours it. Only the rectangle is kept from the result.
+        let (mut image, mut generation_mask, mut composite_mask, mut bubble_mask) =
+            (image, generation_mask, composite_mask, bubble_mask);
+        let mut cleaned_page = None;
+        if let (Some(source), Some(r)) = (repaint_from_source, ctx.options.region) {
+            let piece = if differs_under_mask(&image, &source, &composite_mask, &r) {
+                let page_mask = ctx.blobs.load_image(&mask_ref)?;
+                let page_bubbles = ctx.blobs.load_image(&bubble_ref)?;
+                lettering_under_stroke(
+                    ctx.options,
+                    &page_mask,
+                    &page_bubbles,
+                    &text_blocks,
+                    &composite_mask,
+                    &r,
+                )
+                .map(|piece| (piece, page_bubbles))
+            } else {
+                None
+            };
+            match piece {
+                Some((piece, page_bubbles)) => {
+                    let (width, height) = image_dimensions(&image);
+                    let page = Region {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    };
+                    let shown = restore_masked_from_source(&image, &source, &piece.erase, &page);
+                    cleaned_page = Some((std::mem::replace(&mut image, shown), r));
+                    generation_mask = piece.generation;
+                    composite_mask = piece.erase;
+                    bubble_mask = page_bubbles;
+                    tracing::info!(
+                        x = r.x,
+                        y = r.y,
+                        width = r.width,
+                        height = r.height,
+                        "Flux2 repair stroke over cleaned lettering: regenerating the whole piece"
+                    );
+                }
+                None => image = restore_masked_from_source(&image, &source, &composite_mask, &r),
             }
-            _ => image,
-        };
+        }
         let generation_mask = DynamicImage::ImageLuma8(generation_mask);
         let composite_mask = DynamicImage::ImageLuma8(composite_mask);
         let options = Flux2InpaintOptions {
@@ -113,6 +167,11 @@ impl Engine for Model {
             None,
             &options,
         )?;
+        // A stroke over cleaned pixels changes its own rectangle only.
+        let result = match cleaned_page {
+            Some((cleaned, r)) => restore_region_from_source(&cleaned, &result, &r),
+            None => result,
+        };
         let result = match &pieces {
             Some(pieces) => pieces.apply(&result),
             None => result,
@@ -135,6 +194,47 @@ impl Engine for Model {
             h,
         )])
     }
+}
+
+/// What Flux2 regenerates for a repair stroke over cleaned lettering.
+struct LetteringPiece {
+    /// The Flux2 region: the connected pieces of the page's clean-up region
+    /// the stroke erases in, within [`REDO_CONTEXT_PX`] of the stroke and
+    /// [`REDO_REGION_MARGIN_PX`] of the lettering.
+    generation: GrayImage,
+    /// The pixels erased inside it.
+    erase: GrayImage,
+}
+
+/// The lettering a repair stroke lies on. `stroke_erase` holds the pixels the
+/// stroke erases (inside `stroke`, its rectangle); the masks are the page's.
+/// `None` when the stroke erases nothing in the page's clean-up region.
+fn lettering_under_stroke(
+    options: &PipelineRunOptions,
+    page_mask: &DynamicImage,
+    page_bubbles: &DynamicImage,
+    text_blocks: &[koharu_ml::types::TextRegion],
+    stroke_erase: &GrayImage,
+    stroke: &Region,
+) -> Option<LetteringPiece> {
+    let region = expand_mask_to_bubble_region_for_inpainting(
+        page_mask,
+        page_bubbles,
+        text_blocks,
+        UndetectedBlockFallback::Skip,
+    );
+    let (width, height) = region.dimensions();
+    let window = grow_region(stroke, REDO_CONTEXT_PX, width, height);
+    let piece = mask_pieces_touching(&region, stroke_erase, &window);
+    let erase = glyph_erase_mask(options, page_mask, page_bubbles, text_blocks);
+    let erase = mask_intersection(&erase, &piece);
+    // A text box can be far bigger than the lettering in it, and two boxes
+    // that overlap make one piece. Flux2 needs the region around what is
+    // erased, not all of it: the crop's size is what a stroke takes in time.
+    let lettering = mask_bounds(&erase)?;
+    let around = grow_region(&lettering, REDO_REGION_MARGIN_PX, width, height);
+    let generation = clip_gray_mask_to_region(&piece, &around);
+    Some(LetteringPiece { generation, erase })
 }
 
 fn clip_mask_to_region(mask: &DynamicImage, region: &Region) -> DynamicImage {
@@ -167,5 +267,147 @@ inventory::submit! {
             let m = Flux2Klein::load(runtime).await?;
             Ok(Box::new(Model(m)) as Box<dyn Engine>)
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A page with one long hand-traced bar and a separate blob, no bubbles
+    /// and no text boxes.
+    fn traced_page() -> (DynamicImage, DynamicImage) {
+        let mut mask = GrayImage::new(700, 100);
+        for y in 40..46 {
+            for x in 20..680 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        for y in 80..90 {
+            for x in 30..50 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        (
+            DynamicImage::ImageLuma8(mask),
+            DynamicImage::ImageLuma8(GrayImage::new(700, 100)),
+        )
+    }
+
+    fn stroke_options(stroke: Region) -> PipelineRunOptions {
+        PipelineRunOptions {
+            region: Some(stroke),
+            restore_source_region: Some(false),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_stroke_on_cleaned_lettering_takes_the_whole_piece_near_it() {
+        let (mask, bubbles) = traced_page();
+        let stroke = Region {
+            x: 100,
+            y: 35,
+            width: 20,
+            height: 15,
+        };
+        let stroke_erase = clip_gray_mask_to_region(&mask.to_luma8(), &stroke);
+
+        let piece = lettering_under_stroke(
+            &stroke_options(stroke),
+            &mask,
+            &bubbles,
+            &[],
+            &stroke_erase,
+            &stroke,
+        )
+        .expect("the stroke lies on the bar");
+
+        // The bar is followed out of the stroke's rectangle, both ways...
+        for x in [22, 99, 200, 370] {
+            assert_eq!(piece.generation.get_pixel(x, 43)[0], 255, "x = {x}");
+            assert_eq!(piece.erase.get_pixel(x, 43)[0], 255, "x = {x}");
+        }
+        // ...but not further than the context around the stroke,
+        assert_eq!(piece.generation.get_pixel(400, 43)[0], 0);
+        assert_eq!(piece.erase.get_pixel(400, 43)[0], 0);
+        // and the other piece of the mask is left out.
+        assert_eq!(piece.generation.get_pixel(40, 85)[0], 0);
+        assert_eq!(piece.erase.get_pixel(40, 85)[0], 0);
+        // A hand stroke is erased as drawn, grown by 2px.
+        assert_eq!(piece.erase.get_pixel(200, 38)[0], 255);
+        assert_eq!(piece.erase.get_pixel(200, 36)[0], 0);
+        // Every erased pixel is one Flux2 regenerates.
+        for (x, y, pixel) in piece.erase.enumerate_pixels() {
+            assert!(pixel[0] == 0 || piece.generation.get_pixel(x, y)[0] > 0);
+        }
+    }
+
+    #[test]
+    fn a_big_text_box_is_cut_down_to_the_lettering_in_it() {
+        // A small traced blob in a text box that is far bigger than it.
+        let mut mask = GrayImage::new(600, 600);
+        for y in 280..300 {
+            for x in 280..300 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        let mask = DynamicImage::ImageLuma8(mask);
+        let bubbles = DynamicImage::ImageLuma8(GrayImage::new(600, 600));
+        let text_box = koharu_ml::types::TextRegion {
+            x: 50.0,
+            y: 50.0,
+            width: 500.0,
+            height: 500.0,
+            ..Default::default()
+        };
+        let stroke = Region {
+            x: 284,
+            y: 284,
+            width: 10,
+            height: 10,
+        };
+        let stroke_erase = clip_gray_mask_to_region(&mask.to_luma8(), &stroke);
+
+        let piece = lettering_under_stroke(
+            &stroke_options(stroke),
+            &mask,
+            &bubbles,
+            &[text_box],
+            &stroke_erase,
+            &stroke,
+        )
+        .expect("the stroke lies on the blob");
+
+        // The whole blob is erased, not only the part under the stroke.
+        assert_eq!(piece.erase.get_pixel(281, 298)[0], 255);
+        // Flux2's region is the box around the lettering, not the whole box.
+        assert_eq!(piece.generation.get_pixel(290, 290)[0], 255);
+        assert_eq!(piece.generation.get_pixel(250, 290)[0], 255);
+        assert_eq!(piece.generation.get_pixel(200, 290)[0], 0);
+        assert_eq!(piece.generation.get_pixel(100, 100)[0], 0);
+    }
+
+    #[test]
+    fn a_stroke_that_erases_nothing_has_no_piece() {
+        let (mask, bubbles) = traced_page();
+        let stroke = Region {
+            x: 300,
+            y: 60,
+            width: 20,
+            height: 10,
+        };
+        let stroke_erase = clip_gray_mask_to_region(&mask.to_luma8(), &stroke);
+        assert!(
+            lettering_under_stroke(
+                &stroke_options(stroke),
+                &mask,
+                &bubbles,
+                &[],
+                &stroke_erase,
+                &stroke,
+            )
+            .is_none()
+        );
     }
 }

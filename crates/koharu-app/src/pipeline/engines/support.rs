@@ -4,13 +4,14 @@
 //! `TextRegion`s, `DynamicImage`s) into `Op` sequences that mutate the scene.
 
 use anyhow::{Context, Result};
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, GrayImage};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op,
     PageId, ReadingOrder, Region, Scene, TextData, Transform,
 };
 
 use crate::blobs::BlobStore;
+use crate::pipeline::engine::PipelineRunOptions;
 
 // ---------------------------------------------------------------------------
 // Read helpers
@@ -88,6 +89,41 @@ pub fn requested_text_nodes<'a>(
 /// Convert a scene `(Transform, TextData)` pair into a `koharu-ml` `TextRegion`
 /// for passing back through detector helpers that need geometry + language
 /// hints (e.g. CTD's `refine_segmentation_mask`, OCR's `extract_text_block_regions`).
+/// The pixels a clean-up run erases: the segment mask, grown to take in the
+/// edges of the lettering.
+///
+/// A repair-brush stroke that adds to the mask (`restore_source_region` is
+/// `Some(false)`) is erased as drawn, grown by the minimum only. The usual
+/// growth follows the size of the text box or of the stroke, up to 8px, and
+/// that reaches a heart drawn beside a traced SFX.
+pub fn glyph_erase_mask(
+    options: &PipelineRunOptions,
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+    text_blocks: &[koharu_ml::types::TextRegion],
+) -> GrayImage {
+    use koharu_ml::inpainting::{
+        UndetectedBlockFallback, expand_hand_stroke_mask_for_inpainting, expand_mask_for_inpainting,
+    };
+    match (options.region, options.restore_source_region) {
+        (None, _) => expand_mask_for_inpainting(
+            mask,
+            bubble_mask,
+            text_blocks,
+            UndetectedBlockFallback::FillBubble,
+        ),
+        (Some(_), Some(false)) => {
+            expand_hand_stroke_mask_for_inpainting(mask, bubble_mask, text_blocks)
+        }
+        (Some(_), _) => expand_mask_for_inpainting(
+            mask,
+            bubble_mask,
+            text_blocks,
+            UndetectedBlockFallback::Skip,
+        ),
+    }
+}
+
 pub fn text_node_to_region(transform: &Transform, text: &TextData) -> koharu_ml::types::TextRegion {
     koharu_ml::types::TextRegion {
         x: transform.x,
@@ -408,6 +444,130 @@ pub fn restore_masked_from_source(
         }
     }
     DynamicImage::ImageRgba8(out)
+}
+
+/// Whether `a` and `b` differ in colour at any pixel under `mask` (non-zero)
+/// inside `region`.
+///
+/// Between the cleaned page and the original page this tells a repair stroke
+/// that goes over pixels cleaned earlier from one on lettering that is still
+/// on the page: cleaned pages are stored without loss, so a pixel that was
+/// never repainted is the original's.
+pub fn differs_under_mask(
+    a: &DynamicImage,
+    b: &DynamicImage,
+    mask: &GrayImage,
+    region: &Region,
+) -> bool {
+    let (w, h) = a.dimensions();
+    let (bw, bh) = b.dimensions();
+    let (mw, mh) = mask.dimensions();
+    let x1 = region.x.saturating_add(region.width).min(w).min(bw).min(mw);
+    let y1 = region
+        .y
+        .saturating_add(region.height)
+        .min(h)
+        .min(bh)
+        .min(mh);
+    let (x0, y0) = (region.x.min(x1), region.y.min(y1));
+    if x0 == x1 || y0 == y1 {
+        return false;
+    }
+    let a = a.crop_imm(x0, y0, x1 - x0, y1 - y0).to_rgb8();
+    let b = b.crop_imm(x0, y0, x1 - x0, y1 - y0).to_rgb8();
+    a.enumerate_pixels()
+        .any(|(x, y, pixel)| mask.get_pixel(x0 + x, y0 + y)[0] > 0 && pixel != b.get_pixel(x, y))
+}
+
+/// `region` grown by `margin` on every side, kept on a `width` x `height` page.
+pub fn grow_region(region: &Region, margin: u32, width: u32, height: u32) -> Region {
+    let x0 = region.x.saturating_sub(margin).min(width);
+    let y0 = region.y.saturating_sub(margin).min(height);
+    let x1 = region
+        .x
+        .saturating_add(region.width)
+        .saturating_add(margin)
+        .min(width);
+    let y1 = region
+        .y
+        .saturating_add(region.height)
+        .saturating_add(margin)
+        .min(height);
+    Region {
+        x: x0,
+        y: y0,
+        width: x1.saturating_sub(x0),
+        height: y1.saturating_sub(y0),
+    }
+}
+
+/// The connected pieces of `mask` (non-zero pixels, joined along edges and
+/// corners) that hold a `seeds` pixel, cut to `window`. Empty when the two
+/// masks differ in size.
+///
+/// A repair stroke over cleaned lettering uses this to find the whole piece
+/// of lettering it lies on, so Flux2 can be shown all of it.
+pub fn mask_pieces_touching(mask: &GrayImage, seeds: &GrayImage, window: &Region) -> GrayImage {
+    let (w, h) = mask.dimensions();
+    let mut out = GrayImage::new(w, h);
+    if seeds.dimensions() != (w, h) {
+        return out;
+    }
+    let x0 = window.x.min(w);
+    let y0 = window.y.min(h);
+    let x1 = window.x.saturating_add(window.width).min(w);
+    let y1 = window.y.saturating_add(window.height).min(h);
+    let mut pending = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if seeds.get_pixel(x, y)[0] > 0 && mask.get_pixel(x, y)[0] > 0 {
+                out.put_pixel(x, y, image::Luma([255]));
+                pending.push((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = pending.pop() {
+        for ny in y.saturating_sub(1).max(y0)..(y + 2).min(y1) {
+            for nx in x.saturating_sub(1).max(x0)..(x + 2).min(x1) {
+                if mask.get_pixel(nx, ny)[0] > 0 && out.get_pixel(nx, ny)[0] == 0 {
+                    out.put_pixel(nx, ny, image::Luma([255]));
+                    pending.push((nx, ny));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The smallest rectangle that holds every non-zero pixel of `mask`.
+pub fn mask_bounds(mask: &GrayImage) -> Option<Region> {
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for (x, y, pixel) in mask.enumerate_pixels() {
+        if pixel[0] == 0 {
+            continue;
+        }
+        bounds = Some(match bounds {
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+            None => (x, y, x, y),
+        });
+    }
+    bounds.map(|(x0, y0, x1, y1)| Region {
+        x: x0,
+        y: y0,
+        width: x1 - x0 + 1,
+        height: y1 - y0 + 1,
+    })
+}
+
+/// The pixels set (non-zero) in both masks. Empty when they differ in size.
+pub fn mask_intersection(a: &GrayImage, b: &GrayImage) -> GrayImage {
+    if a.dimensions() != b.dimensions() {
+        return GrayImage::new(a.width(), a.height());
+    }
+    GrayImage::from_fn(a.width(), a.height(), |x, y| {
+        let both = a.get_pixel(x, y)[0] > 0 && b.get_pixel(x, y)[0] > 0;
+        image::Luma([if both { 255 } else { 0 }])
+    })
 }
 
 /// Translate the `koharu-ml` `TextDirection` primitive into the scene-layer one.
@@ -741,6 +901,136 @@ mod tests {
         let out = restore_masked_from_source(&base, &source, &mask, &big).to_rgba8();
         assert_eq!(out.get_pixel(6, 6).0, [10, 20, 30, 255]);
         assert_eq!(out.get_pixel(3, 3).0, [255; 4]);
+    }
+
+    #[test]
+    fn differs_under_mask_looks_only_at_masked_pixels_in_the_region() {
+        let a = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([255; 4])));
+        let mut changed = RgbaImage::from_pixel(8, 8, Rgba([255; 4]));
+        changed.put_pixel(3, 3, Rgba([10, 20, 30, 255]));
+        // The other picture has no alpha channel: only the colour counts.
+        let b = DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(changed).to_rgb8());
+        let region = Region {
+            x: 2,
+            y: 2,
+            width: 4,
+            height: 4,
+        };
+
+        let mut mask = image::GrayImage::new(8, 8);
+        mask.put_pixel(4, 4, image::Luma([255]));
+        assert!(!differs_under_mask(&a, &b, &mask, &region));
+        mask.put_pixel(3, 3, image::Luma([255]));
+        assert!(differs_under_mask(&a, &b, &mask, &region));
+
+        // The changed pixel is masked but outside the region.
+        let elsewhere = Region {
+            x: 4,
+            y: 4,
+            width: 4,
+            height: 4,
+        };
+        assert!(!differs_under_mask(&a, &b, &mask, &elsewhere));
+        // A region off the page is empty, not a panic.
+        let off = Region {
+            x: 20,
+            y: 20,
+            width: 5,
+            height: 5,
+        };
+        assert!(!differs_under_mask(&a, &b, &mask, &off));
+    }
+
+    #[test]
+    fn grow_region_stays_on_the_page() {
+        let region = Region {
+            x: 10,
+            y: 90,
+            width: 20,
+            height: 5,
+        };
+        let grown = grow_region(&region, 16, 100, 100);
+        assert_eq!(
+            (grown.x, grown.y, grown.width, grown.height),
+            (0, 74, 46, 26)
+        );
+        let same = grow_region(&region, 0, 100, 100);
+        assert_eq!((same.x, same.y, same.width, same.height), (10, 90, 20, 5));
+    }
+
+    #[test]
+    fn mask_pieces_touching_follows_a_piece_out_of_the_seed_area() {
+        let mut mask = image::GrayImage::new(40, 20);
+        // A long bar, a second piece joined to nothing, and a third one that
+        // touches the bar only at a corner.
+        for x in 2..30 {
+            mask.put_pixel(x, 5, image::Luma([255]));
+        }
+        for x in 2..10 {
+            mask.put_pixel(x, 15, image::Luma([200]));
+        }
+        mask.put_pixel(30, 6, image::Luma([255]));
+        let mut seeds = image::GrayImage::new(40, 20);
+        seeds.put_pixel(3, 5, image::Luma([255]));
+        // A seed off the mask starts nothing.
+        seeds.put_pixel(20, 10, image::Luma([255]));
+        let page = Region {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 20,
+        };
+
+        let pieces = mask_pieces_touching(&mask, &seeds, &page);
+        assert_eq!(pieces.get_pixel(2, 5)[0], 255);
+        assert_eq!(pieces.get_pixel(29, 5)[0], 255);
+        assert_eq!(pieces.get_pixel(30, 6)[0], 255);
+        assert_eq!(pieces.get_pixel(5, 15)[0], 0);
+        assert_eq!(pieces.get_pixel(20, 10)[0], 0);
+        assert_eq!(pieces.pixels().filter(|p| p[0] > 0).count(), 29);
+
+        // The window cuts the piece short.
+        let window = Region {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 20,
+        };
+        let cut = mask_pieces_touching(&mask, &seeds, &window);
+        assert_eq!(cut.pixels().filter(|p| p[0] > 0).count(), 10);
+        assert_eq!(cut.get_pixel(12, 5)[0], 0);
+
+        // Masks of different sizes give nothing.
+        let small = image::GrayImage::new(10, 10);
+        let none = mask_pieces_touching(&mask, &small, &page);
+        assert!(none.pixels().all(|p| p[0] == 0));
+    }
+
+    #[test]
+    fn mask_intersection_keeps_pixels_set_in_both() {
+        let mut a = image::GrayImage::new(4, 4);
+        let mut b = image::GrayImage::new(4, 4);
+        a.put_pixel(1, 1, image::Luma([255]));
+        a.put_pixel(2, 2, image::Luma([90]));
+        b.put_pixel(2, 2, image::Luma([255]));
+        b.put_pixel(3, 3, image::Luma([255]));
+        let both = mask_intersection(&a, &b);
+        assert_eq!(both.get_pixel(2, 2)[0], 255);
+        assert_eq!(both.pixels().filter(|p| p[0] > 0).count(), 1);
+        let other = image::GrayImage::new(5, 4);
+        assert!(mask_intersection(&a, &other).pixels().all(|p| p[0] == 0));
+    }
+
+    #[test]
+    fn mask_bounds_holds_every_set_pixel() {
+        let mut mask = image::GrayImage::new(20, 10);
+        assert!(mask_bounds(&mask).is_none());
+        mask.put_pixel(4, 7, image::Luma([1]));
+        let one = mask_bounds(&mask).unwrap();
+        assert_eq!((one.x, one.y, one.width, one.height), (4, 7, 1, 1));
+        mask.put_pixel(15, 2, image::Luma([255]));
+        let two = mask_bounds(&mask).unwrap();
+        assert_eq!((two.x, two.y, two.width, two.height), (4, 2, 12, 6));
     }
 
     #[test]
