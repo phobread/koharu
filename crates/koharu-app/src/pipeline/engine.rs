@@ -89,6 +89,9 @@ pub struct PipelineRunOptions {
     /// font and derives stroke/alignment as before.
     pub default_font_size: Option<f32>,
     pub box_padding: Option<f32>,
+    /// Text over artwork may grow past its box up to the original lettering's
+    /// size. Off when absent.
+    pub grow_over_artwork: Option<bool>,
     pub shader_effect: Option<TextShaderEffect>,
     pub shader_stroke: Option<TextStrokeStyle>,
     pub text_align: Option<TextAlign>,

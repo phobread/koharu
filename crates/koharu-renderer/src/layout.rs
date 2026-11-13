@@ -7,6 +7,7 @@ use hypher::Lang;
 use skrifa::{
     MetadataProvider,
     instance::{LocationRef, Size},
+    metrics::GlyphMetrics,
 };
 
 use crate::font::{Font, font_key};
@@ -19,6 +20,11 @@ pub use crate::segment::{LineBreakSuffix, hyphenation_lang_from_tag};
 pub use crate::shape::{PositionedGlyph, ShapedRun, ShapingOptions, TextShaper};
 
 const HYPHENATION_MIN_WORD_LEN: usize = 8;
+
+/// Safety pad kept on each side of a box layout's ink for hinting/AA
+/// differences. It is part of the layout's `width` and `height`, so the line
+/// breaker counts it too (`LineInk`).
+const INK_PAD: f32 = 1.0;
 
 /// Writing mode for text layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -220,12 +226,17 @@ struct ShapedSegment<'a> {
     runs: Vec<LineRun<'a>>,
     advance: f32,
     break_suffix: Option<ShapedBreakSuffix<'a>>,
+    /// The text after this segment goes on with a dash, so a break here
+    /// would start the next line with it.
+    dash_follows: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct LineBreakMeasure {
     advance: f32,
     break_suffix_advance: f32,
+    /// A break after this segment would start the next line with a dash.
+    dash_follows: bool,
 }
 
 #[derive(Clone)]
@@ -517,6 +528,7 @@ impl<'a> TextLayout<'a> {
                 runs: segment_runs,
                 advance: segment_advance,
                 break_suffix: segment_break_suffix,
+                dash_follows: !segment.is_mandatory && dash_follows(text, segment.next_offset),
             });
         }
 
@@ -535,6 +547,16 @@ impl<'a> TextLayout<'a> {
             );
         }
 
+        // Horizontal lines are packed by the width the finished layout will
+        // report (ink plus the pad), so a caller comparing that width with
+        // the same box never rejects a line the breaker accepted. Vertical
+        // columns are still packed by advance. One entry per paragraph, in
+        // the order the paragraphs are wrapped below.
+        let mut ink_breaks = (!self.writing_mode.is_vertical() && max_extent_finite)
+            .then(|| LineInk::new(font_size, max_extent).line_breaks(&shaped_segments))
+            .flatten()
+            .map(Vec::into_iter);
+
         let mut lines: Vec<LayoutLine<'a>> = Vec::new();
         let mut line_offset = 0usize;
         let mut paragraph_start = 0usize;
@@ -548,6 +570,7 @@ impl<'a> TextLayout<'a> {
                 segment.next_offset,
                 true,
                 max_extent,
+                ink_breaks.as_mut().and_then(Iterator::next),
                 &bidi_info,
                 &mut lines,
             );
@@ -560,6 +583,7 @@ impl<'a> TextLayout<'a> {
                 text.len(),
                 false,
                 max_extent,
+                ink_breaks.as_mut().and_then(Iterator::next),
                 &bidi_info,
                 &mut lines,
             );
@@ -597,7 +621,7 @@ impl<'a> TextLayout<'a> {
             self.ink_bounds(font_size, &lines)
         {
             // Keep a tiny safety pad for hinting/AA differences.
-            const PAD: f32 = 1.0;
+            const PAD: f32 = INK_PAD;
             min_x -= PAD;
             min_y -= PAD;
             max_x += PAD;
@@ -754,6 +778,7 @@ impl<'a> TextLayout<'a> {
                         .map(|m| LineBreakMeasure {
                             advance: m.advance,
                             break_suffix_advance: m.break_suffix_advance,
+                            dash_follows: false,
                         })
                         .collect::<Vec<_>>();
                     let width = (balloon.width - air * 2.0).max(1.0);
@@ -911,6 +936,7 @@ impl<'a> TextLayout<'a> {
         final_next_offset: usize,
         force_final_line: bool,
         max_extent: f32,
+        ink_breaks: Option<Vec<usize>>,
         bidi_info: &BidiInfo<'_>,
         lines: &mut Vec<LayoutLine<'a>>,
     ) {
@@ -930,7 +956,9 @@ impl<'a> TextLayout<'a> {
             return;
         }
 
-        let break_indices = if max_extent.is_finite() && max_extent > 0.0 {
+        let break_indices = if let Some(breaks) = ink_breaks {
+            breaks
+        } else if max_extent.is_finite() && max_extent > 0.0 {
             let measures = segments
                 .iter()
                 .map(|segment| LineBreakMeasure {
@@ -939,6 +967,7 @@ impl<'a> TextLayout<'a> {
                         .break_suffix
                         .as_ref()
                         .map_or(0.0, |suffix| suffix.advance),
+                    dash_follows: segment.dash_follows,
                 })
                 .collect::<Vec<_>>();
             greedy_line_breaks(&measures, max_extent)
@@ -1168,6 +1197,9 @@ fn greedy_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usi
         let mut advance = 0.0f32;
         let mut end = start;
         let mut last_fitting_end = None;
+        // A fitting break that would start the next line with a dash: taken
+        // only when the line has no other.
+        let mut last_fitting_dash_end = None;
         while end < len {
             advance += segments[end].advance;
             let candidate_end = end + 1;
@@ -1178,7 +1210,11 @@ fn greedy_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usi
             };
             let line_advance = advance + suffix_advance;
             if line_advance <= max_extent {
-                last_fitting_end = Some(candidate_end);
+                if candidate_end < len && segments[end].dash_follows {
+                    last_fitting_dash_end = Some(candidate_end);
+                } else {
+                    last_fitting_end = Some(candidate_end);
+                }
             }
             end = candidate_end;
             // Raw advances only grow. Once they exceed the line there can be
@@ -1189,11 +1225,193 @@ fn greedy_line_breaks(segments: &[LineBreakMeasure], max_extent: f32) -> Vec<usi
         }
         // A single unbreakable segment may overflow rather than being
         // dropped or causing an empty line.
-        let end = last_fitting_end.unwrap_or(start + 1);
+        let end = last_fitting_end
+            .or(last_fitting_dash_end)
+            .unwrap_or(start + 1);
         breaks.push(end);
         start = end;
     }
     breaks
+}
+
+/// Packs horizontal lines by the width the finished layout reports: ink from
+/// the font tables plus the pad on each side, measured from the leftmost ink
+/// of all lines. Advances are a different measure. They count a trailing
+/// space that draws nothing, and they miss ink that overhangs its advance (a
+/// dash, a slanted letter) and the pad, so a line packed by advance could
+/// come out wider than the box it was packed for: the caller's fit check then
+/// turned down a size on breaks the breaker itself had chosen.
+struct LineInk<'a> {
+    font_size: f32,
+    metrics: HashMap<usize, Option<GlyphMetrics<'a>>>,
+    spans: HashMap<(usize, u32), Option<(f32, f32)>>,
+    max_width: f32,
+}
+
+impl<'a> LineInk<'a> {
+    fn new(font_size: f32, max_width: f32) -> Self {
+        Self {
+            font_size,
+            metrics: HashMap::new(),
+            spans: HashMap::new(),
+            max_width,
+        }
+    }
+
+    /// Line breaks for each paragraph of `segments` (a paragraph ends with
+    /// its mandatory break), or `None` when no glyph has an ink box; lines
+    /// are then packed by advance.
+    ///
+    /// The layout's width runs from the leftmost ink of all its lines, and
+    /// which line that is isn't known until the lines are. So the lines are
+    /// first packed each from its own left edge, and packed again from the
+    /// leftmost edge they turned out to have for as long as a line then
+    /// reaches past the box.
+    fn line_breaks(mut self, segments: &[ShapedSegment<'a>]) -> Option<Vec<Vec<usize>>> {
+        let has_ink = segments.iter().any(|segment| {
+            self.line_span(std::slice::from_ref(segment), true)
+                .is_some()
+        });
+        if !has_ink {
+            return None;
+        }
+        let paragraphs = segments
+            .split_inclusive(|segment| segment.is_mandatory)
+            .collect::<Vec<_>>();
+        let mut left = f32::INFINITY;
+        loop {
+            let breaks = paragraphs
+                .iter()
+                .map(|paragraph| self.greedy_line_breaks(paragraph, left))
+                .collect::<Vec<_>>();
+            let mut leftmost = f32::INFINITY;
+            let mut lines = Vec::new();
+            for (paragraph, breaks) in paragraphs.iter().zip(&breaks) {
+                let mut start = 0;
+                for &end in breaks {
+                    let span = self.line_span(&paragraph[start..end], end < paragraph.len());
+                    if let Some((line_left, _)) = span {
+                        leftmost = leftmost.min(line_left);
+                    }
+                    lines.push((span, end - start));
+                    start = end;
+                }
+            }
+            // A line of one segment can't be made any shorter.
+            if leftmost >= left
+                || lines
+                    .iter()
+                    .all(|&(span, count)| count == 1 || self.fits(span, leftmost))
+            {
+                return Some(breaks);
+            }
+            left = leftmost;
+        }
+    }
+
+    /// A glyph's ink box edges on the x axis, about its origin.
+    fn glyph_span(&mut self, glyph: &PositionedGlyph<'a>) -> Option<(f32, f32)> {
+        let font: &'a Font = glyph.font;
+        let key = font_key(font);
+        let font_size = self.font_size;
+        let metrics = &mut self.metrics;
+        *self.spans.entry((key, glyph.glyph_id)).or_insert_with(|| {
+            let metrics = metrics.entry(key).or_insert_with(|| {
+                font.skrifa().ok().map(|font_ref| {
+                    font_ref.glyph_metrics(Size::new(font_size), LocationRef::default())
+                })
+            });
+            let bounds = metrics
+                .as_ref()?
+                .bounds(skrifa::GlyphId::new(glyph.glyph_id))?;
+            Some((bounds.x_min, bounds.x_max))
+        })
+    }
+
+    /// Left and right ink edge of the line these segments would make, with
+    /// the pen starting at 0: the same sums, in the same order, as
+    /// `ink_bounds` does for the finished line. `broken` adds the hyphen
+    /// that a break after the last segment draws.
+    fn line_span(&mut self, segments: &[ShapedSegment<'a>], broken: bool) -> Option<(f32, f32)> {
+        let suffix = segments
+            .last()
+            .filter(|_| broken)
+            .and_then(|segment| segment.break_suffix.as_ref());
+        let runs = segments
+            .iter()
+            .flat_map(|segment| segment.runs.iter())
+            .chain(suffix.into_iter().flat_map(|suffix| suffix.runs.iter()))
+            .collect::<Vec<_>>();
+        let levels = runs.iter().map(|run| run.level).collect::<Vec<_>>();
+        let mut pen = 0.0f32;
+        let mut span: Option<(f32, f32)> = None;
+        for index in reorder_visual(&levels) {
+            for glyph in &runs[index].shaped.glyphs {
+                if let Some((x_min, x_max)) = self.glyph_span(glyph) {
+                    let x0 = pen + glyph.x_offset + x_min;
+                    let x1 = pen + glyph.x_offset + x_max;
+                    let (left, right) = span.unwrap_or((f32::INFINITY, f32::NEG_INFINITY));
+                    span = Some((left.min(x0).min(x1), right.max(x0).max(x1)));
+                }
+                pen += glyph.x_advance;
+            }
+        }
+        span
+    }
+
+    /// Whether a line with this ink keeps the layout within `max_width`
+    /// when the layout's leftmost ink is at `left` (or at the line's own
+    /// left edge, if that is further left).
+    fn fits(&self, span: Option<(f32, f32)>, left: f32) -> bool {
+        span.is_none_or(|(line_left, right)| {
+            (right + INK_PAD) - (line_left.min(left) - INK_PAD) <= self.max_width
+        })
+    }
+
+    /// Fill each line with as many complete segments as will fit before
+    /// wrapping, like the free `greedy_line_breaks`, but by ink.
+    fn greedy_line_breaks(&mut self, segments: &[ShapedSegment<'a>], left: f32) -> Vec<usize> {
+        let len = segments.len();
+        let mut breaks = Vec::new();
+        let mut start = 0;
+        while start < len {
+            let mut last_fitting_end = None;
+            // A fitting break that would start the next line with a dash:
+            // taken only when the line has no other.
+            let mut last_fitting_dash_end = None;
+            for end in start + 1..=len {
+                let line = &segments[start..end];
+                let bare = self.line_span(line, false);
+                let hyphenated = end < len && segments[end - 1].break_suffix.is_some();
+                let whole = if hyphenated {
+                    self.line_span(line, true)
+                } else {
+                    bare
+                };
+                if self.fits(whole, left) {
+                    if end < len && segments[end - 1].dash_follows {
+                        last_fitting_dash_end = Some(end);
+                    } else {
+                        last_fitting_end = Some(end);
+                    }
+                }
+                // Ink only spreads as segments are added. Once it is past the
+                // box there can be no later fitting boundary, even if a
+                // hyphen suffix disappears.
+                if !self.fits(bare, left) {
+                    break;
+                }
+            }
+            // A single unbreakable segment may overflow rather than being
+            // dropped or causing an empty line.
+            let end = last_fitting_end
+                .or(last_fitting_dash_end)
+                .unwrap_or(start + 1);
+            breaks.push(end);
+            start = end;
+        }
+        breaks
+    }
 }
 
 /// Advance of the spaces a segment ends with; they vanish at a line break.
@@ -1252,6 +1470,15 @@ fn balloon_break_penalty(text: &str, boundary: usize) -> f32 {
 /// never do that; text that only fits that way keeps its box layout.
 fn splits_word(text: &str, boundary: usize) -> bool {
     boundary < text.len() && !text[..boundary].ends_with(char::is_whitespace)
+}
+
+/// Whether the text from `boundary` on starts with a dash, spaces aside. A
+/// dash belongs with what comes before it ("MORE—"), so box layouts
+/// break there only when a line has no other break that fits.
+fn dash_follows(text: &str, boundary: usize) -> bool {
+    text.get(boundary..)
+        .and_then(|rest| rest.trim_start_matches(' ').chars().next())
+        .is_some_and(|c| matches!(c, '\u{2012}'..='\u{2015}' | '\u{2e3a}' | '\u{2e3b}'))
 }
 
 /// Best line breaks for a balloon over every line count that fits: no
@@ -1718,11 +1945,194 @@ mod tests {
             LineBreakMeasure {
                 advance: 30.0,
                 break_suffix_advance: 0.0,
+                dash_follows: false,
             };
             7
         ];
 
         assert_eq!(greedy_line_breaks(&segments, 100.0), vec![3, 6, 7]);
+    }
+
+    /// The width a layout reports is what callers hold against the box it
+    /// was broken for (`fit_font_size` in koharu-app). Once every word fits
+    /// on a line of its own, no width may come back wider than its box.
+    #[test]
+    fn wrapped_lines_never_come_out_wider_than_the_box_they_were_broken_for() -> anyhow::Result<()>
+    {
+        let font = any_system_font();
+        let text = "Stuff me more\u{2014}torment me well-known more, please\u{2014} I'm waiting!";
+        let mut checked = 0;
+        for alignment in [TextAlign::Center, TextAlign::Left] {
+            for hyphenate in [false, true] {
+                for size in 6..=40 {
+                    let mut builder =
+                        TextLayout::new(&font, Some(size as f32)).with_alignment(alignment);
+                    if !hyphenate {
+                        builder = builder.without_hyphenation();
+                    }
+                    // One word per line: nothing narrower can hold the text.
+                    let narrowest = builder
+                        .clone()
+                        .with_alignment(TextAlign::Center)
+                        .with_max_width(1.0)
+                        .run(text)?
+                        .width;
+                    let mut max_width = narrowest;
+                    while max_width < narrowest + 160.0 {
+                        let layout = builder.clone().with_max_width(max_width).run(text)?;
+                        assert!(
+                            layout.width <= max_width,
+                            "{size}px in a {max_width}px box came out {}px wide on {} lines \
+                             ({alignment:?}, hyphenate {hyphenate})",
+                            layout.width,
+                            layout.lines.len(),
+                        );
+                        checked += 1;
+                        max_width += 0.83;
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000);
+        Ok(())
+    }
+
+    /// A box exactly as wide as a layout is wide enough for that layout.
+    #[test]
+    fn a_layout_fits_a_box_of_its_own_width() -> anyhow::Result<()> {
+        let font = any_system_font();
+        // Every word starts with the same letter, so every line starts with
+        // the same ink and the width is the widest line's own.
+        let text = "mine more, mmm m mostly, me, most. mm mmmm.";
+        for size in [9.0, 14.0, 20.0, 27.0, 28.0, 33.0, 41.0] {
+            let builder = TextLayout::new(&font, Some(size)).without_hyphenation();
+            for box_width in [60.0, 90.0, 130.0, 170.0, 240.0, 400.0, 2000.0] {
+                let first = builder.clone().with_max_width(box_width).run(text)?;
+                if first.width > box_width {
+                    // A word wider than the box: nothing to hold it to.
+                    continue;
+                }
+                let again = builder.clone().with_max_width(first.width).run(text)?;
+                let ranges = |layout: &LayoutRun<'_>| {
+                    layout
+                        .lines
+                        .iter()
+                        .map(|line| line.range.clone())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    ranges(&first),
+                    ranges(&again),
+                    "{size}px, {box_width}px box re-broken at its own width {}",
+                    first.width
+                );
+                assert_eq!(first.width, again.width);
+            }
+        }
+        Ok(())
+    }
+
+    /// Text that fits its box on one line is not wrapped: the breaker asks
+    /// for no more room than the layout's own width (BadEnd3 033, "Six months
+    /// later" at 199px, where a letter in the middle of the line has ink
+    /// left of its origin).
+    #[test]
+    fn text_that_fits_on_one_line_stays_on_one_line() -> anyhow::Result<()> {
+        let font = any_system_font();
+        for text in [
+            "Six months later",
+            "Just joking, my jelly",
+            "AH\u{2014} AH\u{2014}",
+        ] {
+            for size in [8.0, 13.0, 21.0, 34.0, 55.0, 89.0, 199.0] {
+                let builder = TextLayout::new(&font, Some(size)).without_hyphenation();
+                let one_line = builder.clone().run(text)?;
+                assert_eq!(one_line.lines.len(), 1);
+                let boxed = builder.clone().with_max_width(one_line.width).run(text)?;
+                assert_eq!(boxed.lines.len(), 1, "{text:?} at {size}px");
+                assert_eq!(boxed.width, one_line.width);
+            }
+        }
+        Ok(())
+    }
+
+    /// A dash stays with the word before it: the break moves one word back
+    /// rather than start a line with the dash (LOLExtras 0100, "more" /
+    /// "—♡ Torment").
+    #[test]
+    fn a_box_line_does_not_start_with_a_dash() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, Some(24.0)).without_hyphenation();
+        for text in [
+            "mmm mm mmmm\u{2014}mm mmmmmmm",
+            "mmm mm mmmm \u{2014} mm mmmmmmm",
+            "mmm mm mmmm\u{2013}mm mmmmmmm",
+        ] {
+            let dash = text.find(['\u{2014}', '\u{2013}']).unwrap();
+            let head = builder.clone().run(text[..dash].trim_end())?;
+            // Room for everything before the dash, but not for the dash.
+            // The spare pixels cover a dash whose ink starts left of its
+            // origin: at the start of a line that alone would move the break.
+            let max_width = head.width + 5.0;
+            let layout = builder.clone().with_max_width(max_width).run(text)?;
+            assert!(layout.lines.len() >= 2, "{text:?}");
+            for line in &layout.lines {
+                let line_text = &text[line.range.clone()];
+                assert!(
+                    !line_text.trim_start().starts_with(['\u{2014}', '\u{2013}']),
+                    "{text:?}: a line starts with the dash: {line_text:?}"
+                );
+            }
+            assert!(layout.width <= max_width, "{text:?}");
+        }
+        Ok(())
+    }
+
+    /// When the word before a dash is alone on its line and the dash does
+    /// not fit beside it, the dash goes down rather than out of the box.
+    #[test]
+    fn a_dash_starts_a_line_when_nothing_else_fits() {
+        let measure = |advance, dash_follows| LineBreakMeasure {
+            advance,
+            break_suffix_advance: 0.0,
+            dash_follows,
+        };
+        // "word" + dash + "word": the first word nearly fills the line.
+        let segments = [
+            measure(90.0, true),
+            measure(30.0, false),
+            measure(60.0, false),
+        ];
+        assert_eq!(greedy_line_breaks(&segments, 100.0), vec![1, 3]);
+        // With room for the dash it stays up.
+        assert_eq!(greedy_line_breaks(&segments, 120.0), vec![2, 3]);
+        // With an earlier break the word goes down with its dash.
+        let segments = [
+            measure(40.0, false),
+            measure(50.0, true),
+            measure(30.0, false),
+            measure(60.0, false),
+        ];
+        assert_eq!(greedy_line_breaks(&segments, 100.0), vec![1, 3, 4]);
+    }
+
+    /// The space a wrapped line ends with draws nothing and takes no room.
+    #[test]
+    fn a_trailing_space_does_not_push_a_word_to_the_next_line() -> anyhow::Result<()> {
+        let font = any_system_font();
+        let size = 24.0;
+        let builder = TextLayout::new(&font, Some(size)).without_hyphenation();
+        let pair = builder.clone().run("mmm mmm")?;
+        // Two words and the pad, with a pixel to spare, but not the space
+        // after them.
+        let max_width = pair.lines[0].advance + 2.0 * INK_PAD + 1.0;
+        let layout = builder
+            .clone()
+            .with_max_width(max_width)
+            .run("mmm mmm mmm mmm")?;
+        assert_eq!(layout.lines.len(), 2, "box {max_width}px");
+        assert!(layout.width <= max_width);
+        Ok(())
     }
 
     #[test]

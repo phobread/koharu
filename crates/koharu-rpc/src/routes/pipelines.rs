@@ -64,6 +64,10 @@ pub struct StartPipelineRequest {
     /// and strokes being clipped at the box border.
     #[serde(default)]
     pub box_padding: Option<f32>,
+    /// Let text over artwork (outside speech bubbles) grow past its box, up
+    /// to the size of the lettering it replaces. Off when absent.
+    #[serde(default)]
+    pub grow_over_artwork: Option<bool>,
     #[serde(default)]
     pub shader_effect: Option<TextShaderEffect>,
     #[serde(default)]
@@ -167,6 +171,7 @@ pub(crate) fn launch(
             reading_order: req.reading_order,
             default_font_size: req.default_font_size,
             box_padding: req.box_padding,
+            grow_over_artwork: req.grow_over_artwork,
             shader_effect: req.shader_effect,
             shader_stroke: req.shader_stroke,
             text_align: req.text_align,

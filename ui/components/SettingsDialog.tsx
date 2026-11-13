@@ -679,6 +679,8 @@ function TextDefaultsPane() {
   const setDefaultFontSize = usePreferencesStore((s) => s.setDefaultFontSize)
   const boxPadding = usePreferencesStore((s) => s.boxPadding)
   const setBoxPadding = usePreferencesStore((s) => s.setBoxPadding)
+  const growTextOverArtwork = usePreferencesStore((s) => s.growTextOverArtwork)
+  const setGrowTextOverArtwork = usePreferencesStore((s) => s.setGrowTextOverArtwork)
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
@@ -989,6 +991,28 @@ function TextDefaultsPane() {
           >
             <PlusIcon className='size-3' />
           </Button>
+        </div>
+      </Section>
+
+      <Section
+        title={t('settings.growTextOverArtwork', 'Text over artwork')}
+        description={t(
+          'settings.growTextOverArtworkDescription',
+          'Text that is not in a speech bubble may spread past its box, around the centre, until it is as big as the lettering it replaces. It stops at other text boxes and at the page edge. Boxes you drew or resized, and boxes with a size set by hand, are left alone.',
+        )}
+      >
+        <div className='flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5'>
+          <Label htmlFor='settings-grow-text-over-artwork' className='text-sm'>
+            {t('settings.growTextOverArtworkSwitch', 'Let it grow to the original size')}
+          </Label>
+          <Switch
+            id='settings-grow-text-over-artwork'
+            checked={growTextOverArtwork}
+            onCheckedChange={(grow) => {
+              setGrowTextOverArtwork(grow)
+              rerender()
+            }}
+          />
         </div>
       </Section>
     </div>

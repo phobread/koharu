@@ -192,6 +192,7 @@ impl KoharuServer {
             reading_order: input.reading_order,
             default_font_size: None,
             box_padding: None,
+            grow_over_artwork: None,
             shader_effect: None,
             shader_stroke: None,
             text_align: None,

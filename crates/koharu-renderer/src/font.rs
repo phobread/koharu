@@ -70,6 +70,14 @@ pub(crate) fn font_key(font: &Font) -> usize {
     font as *const Font as usize
 }
 
+/// The file a face was loaded from; `None` for a font loaded from memory.
+pub fn face_file(face: &FaceInfo) -> Option<&std::path::Path> {
+    match &face.source {
+        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => Some(path),
+        fontdb::Source::Binary(_) => None,
+    }
+}
+
 /// A collection of font sources for font discovery and loading.
 pub struct FontBook {
     database: Database,

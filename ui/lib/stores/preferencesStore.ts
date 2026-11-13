@@ -34,6 +34,12 @@ type PreferencesState = {
   /** Pixels to inset text from each layout-box edge (stops edge clipping). */
   boxPadding: number
   setBoxPadding: (px: number) => void
+  /**
+   * Text over artwork (outside speech bubbles) may grow past its box, up to
+   * the size of the lettering it replaces.
+   */
+  growTextOverArtwork: boolean
+  setGrowTextOverArtwork: (grow: boolean) => void
   favoriteFonts: string[]
   toggleFavoriteFont: (font: string) => void
   customSystemPrompt?: string
@@ -85,6 +91,7 @@ const initialPreferences = {
   repairWithLama: false,
   styleMoreOpen: false,
   boxPadding: 0,
+  growTextOverArtwork: false,
   favoriteFonts: [],
   shortcuts: {
     select: 'V',
@@ -134,6 +141,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         }),
       setBoxPadding: (px) =>
         set({ boxPadding: Number.isFinite(px) ? Math.max(0, Math.round(px)) : 0 }),
+      setGrowTextOverArtwork: (grow) => set({ growTextOverArtwork: grow }),
       toggleFavoriteFont: (font) =>
         set((state) => ({
           favoriteFonts: state.favoriteFonts.includes(font)
@@ -223,6 +231,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         defaultFont: state.defaultFont,
         defaultFontSize: state.defaultFontSize,
         boxPadding: state.boxPadding,
+        growTextOverArtwork: state.growTextOverArtwork,
         favoriteFonts: state.favoriteFonts,
         customSystemPrompt: state.customSystemPrompt,
         ocrLanguage: state.ocrLanguage,

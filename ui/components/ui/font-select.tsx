@@ -227,7 +227,9 @@ export function FontSelect({
   const selectedLabel = useMemo(() => {
     const found =
       options.find((f) => f.postScriptName === value) || options.find((f) => f.familyName === value)
-    return found?.familyName
+    // A font the list no longer offers (one of Windows' own, or a Google
+    // family outside the short list) still shows by the name the box holds.
+    return found?.familyName ?? (value || undefined)
   }, [options, value])
 
   const listHeight = Math.min(filtered.length, MAX_VISIBLE) * ITEM_HEIGHT

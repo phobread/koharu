@@ -18,7 +18,7 @@ use koharu_core::{
 
 use koharu_renderer::{
     TextAlign as RendererTextAlign, TextShaderEffect as RendererEffect,
-    font::{FaceInfo, Font, FontBook},
+    font::{FaceInfo, Font, FontBook, face_file},
     layout::{Balloon, LayoutRun, TextLayout, WritingMode},
     renderer::{
         RasterOptions, RenderOptions, RenderStrokeOptions, RenderStyleRange, TinySkiaRenderer,
@@ -68,6 +68,10 @@ pub struct PageRenderOptions {
     /// Pixels to inset text from each edge of its layout box (stops glyphs and
     /// strokes clipping at the box border). `0.0` keeps the original box.
     pub box_padding: f32,
+    /// Text lettered over artwork (not in a speech bubble) may spread past
+    /// its box, around the box's centre, until it is as big as the original
+    /// lettering (`artwork_rooms`).
+    pub grow_over_artwork: bool,
     pub target_language: Option<String>,
     pub raster: RasterOptions,
 }
@@ -160,16 +164,26 @@ impl Renderer {
         }])
     }
 
-    /// List system + cached Google Fonts for the API.
+    /// The fonts the picker offers: uploaded fonts, fonts installed for this
+    /// user, and a few Google families ([`PICKER_GOOGLE_FAMILIES`]).
+    ///
+    /// The operating system's own fonts are left out. They stay in the font
+    /// book, so the renderer still falls back to them and a box that names
+    /// one still renders with it.
     pub fn available_fonts(&self) -> Result<Vec<FontFaceInfo>> {
         let fontbook = self
             .fontbook
             .lock()
             .map_err(|_| anyhow::anyhow!("failed to lock fontbook"))?;
+        let os_fonts = os_fonts_dir();
         let mut fonts = fontbook
             .all_families()
             .into_iter()
             .filter(|face| !face.post_script_name.is_empty())
+            .filter(|face| {
+                self.custom_fonts.is_custom(&face.post_script_name)
+                    || !is_os_font(face_file(face), os_fonts.as_deref())
+            })
             .map(|face| {
                 let family_name = face
                     .families
@@ -192,6 +206,9 @@ impl Renderer {
             .collect::<Vec<_>>();
         let catalog = self.google_fonts.catalog();
         for entry in &catalog.fonts {
+            if !picker_lists_google_family(&entry.family) {
+                continue;
+            }
             for variant in &entry.variants {
                 // Unique PS name for Google Fonts to identify the specific weight/style
                 let post_script_name = format!(
@@ -238,6 +255,11 @@ impl Renderer {
         let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| BubbleIndex::new(m.to_luma8()));
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
         let balloons = resolve_balloons(blocks, bubble_index.as_ref());
+        let rooms = if opts.grow_over_artwork {
+            artwork_rooms(blocks, &layout_boxes, &balloons, image_width, image_height)
+        } else {
+            vec![None; blocks.len()]
+        };
         let bubble_mask = bubble_index.as_ref().map(BubbleIndex::mask);
 
         let mut background = inpainted.to_rgba8();
@@ -246,15 +268,17 @@ impl Renderer {
         }
 
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
-        for ((block, layout_box), balloon) in blocks
+        for (((block, layout_box), balloon), room) in blocks
             .iter()
             .zip(layout_boxes.iter().copied())
             .zip(balloons.iter())
+            .zip(rooms.iter().copied())
         {
             match self.render_one(
                 block,
                 layout_box,
                 balloon.as_ref(),
+                room,
                 &background,
                 bubble_mask,
                 &opts.shader_effect,
@@ -291,6 +315,7 @@ impl Renderer {
         block: &RenderBlockInput,
         resolved_box: ResolvedLayoutBox,
         balloon: Option<&BalloonShape>,
+        room: Option<ArtworkRoom>,
         background: &RgbaImage,
         bubble_mask: Option<&GrayImage>,
         effect: &TextShaderEffect,
@@ -465,6 +490,74 @@ impl Renderer {
             min_font_size,
             max_font,
         )?;
+
+        // Text over artwork that came out smaller than the lettering it
+        // replaces: spread the box around its centre, as little as it takes
+        // to reach that size. The sprite is centred on the box either way, so
+        // only the room to fit in changes.
+        let (layout, fit_box) = match room.map(|room| (room, room.target.min(max_font).floor())) {
+            Some((room, target)) if style.font_size.is_none() && layout.font_size < target => {
+                let reach = room.dx.max(room.dy);
+                let (grown_box, grown) = smallest_growth_reaching(target, |fraction| {
+                    let by = reach * fraction;
+                    let grown_box = grow_layout_box(fit_box, by.min(room.dx), by.min(room.dy));
+                    let run = fit_font_size(
+                        &layout_builder,
+                        translation,
+                        grown_box.width,
+                        grown_box.height,
+                        None,
+                        min_font_size,
+                        target,
+                    )?;
+                    Ok((run.font_size, (grown_box, run)))
+                })?;
+                if grown.font_size > layout.font_size {
+                    tracing::debug!(
+                        node = %block.node_id,
+                        from = layout.font_size,
+                        to = grown.font_size,
+                        original = room.target,
+                        "text over artwork grew past its box"
+                    );
+                    // A fitted layout is as tall as the room it was given
+                    // (the text is centred in it), and the room grew on all
+                    // sides. Keep the height the text needs, and no less
+                    // than the box had.
+                    let needed = layout_builder
+                        .clone()
+                        .with_font_size(grown.font_size)
+                        .with_max_width(grown_box.width)
+                        .run(translation)?
+                        .height;
+                    let height = (needed.ceil() + 1.0)
+                        .max(fit_box.height)
+                        .min(grown_box.height);
+                    let trimmed_box = LayoutBox {
+                        y: grown_box.y + (grown_box.height - height) / 2.0,
+                        height,
+                        ..grown_box
+                    };
+                    let trimmed = fit_font_size(
+                        &layout_builder,
+                        translation,
+                        trimmed_box.width,
+                        trimmed_box.height,
+                        Some(grown.font_size),
+                        min_font_size,
+                        grown.font_size,
+                    )?;
+                    if trimmed.font_size >= grown.font_size {
+                        (trimmed, trimmed_box)
+                    } else {
+                        (grown, grown_box)
+                    }
+                } else {
+                    (layout, fit_box)
+                }
+            }
+            _ => (layout, fit_box),
+        };
 
         // Synthetic bold/italic extends beyond the upright layout's ink bounds.
         // Reserve the measured effect clearance, then only shrink the font so
@@ -979,44 +1072,59 @@ fn fit_font_size<'a>(
     let min_size = min_size.max(1.0).round() as i32;
     let max_size = (max_size.round() as i32).max(min_size);
 
-    let at_max = run_at(max_size as f32)?;
-    if fits(&at_max) {
-        return Ok(at_max);
+    let fitted = auto_fit_size(min_size, max_size, |size| {
+        let run = run_at(size as f32)?;
+        Ok(fits(&run).then_some(run))
+    })?;
+    match fitted {
+        Some(run) => Ok(run),
+        // Nothing fits at any size — overflow as little as possible.
+        None => run_at(1.0),
     }
-    // Binary-search [min, max) for the largest fitting size.
-    let mut lo = min_size;
-    let mut hi = max_size - 1;
-    let mut best = run_at(min_size as f32)?;
-    if !fits(&best) {
-        // The readability floor is a preference, not a licence to overflow:
-        // auto-fit text must always stay inside its box, so keep shrinking
-        // below the floor until it fits.
-        let mut lo = 1;
-        let mut hi = min_size - 1;
-        while lo <= hi {
-            let mid = lo + (hi - lo) / 2;
-            let candidate = run_at(mid as f32)?;
-            if fits(&candidate) {
-                best = candidate;
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        if !fits(&best) {
-            // Nothing fits at any size — overflow as little as possible.
-            return run_at(1.0);
-        }
-        return Ok(best);
+}
+
+/// The largest size from `min_size` to `max_size` at which `try_size` gives a
+/// layout (it returns `None` when the text doesn't fit), or below `min_size`
+/// when nothing from there up fits. `None` when no size fits at all.
+///
+/// The readability floor `min_size` is a preference, not a licence to
+/// overflow, so the search goes below it rather than spill out of the box.
+/// But a miss at the floor doesn't prove that bigger sizes miss too: lines
+/// are packed by advance width and checked by ink width plus a pad, so one
+/// size can fail by a hair while larger ones fit (a resized box went from
+/// 28px to 5px when one word was deleted). So sizes above the floor are
+/// searched before anything below it.
+fn auto_fit_size<T>(
+    min_size: i32,
+    max_size: i32,
+    mut try_size: impl FnMut(i32) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    if let Some(at_max) = try_size(max_size)? {
+        return Ok(Some(at_max));
     }
+    let at_min = try_size(min_size)?;
+    let above = largest_fitting_size(min_size + 1, max_size - 1, &mut try_size)?;
+    if above.is_some() || at_min.is_some() {
+        return Ok(above.or(at_min));
+    }
+    largest_fitting_size(1, min_size - 1, &mut try_size)
+}
+
+/// Binary search for the largest size in `lo..=hi` that fits.
+fn largest_fitting_size<T>(
+    mut lo: i32,
+    mut hi: i32,
+    try_size: &mut impl FnMut(i32) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    let mut best = None;
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let candidate = run_at(mid as f32)?;
-        if fits(&candidate) {
-            best = candidate;
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
+        match try_size(mid)? {
+            Some(candidate) => {
+                best = Some(candidate);
+                lo = mid + 1;
+            }
+            None => hi = mid - 1,
         }
     }
     Ok(best)
@@ -1133,6 +1241,54 @@ fn apply_default_font_families(font_families: &mut Vec<String>, text: &str) {
     }
 }
 
+/// The Google families the font picker lists. The catalog has 1,820, and the
+/// picker downloads each one it scrolls past to preview it.
+const PICKER_GOOGLE_FAMILIES: [&str; 10] = [
+    "Comic Neue",
+    "Bangers",
+    "Patrick Hand",
+    "Caveat",
+    "Pangolin",
+    "Kalam",
+    "Indie Flower",
+    "Architects Daughter",
+    "Shantell Sans",
+    "Noto Sans",
+];
+
+fn picker_lists_google_family(family: &str) -> bool {
+    PICKER_GOOGLE_FAMILIES
+        .iter()
+        .any(|kept| kept.eq_ignore_ascii_case(family.trim()))
+}
+
+/// Where the operating system keeps its own fonts. Only Windows has one
+/// folder for them, apart from the per-user folder under `%LOCALAPPDATA%`.
+fn os_fonts_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir"))?;
+    Some(std::path::PathBuf::from(root).join("Fonts"))
+}
+
+/// Whether a face's file sits in the operating system's own font folder.
+/// Windows paths differ in case and in the slash used.
+fn is_os_font(file: Option<&std::path::Path>, os_fonts: Option<&std::path::Path>) -> bool {
+    let (Some(file), Some(os_fonts)) = (file, os_fonts) else {
+        return false;
+    };
+    let normalize = |path: &std::path::Path| {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let (file, folder) = (normalize(file), normalize(os_fonts));
+    file.strip_prefix(&folder)
+        .is_some_and(|rest| rest.starts_with('\\'))
+}
+
 /// Register every cached custom font file into the book at startup, recording
 /// each face so `available_fonts` can label it. Failures are logged and
 /// skipped — one bad file shouldn't block the rest.
@@ -1206,6 +1362,160 @@ fn layout_source_from_input(block: &RenderBlockInput, translation: &str) -> Rend
         source_direction: block.source_direction.map(core_direction_to_renderer),
         writing_direction: block.writing_direction.map(core_direction_to_renderer),
     }
+}
+
+/// How far a block lettered over artwork may spread from its box, and the
+/// size it is trying to reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArtworkRoom {
+    /// Most pixels the box may gain on its left and on its right, each.
+    dx: f32,
+    /// The same for top and bottom.
+    dy: f32,
+    /// Size of the original lettering.
+    target: f32,
+}
+
+/// The size of the lettering a block replaces, when the block is one that may
+/// spread past its box: auto-sized text in a box the detector made, upright,
+/// and not in a speech bubble. A box the user drew or resized, a size set by
+/// hand and a bubble are all explicit limits and stay as they are.
+fn original_size_over_artwork(
+    block: &RenderBlockInput,
+    resolved: &ResolvedLayoutBox,
+    balloon: Option<&BalloonShape>,
+) -> Option<f32> {
+    if block.translation.trim().is_empty()
+        || block.lock_layout_box
+        || effective_rotation(block.transform.rotation_deg).is_some()
+        || resolved.bubble_id.is_some()
+        || balloon.is_some()
+        || block.style.as_ref().is_some_and(|s| s.font_size.is_some())
+    {
+        return None;
+    }
+    let size = block.font_prediction.as_ref()?.font_size_px;
+    (size.is_finite() && size >= 1.0).then_some(size)
+}
+
+/// For each block, the room it has to spread over artwork (`None` for blocks
+/// that keep their box). Every other text box on the page is in the way,
+/// translated or not.
+fn artwork_rooms(
+    blocks: &[RenderBlockInput],
+    layout_boxes: &[ResolvedLayoutBox],
+    balloons: &[Option<BalloonShape>],
+    image_width: u32,
+    image_height: u32,
+) -> Vec<Option<ArtworkRoom>> {
+    let targets: Vec<Option<f32>> = blocks
+        .iter()
+        .zip(layout_boxes)
+        .zip(balloons)
+        .map(|((block, resolved), balloon)| {
+            original_size_over_artwork(block, resolved, balloon.as_ref())
+        })
+        .collect();
+    targets
+        .iter()
+        .enumerate()
+        .map(|(i, target)| {
+            let target = (*target)?;
+            let others = layout_boxes
+                .iter()
+                .zip(&targets)
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (other, grows))| (other.seed_box, grows.is_some()));
+            let (dx, dy) = room_around(
+                layout_boxes[i].seed_box,
+                others,
+                image_width as f32,
+                image_height as f32,
+            );
+            (dx > 0.0 || dy > 0.0).then_some(ArtworkRoom { dx, dy, target })
+        })
+        .collect()
+}
+
+/// How many pixels `seed` may gain on each side, per axis, when it grows by
+/// the same amount on all four sides: up to the page edge on each axis, and
+/// until it would touch one of `others`. A neighbour that grows too gets
+/// half of the gap. Boxes that already overlap `seed` can't be avoided and
+/// are ignored.
+fn room_around(
+    seed: LayoutBox,
+    others: impl Iterator<Item = (LayoutBox, bool)>,
+    page_width: f32,
+    page_height: f32,
+) -> (f32, f32) {
+    let to_page_x = seed.x.min(page_width - (seed.x + seed.width)).max(0.0);
+    let to_page_y = seed.y.min(page_height - (seed.y + seed.height)).max(0.0);
+    let gap = |a_start: f32, a_len: f32, b_start: f32, b_len: f32| {
+        (b_start - (a_start + a_len))
+            .max(a_start - (b_start + b_len))
+            .max(0.0)
+    };
+    let mut reach = to_page_x.max(to_page_y);
+    for (other, grows) in others {
+        let gap_x = gap(seed.x, seed.width, other.x, other.width);
+        let gap_y = gap(seed.y, seed.height, other.y, other.height);
+        if gap_x == 0.0 && gap_y == 0.0 {
+            continue;
+        }
+        // The boxes meet once the growth has crossed the gap on both axes;
+        // an axis that stops at the page edge first never gets there.
+        if to_page_x <= gap_x || to_page_y <= gap_y {
+            continue;
+        }
+        let until_touching = gap_x.max(gap_y);
+        reach = reach.min(if grows {
+            until_touching / 2.0
+        } else {
+            until_touching
+        });
+    }
+    (reach.min(to_page_x), reach.min(to_page_y))
+}
+
+/// `layout_box` with `dx` more pixels on its left and right and `dy` more on
+/// its top and bottom; the centre stays.
+fn grow_layout_box(layout_box: LayoutBox, dx: f32, dy: f32) -> LayoutBox {
+    LayoutBox {
+        x: layout_box.x - dx,
+        y: layout_box.y - dy,
+        width: layout_box.width + 2.0 * dx,
+        height: layout_box.height + 2.0 * dy,
+    }
+}
+
+/// Steps the room to grow is tried in.
+const GROW_STEPS: i32 = 16;
+
+/// The smallest share of the room (in `GROW_STEPS`ths, never none of it) at
+/// which `fit_at` reaches `target`; all of the room when it never does, which
+/// is as big as the text can get. `fit_at` takes the share from 0 to 1 and
+/// returns the fitted size with whatever goes with it.
+fn smallest_growth_reaching<T>(
+    target: f32,
+    mut fit_at: impl FnMut(f32) -> Result<(f32, T)>,
+) -> Result<T> {
+    let (size, mut best) = fit_at(1.0)?;
+    if size < target {
+        return Ok(best);
+    }
+    let (mut lo, mut hi) = (1, GROW_STEPS - 1);
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let (size, fitted) = fit_at(mid as f32 / GROW_STEPS as f32)?;
+        if size >= target {
+            best = fitted;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(best)
 }
 
 fn seed_layout_box(block: &RenderBlockInput) -> LayoutBox {
@@ -1612,6 +1922,69 @@ mod tests {
     use image::{GrayImage, Luma, Rgba, RgbaImage};
     use koharu_core::{NodeId, TextRangeStyle};
 
+    /// The size `auto_fit_size` settles on when exactly `fitting` sizes fit.
+    fn auto_fit(min_size: i32, max_size: i32, fitting: impl Fn(i32) -> bool) -> Option<i32> {
+        auto_fit_size(min_size, max_size, |size| Ok(fitting(size).then_some(size))).unwrap()
+    }
+
+    #[test]
+    fn windows_own_fonts_are_told_from_fonts_installed_for_the_user() {
+        use std::path::Path;
+        let os = Some(Path::new(r"C:\WINDOWS\Fonts"));
+        assert!(is_os_font(
+            Some(Path::new(r"C:\Windows\Fonts\arial.ttf")),
+            os
+        ));
+        assert!(is_os_font(
+            Some(Path::new("c:/windows/fonts/segoeui.ttf")),
+            os
+        ));
+        assert!(!is_os_font(
+            Some(Path::new(
+                r"C:\Users\me\AppData\Local\Microsoft\Windows\Fonts\CCWildWords.ttf"
+            )),
+            os,
+        ));
+        // A folder that only starts with the same letters is not the folder.
+        assert!(!is_os_font(
+            Some(Path::new(r"C:\Windows\FontsOld\a.ttf")),
+            os
+        ));
+        // Uploaded and downloaded fonts are loaded from memory.
+        assert!(!is_os_font(None, os));
+        // No such folder off Windows: every installed font is listed.
+        assert!(!is_os_font(Some(Path::new("/usr/share/fonts/a.ttf")), None));
+    }
+
+    #[test]
+    fn the_picker_lists_only_the_kept_google_families() {
+        assert!(picker_lists_google_family("Comic Neue"));
+        assert!(picker_lists_google_family("noto sans"));
+        assert!(!picker_lists_google_family("Noto Sans JP"));
+        assert!(!picker_lists_google_family("Roboto"));
+    }
+
+    #[test]
+    fn auto_fit_takes_the_largest_fitting_size() {
+        assert_eq!(auto_fit(6, 100, |size| size <= 28), Some(28));
+        assert_eq!(auto_fit(6, 100, |_| true), Some(100));
+        assert_eq!(auto_fit(6, 100, |size| size <= 6), Some(6));
+    }
+
+    #[test]
+    fn a_miss_at_the_floor_does_not_send_the_text_below_it() {
+        // SlaveMarket 0019 box 7: the 6px floor missed by a hair while every
+        // size from 7 to 28 fitted, and the text came out at 5px.
+        assert_eq!(auto_fit(6, 100, |size| size != 6 && size <= 28), Some(28));
+    }
+
+    #[test]
+    fn auto_fit_goes_below_the_floor_only_when_nothing_above_fits() {
+        assert_eq!(auto_fit(6, 100, |size| size <= 4), Some(4));
+        assert_eq!(auto_fit(6, 100, |_| false), None);
+        assert_eq!(auto_fit(1, 1, |_| false), None);
+    }
+
     #[test]
     fn default_font_families_should_fill_empty_list() {
         let mut font_families = Vec::new();
@@ -1977,6 +2350,44 @@ mod tests {
         Ok(())
     }
 
+    /// The line breaker packs lines by the width the fit check measures, so
+    /// a size is never turned down for width on breaks the breaker chose
+    /// (LOLExtras 0100: a box set to 28px was drawn at 27px). With room for
+    /// every word on a line of its own and no limit on height, a set size
+    /// stays.
+    #[test]
+    fn a_set_size_is_kept_when_every_word_fits_a_line_of_the_box() -> Result<()> {
+        let font = any_system_font();
+        let layout_builder = TextLayout::new(&font, None).without_hyphenation();
+        let text = "Stuff me more\u{2014}torment me well-known more, please\u{2014}";
+        for size in [9.0, 14.0, 20.0, 28.0, 36.0] {
+            let narrowest = layout_builder
+                .clone()
+                .with_font_size(size)
+                .with_max_width(1.0)
+                .run(text)?
+                .width;
+            let mut width = narrowest;
+            while width < narrowest + 200.0 {
+                let layout = fit_font_size(
+                    &layout_builder,
+                    text,
+                    width,
+                    10_000.0,
+                    Some(size),
+                    6.0,
+                    MAX_AUTO_FONT_SIZE,
+                )?;
+                assert_eq!(
+                    layout.font_size, size,
+                    "set to {size}px in a {width}px wide box"
+                );
+                width += 0.25;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn every_block_keeps_its_seed_box_inside_a_shared_bubble() {
         let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
@@ -2213,6 +2624,154 @@ mod tests {
         let frame = balloons[0].as_ref().expect("top lobe").frame;
         assert!(frame.y + frame.height <= 215.0, "{frame:?}");
         assert!(balloons[1].is_none());
+    }
+
+    fn lettering(size: f32) -> Option<FontPrediction> {
+        Some(FontPrediction {
+            font_size_px: size,
+            ..Default::default()
+        })
+    }
+
+    fn resolved(block: &RenderBlockInput, bubble_id: Option<u8>) -> ResolvedLayoutBox {
+        let seed_box = seed_layout_box(block);
+        ResolvedLayoutBox {
+            seed_box,
+            layout_box: seed_box,
+            bubble_id,
+        }
+    }
+
+    #[test]
+    fn only_auto_sized_text_outside_bubbles_may_grow_over_artwork() {
+        let mut free = block(100.0, 100.0, 80.0, 40.0, "Hello");
+        free.font_prediction = lettering(40.0);
+        let size = |block: &RenderBlockInput, bubble_id| {
+            original_size_over_artwork(block, &resolved(block, bubble_id), None)
+        };
+        assert_eq!(size(&free, None), Some(40.0));
+
+        // In a bubble.
+        assert_eq!(size(&free, Some(3)), None);
+        // Drawn or resized by hand.
+        let mut locked = free.clone();
+        locked.lock_layout_box = true;
+        assert_eq!(size(&locked, None), None);
+        // Given a size by hand.
+        let mut sized = free.clone();
+        sized.style = Some(TextStyle {
+            font_size: Some(20.0),
+            ..Default::default()
+        });
+        assert_eq!(size(&sized, None), None);
+        // Tilted.
+        let mut tilted = free.clone();
+        tilted.transform.rotation_deg = 12.0;
+        assert_eq!(size(&tilted, None), None);
+        // No lettering measured, or nothing to draw.
+        let mut unmeasured = free.clone();
+        unmeasured.font_prediction = None;
+        assert_eq!(size(&unmeasured, None), None);
+        let mut empty = free.clone();
+        empty.translation = "  ".to_string();
+        assert_eq!(size(&empty, None), None);
+    }
+
+    #[test]
+    fn room_over_artwork_ends_at_the_page_edge_on_each_axis() {
+        let seed = LayoutBox {
+            x: 100.0,
+            y: 300.0,
+            width: 50.0,
+            height: 50.0,
+        };
+        // 100px to the left edge and 850 to the right; 300 up and 650 down.
+        assert_eq!(
+            room_around(seed, std::iter::empty(), 1000.0, 1000.0),
+            (100.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn room_over_artwork_ends_where_another_box_begins() {
+        let seed = LayoutBox {
+            x: 400.0,
+            y: 400.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let room = |other: LayoutBox, grows: bool| {
+            room_around(seed, std::iter::once((other, grows)), 1000.0, 1000.0)
+        };
+        // A box 60px to the right, level with the seed.
+        let beside = LayoutBox {
+            x: 560.0,
+            y: 420.0,
+            width: 80.0,
+            height: 40.0,
+        };
+        assert_eq!(room(beside, false), (60.0, 60.0));
+        // When that box grows too, each gets half of the gap.
+        assert_eq!(room(beside, true), (30.0, 30.0));
+        // A box diagonally away (200 right, 90 below) is met only once both
+        // gaps are crossed.
+        let diagonal = LayoutBox {
+            x: 700.0,
+            y: 590.0,
+            width: 50.0,
+            height: 50.0,
+        };
+        assert_eq!(room(diagonal, false), (200.0, 200.0));
+        // A box already overlapping can't be avoided and stops nothing.
+        let over = LayoutBox {
+            x: 450.0,
+            y: 450.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        assert_eq!(room(over, false), (400.0, 400.0));
+    }
+
+    #[test]
+    fn a_box_out_of_sideways_reach_does_not_limit_growth_up_and_down() {
+        // 10px from the left edge, so it can never cross the 50px gap to the
+        // box on its right.
+        let seed = LayoutBox {
+            x: 10.0,
+            y: 400.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let beside = LayoutBox {
+            x: 160.0,
+            y: 400.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        assert_eq!(
+            room_around(seed, std::iter::once((beside, false)), 1000.0, 1000.0),
+            (10.0, 400.0)
+        );
+    }
+
+    #[test]
+    fn growth_over_artwork_stops_as_soon_as_the_size_is_reached() {
+        // The size rises with the room: 10px with none of it, 40px with all.
+        let mut tried = 0;
+        let share = smallest_growth_reaching(25.0, |share| {
+            tried += 1;
+            Ok((10.0 + 30.0 * share, share))
+        })
+        .unwrap();
+        assert_eq!(share, 0.5);
+        assert!(tried <= 6, "{tried} fits");
+    }
+
+    #[test]
+    fn growth_over_artwork_takes_all_the_room_when_the_size_is_out_of_reach() {
+        let share =
+            smallest_growth_reaching(90.0, |share| Ok((10.0 + 30.0 * share, share))).unwrap();
+        assert_eq!(share, 1.0);
     }
 
     fn block(x: f32, y: f32, width: f32, height: f32, translation: &str) -> RenderBlockInput {

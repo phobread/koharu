@@ -27,6 +27,12 @@ export interface StartPipelineRequest {
    */
   defaultFontSize?: number | null
   /**
+   * Let text over artwork (outside speech bubbles) grow past its box, up
+   * to the size of the lettering it replaces. Off when absent.
+   * @nullable
+   */
+  growOverArtwork?: boolean | null
+  /**
    * Run each step only where its output is missing and keep finished work:
    * pages with nothing missing are left out, and OCR, translation and font
    * detection only fill boxes that lack them.

@@ -44,6 +44,7 @@ import type {
   TextShaderEffect,
   TextStrokeStyle,
 } from '@/lib/api/schemas'
+import { evenOutSizes } from '@/lib/evenSizes'
 import {
   findFontFace,
   getLocalizedFontLabel,
@@ -217,6 +218,7 @@ export function RenderControlsPanel() {
   const appDefaultFont = usePreferencesStore((s) => s.defaultFont)
   const appDefaultFontSize = usePreferencesStore((s) => s.defaultFontSize)
   const setAppDefaultFontSize = usePreferencesStore((s) => s.setDefaultFontSize)
+  const boxPadding = usePreferencesStore((s) => s.boxPadding)
   const moreOpen = usePreferencesStore((s) => s.styleMoreOpen)
   const setMoreOpen = usePreferencesStore((s) => s.setStyleMoreOpen)
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
@@ -253,7 +255,9 @@ export function RenderControlsPanel() {
           ...(appDefaultFont ? [fallbackFontFace(appDefaultFont)] : []),
           ...(selectedNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
           ...(firstNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
-          ...DEFAULT_FONT_FACES,
+          // Only when the server offers nothing: Arial is one of Windows' own
+          // fonts, which the list otherwise leaves out.
+          ...(sortedFonts.length === 0 ? DEFAULT_FONT_FACES : []),
         ].filter((v): v is FontFaceInfo => !!v),
       ),
     [sortedFonts, appDefaultFont, selectedNode?.id, selectedNode?.data.style?.fontFamilies],
@@ -507,6 +511,28 @@ export function RenderControlsPanel() {
     }
     setAppDefaultFontSize(size)
     if (page) queueAutoRender(page.id)
+  }
+
+  // Even out sizes: the selected boxes, or the whole page, get their middle
+  // size, and each box is resized around its centre to hold its text at it.
+  const evenSizes = evenOutSizes(selectedNodes.length > 0 ? selectedNodes : textNodes, boxPadding)
+  const applyEvenSizes = () => {
+    if (!page || !evenSizes) return
+    const byId = new Map(textNodes.map((n) => [n.id, n]))
+    const inner = evenSizes.changes.map((change) => {
+      const style = mergeTextStyle(byId.get(change.id)?.data.style, { fontSize: change.fontSize })
+      return ops.updateNode(
+        page.id,
+        change.id,
+        change.transform
+          ? { transform: change.transform, data: { text: { style, lockLayoutBox: true } } as never }
+          : { data: { text: { style } } as never },
+      )
+    })
+    void (async () => {
+      await applyOp(inner.length === 1 ? inner[0] : ops.batch('Even out sizes', inner))
+      queueAutoRender(page.id)
+    })()
   }
 
   const applyWritingDirection = (direction: TextDirection | 'auto') => {
@@ -884,6 +910,23 @@ export function RenderControlsPanel() {
           })}
         </div>
       </div>
+
+      <Button
+        type='button'
+        variant='outline'
+        size='sm'
+        className='h-6 w-full text-xs'
+        data-testid='render-even-sizes'
+        disabled={!evenSizes}
+        title={t(
+          'render.evenSizesHint',
+          'Give the selected boxes (or every box on the page) their middle size, and resize each box around its centre to fit',
+        )}
+        onClick={applyEvenSizes}
+      >
+        {t('render.evenSizes', 'Even out sizes')}
+        {evenSizes ? ` → ${evenSizes.size}` : ''}
+      </Button>
 
       {/* Less-used styling folds away; the choice sticks between sessions. */}
       <button

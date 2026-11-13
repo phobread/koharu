@@ -78,6 +78,7 @@ impl Engine for Model {
             document_font_size: ctx.options.default_font_size,
             document_align: ctx.options.text_align,
             box_padding: ctx.options.box_padding.unwrap_or(0.0),
+            grow_over_artwork: ctx.options.grow_over_artwork.unwrap_or(false),
             target_language: ctx
                 .options
                 .target_language

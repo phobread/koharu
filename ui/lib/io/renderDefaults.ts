@@ -3,7 +3,8 @@ import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 /**
- * Global render defaults (font, size, box padding, border/stroke, bold/italic)
+ * Global render defaults (font, size, box padding, growth over artwork,
+ * border/stroke, bold/italic)
  * read from the persisted stores and shaped for `StartPipelineRequest`.
  *
  * These apply only to text blocks that have no explicit per-node override —
@@ -13,7 +14,12 @@ import { usePreferencesStore } from '@/lib/stores/preferencesStore'
  */
 export function renderDefaultsForPipeline(): Pick<
   StartPipelineRequest,
-  'defaultFont' | 'defaultFontSize' | 'boxPadding' | 'shaderEffect' | 'shaderStroke'
+  | 'defaultFont'
+  | 'defaultFontSize'
+  | 'boxPadding'
+  | 'growOverArtwork'
+  | 'shaderEffect'
+  | 'shaderStroke'
 > {
   const prefs = usePreferencesStore.getState()
   const { renderEffect, renderStroke } = useEditorUiStore.getState()
@@ -21,6 +27,7 @@ export function renderDefaultsForPipeline(): Pick<
     defaultFont: prefs.defaultFont,
     defaultFontSize: prefs.defaultFontSize,
     boxPadding: prefs.boxPadding,
+    growOverArtwork: prefs.growTextOverArtwork,
     shaderEffect: { bold: renderEffect.bold, italic: renderEffect.italic },
     shaderStroke: renderStroke
       ? {
