@@ -5,5 +5,7 @@
 import type { ProjectSummary } from './projectSummary'
 
 export interface ListProjectsResponse {
+  /** Ids of the starred projects (see `favourites.rs`). */
+  favourites: string[]
   projects: ProjectSummary[]
 }

@@ -51,6 +51,7 @@ import type {
   McpConfig,
   MetaInfo,
   PipelineConfig,
+  ProjectFavourites,
   ProjectSummary,
   PutMaskResponse,
   SceneSnapshot,
@@ -802,6 +803,16 @@ export const getAddOfficialPagesFromPathsResponseMock = (
   ...overrideResponse,
 })
 
+export const getPutPageFavouriteResponseMock = (
+  overrideResponse: Partial<Extract<ProjectFavourites, object>> = {},
+): ProjectFavourites => ({
+  pages: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+    faker.string.uuid(),
+  ),
+  project: faker.datatype.boolean(),
+  ...overrideResponse,
+})
+
 export const getAddImageLayerResponseMock = (
   overrideResponse: Partial<Extract<AddImageLayerResponse, object>> = {},
 ): AddImageLayerResponse => ({ node: faker.string.uuid(), ...overrideResponse })
@@ -839,6 +850,9 @@ export const getStartPipelineResponseMock = (
 export const getListProjectsResponseMock = (
   overrideResponse: Partial<Extract<ListProjectsResponse, object>> = {},
 ): ListProjectsResponse => ({
+  favourites: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ),
   projects: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
     () => ({
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -872,6 +886,16 @@ export const getPutCurrentProjectResponseMock = (
 
 export const getExportCurrentProjectResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
+
+export const getGetCurrentFavouritesResponseMock = (
+  overrideResponse: Partial<Extract<ProjectFavourites, object>> = {},
+): ProjectFavourites => ({
+  pages: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+    faker.string.uuid(),
+  ),
+  project: faker.datatype.boolean(),
+  ...overrideResponse,
+})
 
 export const getImportProjectResponseMock = (
   overrideResponse: Partial<Extract<ProjectSummary, object>> = {},

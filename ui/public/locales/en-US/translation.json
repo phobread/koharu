@@ -112,6 +112,14 @@
     "deleting": "Deleting...",
     "projectOptions": "Project options",
     "deleteProject": "Delete {{name}}",
+    "favourites": {
+      "label": "Favourites",
+      "only": "Show only favourite projects",
+      "showAll": "Show all projects",
+      "add": "Add to favourites",
+      "remove": "Remove from favourites",
+      "empty": "No favourite projects yet. Point at a cover and click its star."
+    },
     "deleteConfirmTitle": "Delete Project",
     "deleteConfirmDescription": "Are you sure you want to permanently delete \"{{name}}\"? This will delete all of its pages, images, and translations. This action cannot be undone.",
     "newDialogTitle": "New project",
@@ -197,6 +205,13 @@
     "pages_other": "{{count}} pages",
     "empty": "No documents",
     "prompt": "Select or import a page to begin",
+    "favourites": {
+      "only": "Show only favourite pages",
+      "showAll": "Show all pages",
+      "add": "Add to favourites",
+      "remove": "Remove from favourites",
+      "empty": "No favourite pages in this project yet. Point at a page and click its star."
+    },
     "status": {
       "done": "Done",
       "notStarted": "Not started",

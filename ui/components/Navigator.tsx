@@ -1,7 +1,7 @@
 'use client'
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { CheckIcon, LayoutGridIcon, PlayIcon, Trash2Icon } from 'lucide-react'
+import { CheckIcon, LayoutGridIcon, PlayIcon, StarIcon, Trash2Icon } from 'lucide-react'
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -11,12 +11,14 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useScene } from '@/hooks/useScene'
 import { getGetPageThumbnailUrl } from '@/lib/api/default/default'
+import { usePageFavourites } from '@/lib/io/favourites'
 import { orderedPageIds, processPagesWithFeedback } from '@/lib/io/processPages'
 import { applyOp } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { pageStatus, type PageStatus } from '@/lib/pageStatus'
 import { type ProcessSteps, usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+import { cn } from '@/lib/utils'
 
 const THUMBNAIL_DPR =
   typeof window !== 'undefined' ? Math.min(Math.ceil(window.devicePixelRatio || 1), 3) : 2
@@ -43,6 +45,14 @@ export function Navigator() {
     () => orderedPageIds(pagesMap, selectedPageIds),
     [pagesMap, selectedPageIds],
   )
+  const { starred, setStarred } = usePageFavourites()
+  // Back to every page whenever the list is opened afresh.
+  const [starredOnly, setStarredOnly] = useState(false)
+  // The rows to show, each with its place in the whole project.
+  const shown = useMemo(() => {
+    const all = pages.map((page, index) => ({ page, index }))
+    return starredOnly ? all.filter(({ page }) => starred.has(page.id)) : all
+  }, [pages, starredOnly, starred])
 
   const handleSelect = useCallback(
     (id: string, event: React.MouseEvent | React.KeyboardEvent) => {
@@ -73,7 +83,10 @@ export function Navigator() {
         if (fromIndex !== -1) {
           const start = Math.min(fromIndex, clickedIndex)
           const end = Math.max(fromIndex, clickedIndex)
-          const rangeIds = pages.slice(start, end + 1).map((p) => p.id)
+          const rangeIds = pages
+            .slice(start, end + 1)
+            .filter((p) => !starredOnly || starred.has(p.id))
+            .map((p) => p.id)
           setSelectedPageIds(new Set(rangeIds))
           setPage(id)
         }
@@ -82,7 +95,7 @@ export function Navigator() {
         setPage(id)
       }
     },
-    [pages, pageId, setPage, setSelectedPageIds],
+    [pages, pageId, setPage, setSelectedPageIds, starredOnly, starred],
   )
 
   const handleDeletePages = useCallback(
@@ -142,7 +155,7 @@ export function Navigator() {
   }, [handleDeletePages])
 
   const virtualizer = useVirtualizer({
-    count: totalPages,
+    count: shown.length,
     getScrollElement: () => viewportRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: OVERSCAN,
@@ -163,18 +176,37 @@ export function Navigator() {
             {totalPages ? t('navigator.pages', { count: totalPages }) : t('navigator.empty')}
           </p>
         </div>
-        {totalPages > 1 && (
-          <Button
-            variant='ghost'
-            size='icon'
-            data-testid='navigator-manage-pages'
-            className='h-6 w-6'
-            onClick={() => setPageManagerOpen(true)}
-            title={t('navigator.pageManager.title')}
-          >
-            <LayoutGridIcon className='h-3.5 w-3.5' />
-          </Button>
-        )}
+        <div className='flex items-center gap-0.5'>
+          {totalPages > 0 && (
+            <Button
+              variant='ghost'
+              size='icon'
+              data-testid='navigator-favourites-only'
+              aria-pressed={starredOnly}
+              className={cn('h-6 w-6', starredOnly && 'bg-amber-400/15 hover:bg-amber-400/25')}
+              onClick={() => setStarredOnly((on) => !on)}
+              title={
+                starredOnly
+                  ? t('navigator.favourites.showAll', 'Show all pages')
+                  : t('navigator.favourites.only', 'Show only favourite pages')
+              }
+            >
+              <StarIcon className={cn('h-3.5 w-3.5', starredOnly && STAR_ON)} />
+            </Button>
+          )}
+          {totalPages > 1 && (
+            <Button
+              variant='ghost'
+              size='icon'
+              data-testid='navigator-manage-pages'
+              className='h-6 w-6'
+              onClick={() => setPageManagerOpen(true)}
+              title={t('navigator.pageManager.title')}
+            >
+              <LayoutGridIcon className='h-3.5 w-3.5' />
+            </Button>
+          )}
+        </div>
       </div>
 
       {selectedInOrder.length > 1 && (
@@ -216,12 +248,24 @@ export function Navigator() {
       {totalPages === 0 && (
         <div className='px-2 py-1.5 text-xs text-muted-foreground'>{t('navigator.prompt')}</div>
       )}
+      {totalPages > 0 && shown.length === 0 && (
+        <div
+          data-testid='navigator-favourites-empty'
+          className='px-2 py-1.5 text-xs text-muted-foreground'
+        >
+          {t(
+            'navigator.favourites.empty',
+            'No favourite pages in this project yet. Point at a page and click its star.',
+          )}
+        </div>
+      )}
 
       <ScrollArea className='min-h-0 flex-1' viewportRef={viewportRef}>
         <div className='relative w-full' style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
-            const page = pages[virtualRow.index]
-            if (!page) return null
+            const row = shown[virtualRow.index]
+            if (!row) return null
+            const { page, index } = row
             return (
               <div
                 key={page.id}
@@ -233,7 +277,7 @@ export function Navigator() {
                 }}
               >
                 <PagePreview
-                  index={virtualRow.index}
+                  index={index}
                   pageId={page.id}
                   label={page.name}
                   status={pageStatus(page)}
@@ -244,6 +288,8 @@ export function Navigator() {
                   canDelete={totalPages > 1}
                   onDelete={handleDeletePage}
                   onBatchDelete={handleBatchDelete}
+                  starred={starred.has(page.id)}
+                  onStar={setStarred}
                 />
               </div>
             )
@@ -268,7 +314,11 @@ type PagePreviewProps = {
   canDelete: boolean
   onDelete: (id: string) => void
   onBatchDelete: () => void
+  starred: boolean
+  onStar: (id: string, starred: boolean) => void
 }
+
+const STAR_ON = 'fill-amber-400 text-amber-500'
 
 const PagePreview = memo(function PagePreview({
   index,
@@ -282,9 +332,14 @@ const PagePreview = memo(function PagePreview({
   canDelete,
   onDelete,
   onBatchDelete,
+  starred,
+  onStar,
 }: PagePreviewProps) {
   const src = pageId ? `${getGetPageThumbnailUrl(pageId)}?size=${200 * THUMBNAIL_DPR}` : undefined
   const { t } = useTranslation()
+  const starLabel = starred
+    ? t('navigator.favourites.remove', 'Remove from favourites')
+    : t('navigator.favourites.add', 'Add to favourites')
 
   return (
     <div
@@ -335,6 +390,28 @@ const PagePreview = memo(function PagePreview({
             <Trash2Icon className='h-3.5 w-3.5' />
           </Button>
         )}
+        {/* Bottom left, clear of the delete button. Shown while set, and on
+            hover otherwise. Its own clicks and keys stay off the row. */}
+        <button
+          type='button'
+          data-testid={`navigator-page-star-${index}`}
+          aria-pressed={starred}
+          aria-label={starLabel}
+          title={starLabel}
+          className={cn(
+            'absolute bottom-0.5 left-0.5 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full bg-background/85 shadow-sm transition-opacity duration-200 hover:scale-110 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-hidden',
+            starred ? 'opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-100',
+          )}
+          onClick={(e) => {
+            e.stopPropagation()
+            onStar(pageId, !starred)
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <StarIcon className={cn('h-3 w-3', starred && STAR_ON)} />
+        </button>
       </div>
       <div className='min-w-0 text-xs'>
         <div className='truncate font-medium'>{label}</div>

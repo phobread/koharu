@@ -8,6 +8,7 @@ import {
   FolderOpenIcon,
   ImageIcon,
   PlusIcon,
+  StarIcon,
   TrashIcon,
   XIcon,
 } from 'lucide-react'
@@ -42,6 +43,7 @@ import {
 } from '@/lib/api/default/default'
 import type { ProjectSummary } from '@/lib/api/schemas'
 import { isTauri } from '@/lib/backend'
+import { setProjectStarred } from '@/lib/io/favourites'
 import { openImageFolder } from '@/lib/io/openFiles'
 import { addOfficialRelease, importKhrFile } from '@/lib/io/pagesIo'
 import { createAndOpenProject, switchProject, uploadPagesByPaths } from '@/lib/io/scene'
@@ -63,6 +65,13 @@ export function WelcomeScreen() {
     return [...all].sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
   }, [projectsData])
   const lastProjectId = useEditorUiStore((s) => s.lastProjectId)
+  const starredIds = useMemo(() => new Set(projectsData?.favourites ?? []), [projectsData])
+  const starredOnly = useEditorUiStore((s) => s.favouriteProjectsOnly)
+  const setStarredOnly = useEditorUiStore((s) => s.setFavouriteProjectsOnly)
+  const shown = useMemo(
+    () => (starredOnly ? projects.filter((p) => starredIds.has(p.id)) : projects),
+    [projects, starredOnly, starredIds],
+  )
 
   const [busy, setBusy] = useState<Busy | 'delete'>(false)
   const [error, setError] = useState<string | null>(null)
@@ -192,6 +201,26 @@ export function WelcomeScreen() {
               </h2>
               <div className='flex items-center gap-3'>
                 {projects.length > 0 && (
+                  <button
+                    type='button'
+                    data-testid='welcome-favourites-only'
+                    aria-pressed={starredOnly}
+                    onClick={() => setStarredOnly(!starredOnly)}
+                    title={
+                      starredOnly
+                        ? t('welcome.favourites.showAll', 'Show all projects')
+                        : t('welcome.favourites.only', 'Show only favourite projects')
+                    }
+                    className={cn(
+                      'flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-[10px] text-muted-foreground transition hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-hidden',
+                      starredOnly && 'bg-amber-400/15 text-foreground',
+                    )}
+                  >
+                    <StarIcon className={cn('size-3', starredOnly && STAR_ON)} />
+                    {t('welcome.favourites.label', 'Favourites')}
+                  </button>
+                )}
+                {projects.length > 0 && (
                   <span className='text-[10px] text-muted-foreground tabular-nums'>
                     {t('welcome.projectCount', {
                       count: projects.length,
@@ -203,13 +232,26 @@ export function WelcomeScreen() {
                 <FreeUpSpace key={projects.length} compact />
               </div>
             </div>
-            {projects.length > 0 ? (
+            {projects.length > 0 && shown.length === 0 ? (
+              <div
+                data-testid='welcome-favourites-empty'
+                className='flex h-48 items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/20'
+              >
+                <p className='text-center text-[11px] text-muted-foreground'>
+                  {t(
+                    'welcome.favourites.empty',
+                    'No favourite projects yet. Point at a cover and click its star.',
+                  )}
+                </p>
+              </div>
+            ) : projects.length > 0 ? (
               <ul className='grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-4 gap-y-5'>
-                {projects.map((p, index) => (
+                {shown.map((p, index) => (
                   <ProjectCard
                     key={p.id}
                     index={index}
                     project={p}
+                    starred={starredIds.has(p.id)}
                     last={p.id === lastProjectId}
                     onOpen={openById}
                     onDeleteRequest={setProjectToDelete}
@@ -272,10 +314,13 @@ function EmptyProjects() {
   )
 }
 
+const STAR_ON = 'fill-amber-400 text-amber-500'
+
 /** A project in the grid: its first page as the cover, name and last edit. */
 function ProjectCard({
   index,
   project,
+  starred,
   last,
   onOpen,
   onDeleteRequest,
@@ -284,6 +329,8 @@ function ProjectCard({
   /** Position in the grid, for the staggered entrance. */
   index: number
   project: ProjectSummary
+  /** A favourite: its star stays on the cover. */
+  starred: boolean
   /** Opened last: the mouse forward button reopens it. */
   last: boolean
   onOpen: (id: string) => void
@@ -300,6 +347,9 @@ function ProjectCard({
     defaultValue: 'Delete {{name}}',
     name: project.name,
   })
+  const starLabel = starred
+    ? t('welcome.favourites.remove', 'Remove from favourites')
+    : t('welcome.favourites.add', 'Add to favourites')
 
   return (
     <li
@@ -369,6 +419,24 @@ function ProjectCard({
         onClick={() => onDeleteRequest(project)}
       >
         <TrashIcon className='h-3.5 w-3.5' />
+      </Button>
+
+      {/* Beside the cover's button, not inside it: a click stars, never opens. */}
+      <Button
+        data-testid={`welcome-star-project-${project.id}`}
+        variant='ghost'
+        size='icon-xs'
+        className={cn(
+          'absolute top-2 left-2 h-7 w-7 bg-background/80 shadow-sm backdrop-blur hover:bg-amber-400/20 focus-visible:opacity-100',
+          starred ? 'opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-100',
+        )}
+        disabled={disabled}
+        aria-pressed={starred}
+        aria-label={starLabel}
+        title={starLabel}
+        onClick={() => setProjectStarred(project.id, !starred)}
+      >
+        <StarIcon className={cn('h-3.5 w-3.5', starred && STAR_ON)} />
       </Button>
     </li>
   )

@@ -84,6 +84,10 @@ type EditorUiState = {
   // the project opened last, for the mouse forward button
   lastProjectId: string | undefined
   setLastProjectId: (id: string | undefined) => void
+
+  // project list: show only the starred projects (until the app closes)
+  favouriteProjectsOnly: boolean
+  setFavouriteProjectsOnly: (only: boolean) => void
 }
 
 const initialState = {
@@ -104,6 +108,7 @@ const initialState = {
   settingsTab: null as string | null,
   readingOrder: 'rtl' as const,
   lastProjectId: undefined as string | undefined,
+  favouriteProjectsOnly: false,
 }
 
 export const useEditorUiStore = create<EditorUiState>()(
@@ -176,6 +181,8 @@ export const useEditorUiStore = create<EditorUiState>()(
       setReadingOrder: (readingOrder) => set({ readingOrder }),
 
       setLastProjectId: (lastProjectId) => set({ lastProjectId }),
+
+      setFavouriteProjectsOnly: (favouriteProjectsOnly) => set({ favouriteProjectsOnly }),
     }),
     {
       name: 'koharu-editor',

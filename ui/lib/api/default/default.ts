@@ -57,12 +57,14 @@ import type {
   Op,
   OpenProjectRequest,
   PageId,
+  ProjectFavourites,
   ProjectSummary,
   ProviderSecretRequest,
   PutMaskParams,
   PutMaskResponse,
   ReadingOrder,
   SceneSnapshot,
+  SetFavouriteRequest,
   StartDownloadRequest,
   StartDownloadResponse,
   StartPipelineRequest,
@@ -2805,6 +2807,89 @@ export const useAddOfficialPagesFromPaths = <TError = unknown, TContext = unknow
 > => {
   return useMutation(getAddOfficialPagesFromPathsMutationOptions(options), queryClient)
 }
+export const getPutPageFavouriteUrl = (id: PageId) => {
+  return `/api/v1/pages/${id}/favourite`
+}
+
+/**
+ * @summary Star or unstar a page of the open project. Answers with the project's
+stars after the change.
+ */
+export const putPageFavourite = async (
+  id: PageId,
+  setFavouriteRequest: SetFavouriteRequest,
+  options?: RequestInit,
+): Promise<ProjectFavourites> => {
+  return fetchApi<ProjectFavourites>(getPutPageFavouriteUrl(id), {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(setFavouriteRequest),
+  })
+}
+
+export const getPutPageFavouriteMutationOptions = <TError = void, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putPageFavourite>>,
+    TError,
+    { id: PageId; data: SetFavouriteRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof putPageFavourite>>,
+  TError,
+  { id: PageId; data: SetFavouriteRequest },
+  TContext
+> => {
+  const mutationKey = ['putPageFavourite']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof putPageFavourite>>,
+    { id: PageId; data: SetFavouriteRequest }
+  > = (props) => {
+    const { id, data } = props ?? {}
+
+    return putPageFavourite(id, data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type PutPageFavouriteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof putPageFavourite>>
+>
+export type PutPageFavouriteMutationBody = SetFavouriteRequest
+export type PutPageFavouriteMutationError = void
+
+/**
+ * @summary Star or unstar a page of the open project. Answers with the project's
+stars after the change.
+ */
+export const usePutPageFavourite = <TError = void, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof putPageFavourite>>,
+      TError,
+      { id: PageId; data: SetFavouriteRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof putPageFavourite>>,
+  TError,
+  { id: PageId; data: SetFavouriteRequest },
+  TContext
+> => {
+  return useMutation(getPutPageFavouriteMutationOptions(options), queryClient)
+}
 export const getAddImageLayerUrl = (id: PageId) => {
   return `/api/v1/pages/${id}/image-layers`
 }
@@ -3715,6 +3800,121 @@ export const useExportCurrentProject = <TError = unknown, TContext = unknown>(
 > => {
   return useMutation(getExportCurrentProjectMutationOptions(options), queryClient)
 }
+export const getGetCurrentFavouritesUrl = () => {
+  return `/api/v1/projects/current/favourites`
+}
+
+export const getCurrentFavourites = async (options?: RequestInit): Promise<ProjectFavourites> => {
+  return fetchApi<ProjectFavourites>(getGetCurrentFavouritesUrl(), {
+    ...options,
+    method: 'GET',
+  })
+}
+
+export const getGetCurrentFavouritesQueryKey = () => {
+  return [`/api/v1/projects/current/favourites`] as const
+}
+
+export const getGetCurrentFavouritesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getCurrentFavourites>>,
+  TError = unknown,
+>(options?: {
+  query?: Partial<UseQueryOptions<Awaited<ReturnType<typeof getCurrentFavourites>>, TError, TData>>
+  request?: SecondParameter<typeof fetchApi>
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {}
+
+  const queryKey = queryOptions?.queryKey ?? getGetCurrentFavouritesQueryKey()
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getCurrentFavourites>>> = ({ signal }) =>
+    getCurrentFavourites({ signal, ...requestOptions })
+
+  return { queryKey, queryFn, gcTime: 300000, retry: 1, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getCurrentFavourites>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetCurrentFavouritesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getCurrentFavourites>>
+>
+export type GetCurrentFavouritesQueryError = unknown
+
+export function useGetCurrentFavourites<
+  TData = Awaited<ReturnType<typeof getCurrentFavourites>>,
+  TError = unknown,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getCurrentFavourites>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCurrentFavourites>>,
+          TError,
+          Awaited<ReturnType<typeof getCurrentFavourites>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetCurrentFavourites<
+  TData = Awaited<ReturnType<typeof getCurrentFavourites>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getCurrentFavourites>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCurrentFavourites>>,
+          TError,
+          Awaited<ReturnType<typeof getCurrentFavourites>>
+        >,
+        'initialData'
+      >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetCurrentFavourites<
+  TData = Awaited<ReturnType<typeof getCurrentFavourites>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getCurrentFavourites>>, TError, TData>
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetCurrentFavourites<
+  TData = Awaited<ReturnType<typeof getCurrentFavourites>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getCurrentFavourites>>, TError, TData>
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+  const queryOptions = getGetCurrentFavouritesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<TData, TError> & {
+    queryKey: DataTag<QueryKey, TData, TError>
+  }
+
+  return withQueryKey(query, queryOptions.queryKey)
+}
+
 export const getImportProjectUrl = () => {
   return `/api/v1/projects/import`
 }
@@ -3851,6 +4051,87 @@ export const useDeleteProject = <TError = void, TContext = unknown>(
   TContext
 > => {
   return useMutation(getDeleteProjectMutationOptions(options), queryClient)
+}
+export const getPutProjectFavouriteUrl = (id: string) => {
+  return `/api/v1/projects/${id}/favourite`
+}
+
+/**
+ * @summary Star or unstar a project in the list. It doesn't have to be open.
+ */
+export const putProjectFavourite = async (
+  id: string,
+  setFavouriteRequest: SetFavouriteRequest,
+  options?: RequestInit,
+): Promise<void> => {
+  return fetchApi<void>(getPutProjectFavouriteUrl(id), {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(setFavouriteRequest),
+  })
+}
+
+export const getPutProjectFavouriteMutationOptions = <TError = void, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putProjectFavourite>>,
+    TError,
+    { id: string; data: SetFavouriteRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof putProjectFavourite>>,
+  TError,
+  { id: string; data: SetFavouriteRequest },
+  TContext
+> => {
+  const mutationKey = ['putProjectFavourite']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof putProjectFavourite>>,
+    { id: string; data: SetFavouriteRequest }
+  > = (props) => {
+    const { id, data } = props ?? {}
+
+    return putProjectFavourite(id, data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type PutProjectFavouriteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof putProjectFavourite>>
+>
+export type PutProjectFavouriteMutationBody = SetFavouriteRequest
+export type PutProjectFavouriteMutationError = void
+
+/**
+ * @summary Star or unstar a project in the list. It doesn't have to be open.
+ */
+export const usePutProjectFavourite = <TError = void, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof putProjectFavourite>>,
+      TError,
+      { id: string; data: SetFavouriteRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof putProjectFavourite>>,
+  TError,
+  { id: string; data: SetFavouriteRequest },
+  TContext
+> => {
+  return useMutation(getPutProjectFavouriteMutationOptions(options), queryClient)
 }
 export const getGetProjectThumbnailUrl = (id: string) => {
   return `/api/v1/projects/${id}/thumbnail`

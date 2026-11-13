@@ -6,6 +6,7 @@ pub mod ai;
 pub mod bootstrap;
 pub mod config;
 pub mod downloads;
+pub mod favourites;
 pub mod fonts;
 pub mod history;
 pub mod llm;

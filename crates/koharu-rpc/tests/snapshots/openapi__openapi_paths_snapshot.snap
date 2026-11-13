@@ -178,6 +178,12 @@ expression: paths
         ],
     ),
     (
+        "/pages/{id}/favourite",
+        [
+            "put",
+        ],
+    ),
+    (
         "/pages/{id}/image-layers",
         [
             "post",
@@ -234,6 +240,12 @@ expression: paths
         ],
     ),
     (
+        "/projects/current/favourites",
+        [
+            "get",
+        ],
+    ),
+    (
         "/projects/import",
         [
             "post",
@@ -243,6 +255,12 @@ expression: paths
         "/projects/{id}",
         [
             "delete",
+        ],
+    ),
+    (
+        "/projects/{id}/favourite",
+        [
+            "put",
         ],
     ),
     (

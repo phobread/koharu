@@ -53,6 +53,7 @@ import type {
   McpConfig,
   MetaInfo,
   PipelineConfig,
+  ProjectFavourites,
   ProjectSummary,
   PutMaskResponse,
   SceneSnapshot,
@@ -804,6 +805,16 @@ export const getAddOfficialPagesFromPathsResponseMock = (
   ...overrideResponse,
 })
 
+export const getPutPageFavouriteResponseMock = (
+  overrideResponse: Partial<Extract<ProjectFavourites, object>> = {},
+): ProjectFavourites => ({
+  pages: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+    faker.string.uuid(),
+  ),
+  project: faker.datatype.boolean(),
+  ...overrideResponse,
+})
+
 export const getAddImageLayerResponseMock = (
   overrideResponse: Partial<Extract<AddImageLayerResponse, object>> = {},
 ): AddImageLayerResponse => ({ node: faker.string.uuid(), ...overrideResponse })
@@ -841,6 +852,9 @@ export const getStartPipelineResponseMock = (
 export const getListProjectsResponseMock = (
   overrideResponse: Partial<Extract<ListProjectsResponse, object>> = {},
 ): ListProjectsResponse => ({
+  favourites: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
+    () => faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ),
   projects: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(
     () => ({
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -874,6 +888,16 @@ export const getPutCurrentProjectResponseMock = (
 
 export const getExportCurrentProjectResponseMock = (): ArrayBuffer =>
   new ArrayBuffer(faker.number.int({ min: 1, max: 64 }))
+
+export const getGetCurrentFavouritesResponseMock = (
+  overrideResponse: Partial<Extract<ProjectFavourites, object>> = {},
+): ProjectFavourites => ({
+  pages: Array.from({ length: faker.number.int({ min: 1, max: 10 }) }, (_, i) => i + 1).map(() =>
+    faker.string.uuid(),
+  ),
+  project: faker.datatype.boolean(),
+  ...overrideResponse,
+})
 
 export const getImportProjectResponseMock = (
   overrideResponse: Partial<Extract<ProjectSummary, object>> = {},
@@ -2015,6 +2039,30 @@ export const getAddOfficialPagesFromPathsMockHandler = (
   )
 }
 
+export const getPutPageFavouriteMockHandler = (
+  overrideResponse?:
+    | ProjectFavourites
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) => Promise<ProjectFavourites> | ProjectFavourites),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    '*/pages/:id/favourite',
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutPageFavouriteResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getAddImageLayerMockHandler = (
   overrideResponse?:
     | AddImageLayerResponse
@@ -2271,6 +2319,30 @@ export const getExportCurrentProjectMockHandler = (
   )
 }
 
+export const getGetCurrentFavouritesMockHandler = (
+  overrideResponse?:
+    | ProjectFavourites
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ProjectFavourites> | ProjectFavourites),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    '*/projects/current/favourites',
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetCurrentFavouritesResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getImportProjectMockHandler = (
   overrideResponse?:
     | ProjectSummary
@@ -2304,6 +2376,25 @@ export const getDeleteProjectMockHandler = (
   return http.delete(
     '*/projects/:id',
     async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      if (typeof overrideResponse === 'function') {
+        await overrideResponse(info)
+      }
+
+      return new HttpResponse(null, { status: 204 })
+    },
+    options,
+  )
+}
+
+export const getPutProjectFavouriteMockHandler = (
+  overrideResponse?:
+    | void
+    | ((info: Parameters<Parameters<typeof http.put>[1]>[0]) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    '*/projects/:id/favourite',
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
       if (typeof overrideResponse === 'function') {
         await overrideResponse(info)
       }
@@ -2486,6 +2577,7 @@ export const getDefaultMock = () => [
   getCreatePagesMockHandler(),
   getCreatePagesFromPathsMockHandler(),
   getAddOfficialPagesFromPathsMockHandler(),
+  getPutPageFavouriteMockHandler(),
   getAddImageLayerMockHandler(),
   getPutMaskMockHandler(),
   getHideOfficialLetteringMockHandler(),
@@ -2497,8 +2589,10 @@ export const getDefaultMock = () => [
   getPutCurrentProjectMockHandler(),
   getDeleteCurrentProjectMockHandler(),
   getExportCurrentProjectMockHandler(),
+  getGetCurrentFavouritesMockHandler(),
   getImportProjectMockHandler(),
   getDeleteProjectMockHandler(),
+  getPutProjectFavouriteMockHandler(),
   getGetProjectThumbnailMockHandler(),
   getGetSceneBinMockHandler(),
   getGetSceneJsonMockHandler(),

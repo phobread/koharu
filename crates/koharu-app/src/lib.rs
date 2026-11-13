@@ -13,6 +13,7 @@ pub mod cancel;
 pub mod cleanup;
 pub mod config;
 pub mod custom_fonts;
+pub mod favourites;
 pub mod google_fonts;
 pub mod history;
 pub mod llm;

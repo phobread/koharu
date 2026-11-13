@@ -2,7 +2,7 @@
 //! `{data.path}/projects/` directory; clients never supply filesystem
 //! paths. A project's `id` is the `.khrproj/` directory basename.
 //!
-//! - `GET    /projects` — list managed projects
+//! - `GET    /projects` — list managed projects, and which are starred
 //! - `POST   /projects` — create a new project (`{name}`), server allocates path
 //! - `POST   /projects/import` — extract a `.khr` archive into a fresh dir + open
 //! - `PUT    /projects/current` — open a managed project by `id`
@@ -14,6 +14,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use camino::Utf8Path;
 use koharu_app::projects as project_dirs;
 use koharu_core::{ImageRole, PageId, ProjectSummary};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub fn router() -> OpenApiRouter<AppState> {
 #[serde(rename_all = "camelCase")]
 pub struct ListProjectsResponse {
     pub projects: Vec<ProjectSummary>,
+    /// Ids of the starred projects (see `favourites.rs`).
+    pub favourites: Vec<String>,
 }
 
 #[utoipa::path(
@@ -51,7 +54,16 @@ pub struct ListProjectsResponse {
 async fn list_projects(State(app): State<AppState>) -> ApiResult<Json<ListProjectsResponse>> {
     let config = (**app.config.load()).clone();
     let projects = project_dirs::list_projects(&config).map_err(ApiError::internal)?;
-    Ok(Json(ListProjectsResponse { projects }))
+    // One small side file per project; a missing or broken one is "no star".
+    let favourites = projects
+        .iter()
+        .filter(|project| koharu_app::favourites::load(Utf8Path::new(&project.path)).project)
+        .map(|project| project.id.clone())
+        .collect();
+    Ok(Json(ListProjectsResponse {
+        projects,
+        favourites,
+    }))
 }
 
 // ---------------------------------------------------------------------------

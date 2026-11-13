@@ -700,6 +700,48 @@
         }
       }
     },
+    "/pages/{id}/favourite": {
+      "put": {
+        "summary": "Star or unstar a page of the open project. Answers with the project's\nstars after the change.",
+        "operationId": "put_page_favourite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Page id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetFavouriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectFavourites"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Page not found"
+          }
+        }
+      }
+    },
     "/pages/{id}/image-layers": {
       "post": {
         "operationId": "add_image_layer",
@@ -1043,6 +1085,23 @@
         }
       }
     },
+    "/projects/current/favourites": {
+      "get": {
+        "operationId": "get_current_favourites",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectFavourites"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/projects/import": {
       "post": {
         "operationId": "import_project",
@@ -1091,6 +1150,44 @@
           },
           "500": {
             "description": "Internal filesystem error"
+          }
+        }
+      }
+    },
+    "/projects/{id}/favourite": {
+      "put": {
+        "summary": "Star or unstar a project in the list. It doesn't have to be open.",
+        "operationId": "put_project_favourite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetFavouriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Invalid project id"
+          },
+          "404": {
+            "description": "Project not found"
           }
         }
       }
@@ -2472,8 +2569,15 @@
       },
       "ListProjectsResponse": {
         "type": "object",
-        "required": ["projects"],
+        "required": ["projects", "favourites"],
         "properties": {
+          "favourites": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the starred projects (see `favourites.rs`)."
+          },
           "projects": {
             "type": "array",
             "items": {
@@ -3353,6 +3457,24 @@
         "type": "string",
         "enum": ["detect", "ocr", "inpaint", "llmGenerate", "render"]
       },
+      "ProjectFavourites": {
+        "type": "object",
+        "description": "The open project's stars.",
+        "required": ["project", "pages"],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageId"
+            },
+            "description": "Starred pages that still exist, in page order."
+          },
+          "project": {
+            "type": "boolean",
+            "description": "Whether the project itself is starred."
+          }
+        }
+      },
       "ProjectMeta": {
         "type": "object",
         "required": ["name", "createdAt", "updatedAt"],
@@ -3541,6 +3663,16 @@
           },
           "scene": {
             "$ref": "#/components/schemas/Scene"
+          }
+        }
+      },
+      "SetFavouriteRequest": {
+        "type": "object",
+        "required": ["favourite"],
+        "properties": {
+          "favourite": {
+            "type": "boolean",
+            "description": "`true` to star, `false` to remove the star."
           }
         }
       },
