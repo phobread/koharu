@@ -19,11 +19,16 @@ Verified on: Windows 11, NVIDIA RTX 4050 Laptop (6 GB, compute 8.9), 2026-07-18.
 | `preprocessor.h … C1189: MSVC traditional preprocessor` | CUDA 13 CCCL rejects MSVC legacy preprocessor | `NVCC_PREPEND_FLAGS=-Xcompiler=/Zc:preprocessor` |
 | `cpp_dialect.h … libcu++ requires at least C++ 17` | CUDA 13 dropped C++14; candle passes no `-std` | `NVCC_APPEND_FLAGS=-std=c++17` |
 | `Unable to find libclang` (building `koharu-llm`) | llama.cpp bindings need libclang | Install LLVM, set `LIBCLANG_PATH` |
+| `libz-sys` … ``is `cmake` not installed?`` | `libz-sys` builds zlib-ng with CMake, and `cmake` is not on `PATH` | Put a CMake `bin` folder on `PATH` (see Prerequisites) |
 
 ## Prerequisites
 
 - **NVIDIA driver** new enough for CUDA 13 (`nvidia-smi` should report CUDA ≥ 13).
-- **Visual Studio 2022** with the C++ workload (provides `cl.exe`).
+- **Visual Studio 2022** with the C++ workload (provides `cl.exe`). The Build Tools
+  edition is enough.
+- **CMake on `PATH`.** The C++ workload installs one but does not add it to `PATH`;
+  add `<VS install>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`, or install
+  CMake separately.
 - **Rust ≥ 1.95** (2024 edition) and **Bun ≥ 1.0**.
 
 ## 1. CUDA Toolkit 13.3 Update 1

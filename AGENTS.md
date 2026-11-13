@@ -47,13 +47,24 @@ These are non-obvious and were the source of every build failure during setup
    or "libcu++ requires at least C++ 17", make sure they are present:
    - `NVCC_PREPEND_FLAGS=-Xcompiler=/Zc:preprocessor`
    - `NVCC_APPEND_FLAGS=-std=c++17`
-5. **MSVC** (Visual Studio 2022 Community) and **Rust ≥ 1.95** / **Bun ≥ 1.0** are
-   installed. `scripts/dev.ts` auto-discovers `nvcc` and `cl.exe` on Windows. Its
-   directory-walk fallback for MSVC is fork-only (upstream's vswhere path assumes a VS
-   Installer dir that doesn't exist here) — keep it when porting upstream changes.
-6. **`cuda` is NOT a default feature** of the `koharu` crate — you must pass
+5. **MSVC** (Visual Studio 2022 **Build Tools**, C++ workload, at
+   `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`) and
+   **Rust ≥ 1.95** / **Bun ≥ 1.0** are installed. `scripts/dev.ts` auto-discovers
+   `nvcc` and `cl.exe` on Windows. Its directory-walk fallback for MSVC is fork-only
+   (for installs with no vswhere at the standard VS Installer path) — keep it when
+   porting upstream changes.
+6. **CMake must be on `PATH`.** `libz-sys` builds zlib-ng by calling `cmake`, and the
+   build fails early with "is `cmake` not installed?" without it. The Build Tools
+   install ships CMake but does not add it to `PATH`; its folder
+   (`…\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`) is on the
+   user `PATH` on this machine.
+7. **`cuda` is NOT a default feature** of the `koharu` crate — you must pass
    `--features cuda` explicitly, or use `bun run build` / `bun run dev` (the default
    desktop feature path on Windows/Linux is `cuda`).
+
+The whole toolchain was uninstalled on 2026-10-05 and reinstalled on 2026-11-11
+(Build Tools 17.14 / MSVC 14.44, CUDA 13.3 Update 1, cuDNN 9.23.2.1, LLVM 23.1.5,
+Rust 1.99.1, Bun 1.4.4). A full build from an empty `target/` took about 8.5 minutes.
 
 ## Build & run
 
@@ -76,7 +87,6 @@ Build gotchas:
   `bun cargo build -p koharu` writes only `koharu.exe`, not the launched `KoharuFORK.exe`.
 - **Stop the running app first** if it runs from `target/` or the final binary rename
   fails with "Access is denied (os error 5)". The compile cache makes the rerun fast.
-  `target/` was deleted on 2026-10-01, so the next build is a full rebuild.
 - Agent shells may set `NoDefaultCurrentDirectoryInExePath=1`, which breaks vswhere
   discovery in `scripts/dev.ts`: clear it for the build
   (`env -u NoDefaultCurrentDirectoryInExePath bun run build`).
