@@ -2,6 +2,7 @@ mod flat_fill;
 mod latents;
 mod precomputed;
 pub mod qwen;
+mod rough_fill;
 mod scheduler;
 mod tint;
 mod transformer;
@@ -476,13 +477,45 @@ impl Flux2Klein {
                 });
             let generated = match flat {
                 Some(generated) => generated,
-                None => self.generate_crop(
-                    &image_crop,
-                    &generation_mask_crop,
-                    reference_image,
-                    &crop_options_for(&crop_options, bounds),
-                    crop_index,
-                )?,
+                None => {
+                    let current = image_crop.to_rgb8();
+                    let erase = composite_mask_crop.to_luma8();
+                    let plain = rough_fill::plain_surroundings(
+                        &current,
+                        &erase,
+                        &generation_mask_crop.to_luma8(),
+                        bubbles_crop.as_ref(),
+                    );
+                    let rough = plain.as_ref().map(|plain| {
+                        DynamicImage::ImageRgb8(rough_fill::rough_fill(
+                            &current,
+                            &erase,
+                            bubbles_crop.as_ref(),
+                            &plain.bubble_colours,
+                        ))
+                    });
+                    let start = plain.as_ref().zip(rough.as_ref()).map(|(plain, rough)| {
+                        let bubbles: Vec<u8> =
+                            plain.bubble_colours.iter().map(|(id, _)| *id).collect();
+                        tracing::info!(
+                            crop_index,
+                            ?bubbles,
+                            "Flux2 crop starts from the picture around plain lettering"
+                        );
+                        RoughStart {
+                            rough,
+                            weights: &plain.weights,
+                        }
+                    });
+                    self.generate_crop(
+                        &image_crop,
+                        &generation_mask_crop,
+                        reference_image,
+                        &crop_options_for(&crop_options, bounds),
+                        start,
+                        crop_index,
+                    )?
+                }
             };
             let generation_ms = generation_started.elapsed().as_millis();
             let composite_started = Instant::now();
@@ -517,9 +550,10 @@ impl Flux2Klein {
         mask: &DynamicImage,
         reference_image: Option<&DynamicImage>,
         options: &Flux2InpaintOptions,
+        start: Option<RoughStart<'_>>,
         crop_index: usize,
     ) -> Result<DynamicImage> {
-        let error = match self.inpaint_full_frame(image, mask, reference_image, options) {
+        let error = match self.inpaint_full_frame(image, mask, reference_image, options, start) {
             Err(error) if is_out_of_memory(&error) => error,
             result => return result,
         };
@@ -534,7 +568,7 @@ impl Flux2Klein {
         );
         release_cuda_temporary_memory(&self.device)
             .context("GPU unusable after Flux2 ran out of memory")?;
-        self.inpaint_full_frame(image, mask, reference_image, &retry)
+        self.inpaint_full_frame(image, mask, reference_image, &retry, start)
             .context("Flux2 crop failed again after running out of GPU memory")
     }
 
@@ -544,6 +578,7 @@ impl Flux2Klein {
         mask: &DynamicImage,
         reference_image: Option<&DynamicImage>,
         options: &Flux2InpaintOptions,
+        start: Option<RoughStart<'_>>,
     ) -> Result<DynamicImage> {
         let _cuda_cleanup = CudaTemporaryMemoryCleanup::new(&self.device);
         let mut phases = PhaseTimer::new(&self.device);
@@ -556,6 +591,16 @@ impl Flux2Klein {
             let image_latents = self
                 .encode_image_latents(&rgb)
                 .context("Flux2 VAE encode")?;
+            let rough_latents = match start {
+                Some(start) => {
+                    let (rough, _) = prepare_rgb_image(start.rough, options.max_pixels);
+                    Some(
+                        self.encode_image_latents(&rough)
+                            .context("Flux2 VAE encode of the rough fill")?,
+                    )
+                }
+                None => None,
+            };
             phases.mark("vae_encode")?;
             let (batch, channels, packed_h, packed_w) = image_latents.dims4()?;
             if batch != 1 || channels != 128 {
@@ -600,13 +645,43 @@ impl Flux2Klein {
             let noise = Tensor::randn(0f32, 1f32, image_latents.shape(), &self.device)?;
             let noise_packed = pack_latents(&noise)?;
             let initial_timestep = timesteps[start_index];
+            // With a rough start the fill starts as usual, and its area is
+            // swapped for the noised rough fill at the first step whose noise
+            // level is at most ROUGH_START_SIGMA. Swapped in at the very start,
+            // the rough fill is drowned by the noise; much later, the model
+            // keeps it as it is (blurry) instead of drawing it.
+            let blend = match (start, &rough_latents) {
+                (Some(RoughStart { weights, .. }), Some(rough)) => timesteps
+                    .iter()
+                    .enumerate()
+                    .skip(start_index + 1)
+                    .find(|(_, t)| **t / 1000.0 <= ROUGH_START_SIGMA)
+                    .map(|(index, _)| -> Result<_> {
+                        Ok((
+                            index,
+                            mask_to_packed_tensor(weights, packed_h, packed_w, &self.device)?,
+                            pack_latents(rough)?,
+                        ))
+                    })
+                    .transpose()?,
+                _ => None,
+            };
             let mut latents =
                 pack_latents(&scheduler.scale_noise(&image_latents, initial_timestep, &noise)?)?;
+            drop(rough_latents);
             let keep_mask = ((&latent_mask * -1.0)? + 1.0)?;
             drop(noise);
             phases.mark("prepare")?;
 
             for step_idx in start_index..timesteps.len() {
+                if let Some((_, weights, rough)) =
+                    blend.as_ref().filter(|(index, _, _)| *index == step_idx)
+                {
+                    let noised =
+                        scheduler.scale_noise(rough, timesteps[step_idx], &noise_packed)?;
+                    let keep = ((weights * -1.0)? + 1.0)?;
+                    latents = (weights.broadcast_mul(&noised)? + keep.broadcast_mul(&latents)?)?;
+                }
                 let timestep = Tensor::from_vec(
                     vec![scheduler.timestep_for_model(step_idx) as f32],
                     (1,),
@@ -704,6 +779,22 @@ impl Flux2Klein {
         Ok(rgb)
     }
 }
+
+/// A crop's fill started from a rough fill of its lettering instead of only
+/// from noise (see `rough_fill`).
+#[derive(Clone, Copy)]
+struct RoughStart<'a> {
+    /// The crop with its lettering roughly filled in.
+    rough: &'a DynamicImage,
+    /// Where the rough fill is used (255), crop-sized.
+    weights: &'a GrayImage,
+}
+
+/// The noise level at which a rough start is swapped in: after the first of
+/// two steps (sigma 1.0 -> about 0.89), after the second of four. On the dark
+/// Ruination 0062 panel, swapping it in at about 0.72 left it as blurry as it
+/// was, and starting from it at 1.0 changed nothing.
+const ROUGH_START_SIGMA: f64 = 0.9;
 
 /// Per-phase GPU time of one crop, logged at debug level. The device is only
 /// synchronized at phase boundaries while debug logging is on, so normal runs
@@ -1539,7 +1630,7 @@ mod tests {
                 let gen_mask = generation.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
                 let paste_mask =
                     composite.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-                let generated = model.inpaint_full_frame(&crop, &gen_mask, None, &options)?;
+                let generated = model.inpaint_full_frame(&crop, &gen_mask, None, &options, None)?;
                 let name = format!("{tag}-crop-{index}");
                 crop.save(dir.join(format!("{name}-source.png")))?;
                 generated.save(dir.join(format!("{name}-generated.png")))?;
@@ -1651,7 +1742,7 @@ mod tests {
         let seeded = || -> Result<RgbImage> {
             model.device.set_seed(7)?;
             Ok(model
-                .inpaint_full_frame(&image, &mask, None, &options)?
+                .inpaint_full_frame(&image, &mask, None, &options, None)?
                 .to_rgb8())
         };
 
@@ -1703,7 +1794,7 @@ mod tests {
 
             hold()?;
             let started = Instant::now();
-            let probe = match model.inpaint_full_frame(&image, &mask, None, &options) {
+            let probe = match model.inpaint_full_frame(&image, &mask, None, &options, None) {
                 Ok(_) => "fits".to_string(),
                 Err(error) => {
                     assert!(is_out_of_memory(&error), "{error:#}");
@@ -1715,7 +1806,7 @@ mod tests {
             release();
             hold()?;
             let started = Instant::now();
-            let retried = match model.generate_crop(&image, &mask, None, &options, 0) {
+            let retried = match model.generate_crop(&image, &mask, None, &options, None, 0) {
                 Ok(output) => {
                     assert_eq!(output.dimensions(), image.dimensions());
                     "ok".to_string()
