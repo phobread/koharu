@@ -41,6 +41,7 @@ import { usePointerToDocument } from '@/hooks/usePointerToDocument'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import type { Node, Transform } from '@/lib/api/schemas'
 import { BRUSH_RING_MIN_VISIBLE_PX } from '@/lib/brushSize'
+import { hideOfficialLetteringAt } from '@/lib/io/hideOfficialLettering'
 import { applyOp, deleteTextNodes } from '@/lib/io/scene'
 import { mergeBlocks, splitBlock } from '@/lib/io/splitNode'
 import { uninpaintBlocks } from '@/lib/io/uninpaintBlock'
@@ -84,6 +85,9 @@ export function Workspace() {
   const inpaintedHash = useMemo(() => (page ? findImageBlob(page, 'inpainted') : null), [page])
   const brushLayerHash = useMemo(() => (page ? findMaskBlob(page, 'brushInpaint') : null), [page])
   const renderedHash = useMemo(() => (page ? findImageBlob(page, 'rendered') : null), [page])
+  // A page with an official release underneath: its lettering can be hidden
+  // by a right-click on it.
+  const hasOfficial = useMemo(() => !!page && findImageBlob(page, 'official') !== null, [page])
 
   const imageData = useBlobData(imageHash ?? undefined)
   const segmentData = useBlobData(segmentHash ?? undefined)
@@ -227,6 +231,7 @@ export function Workspace() {
 
   const {
     contextMenuNodeId,
+    contextMenuPoint,
     handleContextMenu,
     handleDeleteBlock,
     handleSplitBlock,
@@ -254,8 +259,13 @@ export function Workspace() {
     onSplit: (nodeId) => {
       void splitTextNode(nodeId)
     },
+    menuOnPicture: hasOfficial,
   })
   const { t } = useTranslation()
+  const hideOfficialLetteringHere = () => {
+    if (!page || !contextMenuPoint) return
+    void hideOfficialLetteringAt(page.id, contextMenuPoint, t)
+  }
 
   useGesture(
     {
@@ -569,6 +579,15 @@ export function Workspace() {
                         })
                       : t('workspace.deleteBlock')}
                   </ContextMenuItem>
+                  {hasOfficial && (
+                    <ContextMenuItem
+                      data-testid='workspace-hide-official-lettering'
+                      disabled={contextMenuPoint === null}
+                      onSelect={hideOfficialLetteringHere}
+                    >
+                      {t('workspace.hideOfficialLettering', "Hide the release's lettering here")}
+                    </ContextMenuItem>
+                  )}
                 </ContextMenuContent>
               </ContextMenu>
             ) : (

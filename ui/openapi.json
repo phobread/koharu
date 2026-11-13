@@ -822,6 +822,45 @@
         }
       }
     },
+    "/pages/{id}/official/hide-lettering": {
+      "post": {
+        "summary": "Hide the piece of the official release's lettering at a point of the\npage — a line the release put where the raw page has none, which cleanup\nkeeps because no text box claims it. Puts an empty text box over the whole\npiece and cleans that spot again, as one undo step; later cleanups leave\nthe lettering out for as long as the box is there.",
+        "operationId": "hide_official_lettering",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Page id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideOfficialLetteringRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HideOfficialLetteringResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pages/{id}/thumbnail": {
       "get": {
         "operationId": "get_page_thumbnail",
@@ -2184,6 +2223,45 @@
         "type": "string",
         "description": "Axis of a two-colour fill gradient, in the text's local (unrotated) frame.",
         "enum": ["horizontal", "vertical"]
+      },
+      "HideOfficialLetteringRequest": {
+        "type": "object",
+        "required": ["x", "y"],
+        "properties": {
+          "x": {
+            "type": "number",
+            "format": "float",
+            "description": "The point on the page (in page pixels) the lettering is at."
+          },
+          "y": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "HideOfficialLetteringResponse": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "node": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeId",
+                "description": "The empty text box put over the lettering (when hidden)."
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/HideOfficialLetteringStatus"
+          }
+        }
+      },
+      "HideOfficialLetteringStatus": {
+        "type": "string",
+        "enum": ["hidden", "nothingThere", "stillShown"]
       },
       "HistoryResult": {
         "type": "object",

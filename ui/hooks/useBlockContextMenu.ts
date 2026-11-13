@@ -4,7 +4,7 @@ import { useState } from 'react'
 import type React from 'react'
 
 import { isTextNode } from '@/hooks/useCurrentPage'
-import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
+import type { DocumentPointer, PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import type { Page } from '@/lib/api/schemas'
 import { displayBox } from '@/lib/displayBox'
 
@@ -14,11 +14,16 @@ type BlockContextMenuOptions = {
   onSelect: (nodeId: string | null) => void
   onRemove: (nodeId: string) => void
   onSplit: (nodeId: string) => void
+  /** Open the menu on the picture itself too: the page has actions that
+   * work on a point of it rather than on a box. */
+  menuOnPicture?: boolean
 }
 
 /**
  * Right-click on a text node pops the context menu. `onSelect(null)` / clear
  * on empty-space right-click. `onRemove(id)` triggered by menu's delete item.
+ * With `menuOnPicture`, a right-click that hits no box opens the menu as
+ * well and `contextMenuPoint` holds where on the page it was.
  */
 export function useBlockContextMenu({
   page,
@@ -26,8 +31,10 @@ export function useBlockContextMenu({
   onSelect,
   onRemove,
   onSplit,
+  menuOnPicture = false,
 }: BlockContextMenuOptions) {
   const [contextMenuNodeId, setContextMenuNodeId] = useState<string | null>(null)
+  const [contextMenuPoint, setContextMenuPoint] = useState<DocumentPointer | null>(null)
 
   const handleContextMenu = (event: React.MouseEvent<HTMLElement>) => {
     if (!page) return
@@ -35,6 +42,7 @@ export function useBlockContextMenu({
     if (!point) {
       event.preventDefault()
       setContextMenuNodeId(null)
+      setContextMenuPoint(null)
       onSelect(null)
       return
     }
@@ -49,9 +57,12 @@ export function useBlockContextMenu({
     if (hitId) {
       onSelect(hitId)
       setContextMenuNodeId(hitId)
+      setContextMenuPoint(null)
     } else {
-      event.preventDefault()
+      // Without an action for the picture the menu has nothing to offer.
+      if (!menuOnPicture) event.preventDefault()
       setContextMenuNodeId(null)
+      setContextMenuPoint(menuOnPicture ? point : null)
       onSelect(null)
     }
   }
@@ -68,10 +79,14 @@ export function useBlockContextMenu({
     setContextMenuNodeId(null)
   }
 
-  const clearContextMenu = () => setContextMenuNodeId(null)
+  const clearContextMenu = () => {
+    setContextMenuNodeId(null)
+    setContextMenuPoint(null)
+  }
 
   return {
     contextMenuNodeId,
+    contextMenuPoint,
     handleContextMenu,
     handleDeleteBlock,
     handleSplitBlock,

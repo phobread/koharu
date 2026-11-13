@@ -40,7 +40,7 @@ use imageproc::morphology::{dilate, open};
 use imageproc::region_labelling::{Connectivity, connected_components};
 use koharu_core::{
     BlobRef, ImageData, ImageDataPatch, ImageRole, MaskRole, Node, NodeDataPatch, NodeId, NodeKind,
-    NodePatch, Op, Page, PageId, Scene, Transform,
+    NodePatch, Op, Page, PageId, Region, Scene, TextData, Transform,
 };
 use koharu_ml::{quad_bbox, rotated_box_corners};
 use koharu_renderer::text::latin::{BalloonShape, BubbleIndex, LayoutBox};
@@ -524,6 +524,339 @@ fn image_blob_op(
 }
 
 // ---------------------------------------------------------------------------
+// Hiding a piece of the release's lettering
+// ---------------------------------------------------------------------------
+
+/// A click this close to the release's lettering means that lettering: this
+/// share of the page width...
+const HIDE_REACH_FRAC: f32 = 0.01;
+/// ...and at least this many pixels.
+const HIDE_REACH_MIN: u32 = 20;
+/// The empty box put over hidden lettering reaches this far past it.
+const HIDE_BOX_MARGIN: u32 = 6;
+/// Cleanup's erasure reaches at most this far past an erase-mask pixel (the
+/// block dilation of `koharu-ml`'s mask expansion, 12 px at most, and room
+/// for rounding).
+const ERASE_REACH: u8 = 16;
+
+/// What hiding the release's lettering at a point comes to.
+pub enum Hide {
+    /// The page has no official release (or one of another size).
+    NoRelease,
+    /// None of the release's lettering comes over at that point.
+    NothingThere,
+    /// The lettering there would come over even with a box on it (in a
+    /// bubble, lettering that goes with a moan the owner didn't box).
+    StillShown,
+    Hidden(HidePlan),
+}
+
+/// The edits that hide a piece of the release's lettering.
+pub struct HidePlan {
+    /// The empty text box put over the lettering.
+    pub node: NodeId,
+    /// One batch: the box and, unless `reclean` is set, the cleaned layer
+    /// without the lettering.
+    pub ops: Vec<Op>,
+    /// Set when cleanup erases something where the lettering was (a repair
+    /// stroke over it, say): the inpainter has to clean this region again,
+    /// from the source, on the scene with `ops` applied.
+    pub reclean: Option<Region>,
+}
+
+/// Plan hiding the release's lettering at (`x`, `y`) of `page`: a line the
+/// release put where the raw page has none, so that nothing ties it to a box
+/// of the owner's. An empty text box goes over the whole piece — which makes
+/// the spot the owner's, for this and every later cleanup — and the spot goes
+/// back to what cleanup makes of the raw page there. The scene is not
+/// touched; the caller applies `ops` as one batch.
+pub fn plan_hide(scene: &Scene, page: PageId, blobs: &BlobStore, x: f32, y: f32) -> Result<Hide> {
+    let page_id = page;
+    let page = scene
+        .page(page_id)
+        .with_context(|| format!("page {page_id} not found"))?;
+    if page.official_node().is_none() {
+        return Ok(Hide::NoRelease);
+    }
+    let (Some(source), Some(official)) = (
+        load_role(page, ImageRole::Source, blobs)?,
+        load_role(page, ImageRole::Official, blobs)?,
+    ) else {
+        return Ok(Hide::NoRelease);
+    };
+    let (w, h) = source.dimensions();
+    if official.dimensions() != (w, h) {
+        return Ok(Hide::NoRelease);
+    }
+    let on_page =
+        x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32;
+    if !on_page {
+        return Ok(Hide::NothingThere);
+    }
+    let sized = |mask: Option<DynamicImage>| {
+        mask.map(|m| m.to_luma8())
+            .filter(|m| m.dimensions() == (w, h))
+    };
+    let erase = sized(load_mask(page, MaskRole::Segment, blobs)?);
+    let bubbles = sized(load_mask(page, MaskRole::Bubble, blobs)?);
+    let mut boxes = page
+        .nodes
+        .values()
+        .filter(|node| matches!(node.kind, NodeKind::Text(_)))
+        .map(|node| node.transform)
+        .collect::<Vec<_>>();
+    let raw = source.to_rgba8();
+    let official = official.to_rgba8();
+    let before = decide(&raw, &official, &boxes, erase.as_ref(), bubbles.as_ref());
+    let Some(lettering) = lettering_at(&before, bubbles.as_ref(), (x as u32, y as u32)) else {
+        return Ok(Hide::NothingThere);
+    };
+
+    let rect = lettering.bounds.grown(HIDE_BOX_MARGIN, w, h);
+    let node = Node {
+        id: NodeId::new(),
+        transform: Transform {
+            x: rect.x0 as f32,
+            y: rect.y0 as f32,
+            width: (rect.x1 - rect.x0) as f32,
+            height: (rect.y1 - rect.y0) as f32,
+            rotation_deg: 0.0,
+        },
+        visible: true,
+        // As the editor makes a box drawn by hand.
+        kind: NodeKind::Text(TextData {
+            lock_layout_box: true,
+            ..Default::default()
+        }),
+    };
+    boxes.push(node.transform);
+    let after = piece_mask(&raw, &official, &boxes, erase.as_ref(), bubbles.as_ref());
+    let shown = lettering
+        .pixels
+        .iter()
+        .filter(|(x, y)| after.get_pixel(*x, *y).0[0] != 0)
+        .count();
+    if shown * 2 > lettering.pixels.len() {
+        return Ok(Hide::StillShown);
+    }
+
+    // What the box takes from the release: the lettering, and the release's
+    // copy of the art around it.
+    let mut taken = GrayImage::new(w, h);
+    let mut bounds: Option<Rect> = None;
+    for (x, y, p) in taken.enumerate_pixels_mut() {
+        if before.mask.get_pixel(x, y).0[0] == 0 || after.get_pixel(x, y).0[0] != 0 {
+            continue;
+        }
+        p.0[0] = 255;
+        let b = bounds.get_or_insert(Rect {
+            x0: x,
+            y0: y,
+            x1: x + 1,
+            y1: y + 1,
+        });
+        b.x0 = b.x0.min(x);
+        b.y0 = b.y0.min(y);
+        b.x1 = b.x1.max(x + 1);
+        b.y1 = b.y1.max(y + 1);
+    }
+
+    let mut plan = HidePlan {
+        node: node.id,
+        ops: vec![Op::AddNode {
+            page: page_id,
+            node,
+            at: page.nodes.len(),
+        }],
+        reclean: None,
+    };
+    let cleaned = page.nodes.iter().find_map(|(id, node)| match &node.kind {
+        NodeKind::Image(img) if img.role == ImageRole::Inpainted => Some((*id, img.blob.clone())),
+        _ => None,
+    });
+    // A page not cleaned yet only gets the box.
+    let (Some(bounds), Some((cleaned_id, cleaned_blob))) = (bounds, cleaned) else {
+        return Ok(Hide::Hidden(plan));
+    };
+    let erases = erase.as_ref().is_some_and(|erase| {
+        let reached = dilate(&taken, Norm::LInf, ERASE_REACH);
+        erase
+            .pixels()
+            .zip(reached.pixels())
+            .any(|(e, t)| e.0[0] != 0 && t.0[0] != 0)
+    });
+    if erases {
+        let r = bounds.grown(ERASE_REACH as u32, w, h);
+        plan.reclean = Some(Region {
+            x: r.x0,
+            y: r.y0,
+            width: r.x1 - r.x0,
+            height: r.y1 - r.y0,
+        });
+        return Ok(Hide::Hidden(plan));
+    }
+    // Cleanup erases nothing there, so the spot is the raw page as it is.
+    let cleaned = blobs
+        .load_image(&cleaned_blob)
+        .context("load the cleaned page")?;
+    if cleaned.dimensions() != (w, h) {
+        tracing::warn!(
+            page = %page_id,
+            cleaned = ?cleaned.dimensions(),
+            source = ?(w, h),
+            "cleaned page and source differ in size; hiding the release's lettering with the box alone"
+        );
+        return Ok(Hide::Hidden(plan));
+    }
+    let mut out = cleaned.to_rgba8();
+    for y in bounds.y0..bounds.y1 {
+        for x in bounds.x0..bounds.x1 {
+            if taken.get_pixel(x, y).0[0] != 0 {
+                out.put_pixel(x, y, *raw.get_pixel(x, y));
+            }
+        }
+    }
+    let out = if cleaned.color().has_alpha() {
+        DynamicImage::ImageRgba8(out)
+    } else {
+        DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(out).to_rgb8())
+    };
+    let blob = blobs.put_webp(&out).context("store the cleaned page")?;
+    if blob != cleaned_blob {
+        plan.ops
+            .push(image_blob_op(page_id, cleaned_id, blob, w, h, None));
+    }
+    Ok(Hide::Hidden(plan))
+}
+
+/// What a cleanup of `page` works from: its boxes and the images and masks
+/// the rule reads. An edit planned on one scene is only right for another
+/// while these are equal.
+pub fn cleanup_inputs(page: &Page) -> Vec<(NodeId, [f32; 5], Option<BlobRef>)> {
+    page.nodes
+        .iter()
+        .filter_map(|(id, node)| {
+            let blob = match &node.kind {
+                NodeKind::Text(_) => None,
+                NodeKind::Image(img)
+                    if matches!(
+                        img.role,
+                        ImageRole::Source | ImageRole::Official | ImageRole::Inpainted
+                    ) =>
+                {
+                    Some(img.blob.clone())
+                }
+                NodeKind::Mask(mask)
+                    if matches!(mask.role, MaskRole::Segment | MaskRole::Bubble) =>
+                {
+                    Some(mask.blob.clone())
+                }
+                _ => return None,
+            };
+            let t = &node.transform;
+            Some((*id, [t.x, t.y, t.width, t.height, t.rotation_deg], blob))
+        })
+        .collect()
+}
+
+/// A piece of the release's lettering: its pixels and their bounds.
+struct Lettering {
+    bounds: Rect,
+    pixels: Vec<(u32, u32)>,
+}
+
+/// The piece of the release's lettering a click at `at` means: the nearest
+/// within reach, with the rest of its line — or, for a sound effect's big
+/// stroke, that stroke alone, as the rule groups them. Only lettering that
+/// comes over counts, and only the release's own: where it painted the raw's
+/// lettering out there is nothing to hide.
+fn lettering_at(
+    decision: &Decision,
+    bubbles: Option<&GrayImage>,
+    (px, py): (u32, u32),
+) -> Option<Lettering> {
+    let (w, h) = decision.mask.dimensions();
+    let letters = GrayImage::from_fn(w, h, |x, y| {
+        let theirs = decision.theirs.get_pixel(x, y).0[0] != 0
+            && decision.raw_letters.get_pixel(x, y).0[0] == 0
+            && decision.mask.get_pixel(x, y).0[0] != 0;
+        Luma([if theirs { 255 } else { 0 }])
+    });
+    let reach = ((w as f32 * HIDE_REACH_FRAC) as u32).max(HIDE_REACH_MIN);
+    let mut seed: Option<(u64, u32, u32)> = None;
+    for y in py.saturating_sub(reach)..(py + reach + 1).min(h) {
+        for x in px.saturating_sub(reach)..(px + reach + 1).min(w) {
+            if letters.get_pixel(x, y).0[0] == 0 {
+                continue;
+            }
+            let (dx, dy) = (x.abs_diff(px) as u64, y.abs_diff(py) as u64);
+            let distance = dx * dx + dy * dy;
+            if seed.is_none_or(|(best, ..)| distance < best) {
+                seed = Some((distance, x, y));
+            }
+        }
+    }
+    let (_, sx, sy) = seed?;
+
+    let strokes = connected_components(&letters, Connectivity::Eight, Luma([0u8]));
+    let big_side = ((w as f32 * BIG_STROKE_FRAC) as u32).max(BIG_STROKE_MIN);
+    let big = label_bounds(&strokes)
+        .into_iter()
+        .filter(|(_, b)| (b.x1 - b.x0).min(b.y1 - b.y0) >= big_side)
+        .map(|(label, _)| label)
+        .collect::<std::collections::HashSet<_>>();
+    let seed_stroke = strokes.get_pixel(sx, sy).0[0];
+    let mut pixels = Vec::new();
+    if big.contains(&seed_stroke) {
+        for (x, y, p) in strokes.enumerate_pixels() {
+            if p.0[0] == seed_stroke {
+                pixels.push((x, y));
+            }
+        }
+    } else {
+        let mut small = letters;
+        for (x, y, p) in strokes.enumerate_pixels() {
+            if big.contains(&p.0[0]) {
+                small.put_pixel(x, y, Luma([0]));
+            }
+        }
+        // Letters this close together are one line; a line never runs across
+        // a bubble's edge (pixels only join their own zone: a bubble's id,
+        // or 255 for the artwork).
+        let mut zones = dilate(&small, Norm::LInf, GROUP_RADIUS);
+        for (x, y, p) in zones.enumerate_pixels_mut() {
+            if p.0[0] != 0 {
+                p.0[0] = match bubbles.map_or(0, |b| b.get_pixel(x, y).0[0]) {
+                    0 => 255,
+                    id => id,
+                };
+            }
+        }
+        let lines = connected_components(&zones, Connectivity::Eight, Luma([0u8]));
+        let line = lines.get_pixel(sx, sy).0[0];
+        for (x, y, p) in small.enumerate_pixels() {
+            if p.0[0] != 0 && lines.get_pixel(x, y).0[0] == line {
+                pixels.push((x, y));
+            }
+        }
+    }
+    let (first_x, first_y) = *pixels.first()?;
+    let mut bounds = Rect {
+        x0: first_x,
+        y0: first_y,
+        x1: first_x + 1,
+        y1: first_y + 1,
+    };
+    for &(x, y) in &pixels {
+        bounds.x0 = bounds.x0.min(x);
+        bounds.y0 = bounds.y0.min(y);
+        bounds.x1 = bounds.x1.max(x + 1);
+        bounds.y1 = bounds.y1.max(y + 1);
+    }
+    Some(Lettering { bounds, pixels })
+}
+
+// ---------------------------------------------------------------------------
 // The rule
 // ---------------------------------------------------------------------------
 
@@ -608,10 +941,36 @@ pub fn piece_mask(
     erase: Option<&GrayImage>,
     bubbles: Option<&GrayImage>,
 ) -> GrayImage {
+    decide(raw, official, boxes, erase, bubbles).mask
+}
+
+/// What the rule makes of a page.
+struct Decision {
+    /// Where the page takes the release's pixels (255): [`piece_mask`].
+    mask: GrayImage,
+    /// The clearly changed pixels given to the release, before the faint
+    /// differences around them join in.
+    theirs: GrayImage,
+    /// Where only the raw has lettering.
+    raw_letters: GrayImage,
+}
+
+fn decide(
+    raw: &RgbaImage,
+    official: &RgbaImage,
+    boxes: &[Transform],
+    erase: Option<&GrayImage>,
+    bubbles: Option<&GrayImage>,
+) -> Decision {
     let (w, h) = raw.dimensions();
     let mut out = GrayImage::new(w, h);
+    let nothing = |mask: GrayImage| Decision {
+        mask,
+        theirs: GrayImage::new(w, h),
+        raw_letters: GrayImage::new(w, h),
+    };
     if official.dimensions() != (w, h) || w == 0 || h == 0 {
-        return out;
+        return nothing(out);
     }
     let erase = erase.filter(|m| m.dimensions() == (w, h));
     let bubbles = bubbles.filter(|m| m.dimensions() == (w, h));
@@ -632,7 +991,7 @@ pub fn piece_mask(
         },
     );
     if !changed.pixels().any(|p| p.0[0] != 0) {
-        return out;
+        return nothing(out);
     }
     let (own_distance, (raw_letters, erased)) = rayon::join(
         || distance_transform(&owners.own, Norm::LInf),
@@ -675,6 +1034,7 @@ pub fn piece_mask(
         || union(&ours_in, &ours_out),
         || union(&theirs_in, &theirs_out),
     );
+    let their_lettering = theirs.clone();
     let (ours, theirs) = grow_into_faint(&faint, ours, theirs);
     // Where only the raw has lettering, the release has the art. In the
     // owner's areas over artwork the raw is needed only under the release's
@@ -706,7 +1066,11 @@ pub fn piece_mask(
             o.0[0] = 255;
         }
     }
-    out
+    Decision {
+        mask: out,
+        theirs: their_lettering,
+        raw_letters,
+    }
 }
 
 /// The owner's areas apart from their lettering: each box's part of its
@@ -2142,5 +2506,346 @@ mod tests {
         let wide = RgbaImage::from_pixel(310, 400, Rgba([0, 0, 0, 255]));
         let wide = [PairingThumb::new(&DynamicImage::ImageRgba8(wide))];
         assert_eq!(pair_by_picture(&raws, &wide), vec![None]);
+    }
+
+    // --- Hiding a piece of the release's lettering -------------------------
+
+    const HIDE_W: u32 = 1200;
+    const HIDE_H: u32 = 600;
+    /// The owner's one box, with the release's lettering of its line in it.
+    const OWN_BOX: [u32; 4] = [100, 40, 300, 120];
+    /// Bounds of the stray line [`release_with_stray_line`] letters.
+    const STRAY_LINE: (u32, u32, u32, u32) = (100, 400, 268, 430);
+
+    fn bounds_of(lettering: &Lettering) -> (u32, u32, u32, u32) {
+        let b = lettering.bounds;
+        (b.x0, b.y0, b.x1, b.y1)
+    }
+
+    /// A raw page and its release: the owner's line re-lettered in their
+    /// box, a hand-drawn effect, and a short line (too short to count as
+    /// typeset narration) put where the raw page has no lettering at all.
+    fn release_with_stray_line() -> (RgbaImage, RgbaImage) {
+        let raw = RgbaImage::from_pixel(HIDE_W, HIDE_H, Rgba([200, 200, 200, 255]));
+        let mut official = raw.clone();
+        for i in 0..4 {
+            let x = 120 + i * 30;
+            fill(&mut official, [x, 60, x + 18, 90], [10, 10, 10]);
+        }
+        for i in 0..6 {
+            let x = 100 + i * 30;
+            fill(&mut official, [x, 400, x + 18, 430], [10, 10, 10]);
+        }
+        fill(&mut official, [800, 80, 860, 200], [10, 10, 10]);
+        fill(&mut official, [880, 60, 950, 220], [10, 10, 10]);
+        fill(&mut official, [970, 100, 1010, 170], [10, 10, 10]);
+        (raw, official)
+    }
+
+    #[test]
+    fn a_click_on_a_stray_line_means_the_whole_line() {
+        let (raw, official) = release_with_stray_line();
+        let boxes = [boxed(OWN_BOX)];
+        let decision = decide(&raw, &official, &boxes, None, None);
+        // Between two letters, and a little below the line.
+        let line = lettering_at(&decision, None, (184, 415)).expect("the line");
+        assert_eq!(bounds_of(&line), STRAY_LINE);
+        assert_eq!(line.pixels.len(), 6 * 18 * 30);
+        let line = lettering_at(&decision, None, (150, 445)).expect("the line, from below");
+        assert_eq!(bounds_of(&line), STRAY_LINE);
+        // An effect's big stroke is a piece of its own.
+        let stroke = lettering_at(&decision, None, (830, 140)).expect("the effect's stroke");
+        assert_eq!(bounds_of(&stroke), (800, 80, 860, 200));
+        // Artwork far from any lettering, and the owner's own line, which
+        // doesn't come over in the first place.
+        assert!(lettering_at(&decision, None, (600, 300)).is_none());
+        assert!(lettering_at(&decision, None, (200, 75)).is_none());
+    }
+
+    #[test]
+    fn a_line_stops_at_a_bubbles_edge() {
+        let raw = RgbaImage::from_pixel(HIDE_W, HIDE_H, Rgba([200, 200, 200, 255]));
+        let mut official = raw.clone();
+        let mut bubbles = GrayImage::new(HIDE_W, HIDE_H);
+        fill_mask(&mut bubbles, [300, 380, 500, 450], 1);
+        // A letter in a bubble the owner didn't box, and one on the artwork
+        // right beside it.
+        fill(&mut official, [470, 400, 488, 430], [10, 10, 10]);
+        fill(&mut official, [510, 400, 528, 430], [10, 10, 10]);
+        let decision = decide(&raw, &official, &[], None, Some(&bubbles));
+        let outside = lettering_at(&decision, Some(&bubbles), (520, 415)).expect("the letter");
+        assert_eq!(bounds_of(&outside), (510, 400, 528, 430));
+        let inside = lettering_at(&decision, Some(&bubbles), (480, 415)).expect("the letter");
+        assert_eq!(bounds_of(&inside), (470, 400, 488, 430));
+    }
+
+    struct HidePage {
+        _dir: tempfile::TempDir,
+        blobs: BlobStore,
+        scene: Scene,
+        page: PageId,
+    }
+
+    /// A page of a project made from `raw` and (optionally) its release,
+    /// with the owner's box, an erase mask if given, and — when `cleaned` —
+    /// the cleaned layer as cleanup leaves it.
+    fn hide_page(
+        raw: &RgbaImage,
+        official: Option<&RgbaImage>,
+        erase: Option<&GrayImage>,
+        bubbles: Option<&GrayImage>,
+        cleaned: bool,
+    ) -> HidePage {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(dir.path()).unwrap();
+        let put = |img: &RgbaImage| {
+            blobs
+                .put_webp(&DynamicImage::ImageRgba8(img.clone()))
+                .unwrap()
+        };
+        let (w, h) = raw.dimensions();
+        let mut page = Page::new("026.jpg", w, h);
+        let mut nodes = vec![image_node(ImageRole::Source, put(raw))];
+        if let Some(official) = official {
+            let mut node = image_node(ImageRole::Official, put(official));
+            node.visible = false;
+            nodes.push(node);
+        }
+        let boxes = [boxed(OWN_BOX)];
+        if cleaned {
+            let rgb = DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(raw.clone()).to_rgb8());
+            let layer = match official {
+                Some(official) => {
+                    let mask = piece_mask(raw, official, &boxes, erase, bubbles);
+                    Pieces {
+                        pixels: mask.pixels().filter(|p| p.0[0] != 0).count() as u64,
+                        official: official.clone(),
+                        mask,
+                    }
+                    .apply(&rgb)
+                }
+                None => rgb,
+            };
+            nodes.push(image_node(
+                ImageRole::Inpainted,
+                blobs.put_webp(&layer).unwrap(),
+            ));
+        }
+        for (role, mask) in [(MaskRole::Segment, erase), (MaskRole::Bubble, bubbles)] {
+            if let Some(mask) = mask {
+                let blob = blobs
+                    .put_webp(&DynamicImage::ImageLuma8(mask.clone()))
+                    .unwrap();
+                nodes.push(Node {
+                    id: NodeId::new(),
+                    transform: Transform::default(),
+                    visible: false,
+                    kind: NodeKind::Mask(koharu_core::MaskData { role, blob }),
+                });
+            }
+        }
+        nodes.push(Node {
+            id: NodeId::new(),
+            transform: boxes[0],
+            visible: true,
+            kind: NodeKind::Text(TextData::default()),
+        });
+        for node in nodes {
+            page.nodes.insert(node.id, node);
+        }
+        let page_id = page.id;
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        HidePage {
+            _dir: dir,
+            blobs,
+            scene,
+            page: page_id,
+        }
+    }
+
+    fn cleaned_pixel(p: &HidePage, x: u32, y: u32) -> [u8; 3] {
+        let layer = load_role(&p.scene.pages[&p.page], ImageRole::Inpainted, &p.blobs)
+            .unwrap()
+            .unwrap();
+        let pixel = layer.get_pixel(x, y).0;
+        [pixel[0], pixel[1], pixel[2]]
+    }
+
+    fn hidden(hide: Hide) -> HidePlan {
+        match hide {
+            Hide::Hidden(plan) => plan,
+            Hide::NoRelease => panic!("no release"),
+            Hide::NothingThere => panic!("nothing there"),
+            Hide::StillShown => panic!("still shown"),
+        }
+    }
+
+    #[test]
+    fn hiding_a_stray_line_boxes_it_and_gives_the_spot_back_to_the_raw_page() {
+        let (raw, official) = release_with_stray_line();
+        let mut p = hide_page(&raw, Some(&official), None, None, true);
+        assert_eq!(
+            cleaned_pixel(&p, 105, 410),
+            [10, 10, 10],
+            "the line is there"
+        );
+        let before = p.scene.clone();
+
+        let plan = hidden(plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap());
+        assert!(plan.reclean.is_none(), "nothing to inpaint there");
+        assert_eq!(plan.ops.len(), 2, "the box and the cleaned layer");
+        let mut op = Op::Batch {
+            ops: plan.ops,
+            label: "Hide the release's lettering".into(),
+        };
+        op.apply(&mut p.scene).unwrap();
+
+        // An empty box over the whole line, with a small margin.
+        let node = &p.scene.pages[&p.page].nodes[&plan.node];
+        let t = node.transform;
+        assert_eq!((t.x, t.y, t.width, t.height), (94.0, 394.0, 180.0, 42.0));
+        let NodeKind::Text(text) = &node.kind else {
+            panic!("a text box");
+        };
+        assert!(text.text.is_none() && text.translation.is_none() && text.lock_layout_box);
+        // The line is gone, the effect and the art stay.
+        for (x, y) in [(105, 410), (184, 415), (260, 425)] {
+            assert_eq!(cleaned_pixel(&p, x, y), [200, 200, 200], "({x}, {y})");
+        }
+        assert_eq!(
+            cleaned_pixel(&p, 830, 140),
+            [10, 10, 10],
+            "the effect stays"
+        );
+        assert_eq!(cleaned_pixel(&p, 1000, 120), [10, 10, 10]);
+        assert_eq!(
+            cleaned_pixel(&p, 130, 70),
+            [200, 200, 200],
+            "the owner's line"
+        );
+
+        // A later cleanup works from a page without the line, and pastes
+        // nothing back over it.
+        let (base, pieces) = cleanup_base(&p.scene, p.page, &p.blobs).unwrap();
+        let pieces = pieces.expect("the page has a release");
+        assert_eq!(base.get_pixel(105, 410).0[..3], [200, 200, 200]);
+        assert_eq!(base.get_pixel(830, 140).0[..3], [10, 10, 10]);
+        assert!(!set(pieces.mask(), 105, 410) && !set(pieces.mask(), 184, 415));
+        assert!(set(pieces.mask(), 830, 140));
+        let again = pieces.apply(&base);
+        assert_eq!(again.get_pixel(105, 410).0[..3], [200, 200, 200]);
+
+        // Nothing left to hide there now.
+        assert!(matches!(
+            plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap(),
+            Hide::NothingThere
+        ));
+
+        // One undo step takes the box away and brings the line back.
+        op.inverse().apply(&mut p.scene).unwrap();
+        let restored = &p.scene.pages[&p.page];
+        assert_eq!(restored.nodes.len(), before.pages[&p.page].nodes.len());
+        assert!(!restored.nodes.contains_key(&plan.node));
+        assert_eq!(cleaned_pixel(&p, 105, 410), [10, 10, 10]);
+    }
+
+    #[test]
+    fn a_repair_stroke_under_the_line_sends_the_spot_to_the_inpainter() {
+        let (raw, official) = release_with_stray_line();
+        // The owner brushed over the line first; touching no box, the
+        // stroke left the release's lettering in place.
+        let mut erase = GrayImage::new(HIDE_W, HIDE_H);
+        fill_mask(&mut erase, [150, 405, 200, 425], 255);
+        let p = hide_page(&raw, Some(&official), Some(&erase), None, true);
+        assert_eq!(cleaned_pixel(&p, 105, 410), [10, 10, 10]);
+
+        let plan = hidden(plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap());
+        assert_eq!(
+            plan.ops.len(),
+            1,
+            "the box alone; the inpainter does the rest"
+        );
+        let region = plan.reclean.expect("cleanup erases under the box");
+        assert!(region.x <= 94 && region.y <= 394);
+        assert!(region.x + region.width >= 274 && region.y + region.height >= 436);
+        assert!(region.width < 300 && region.height < 150, "just that spot");
+    }
+
+    #[test]
+    fn a_page_not_cleaned_yet_only_gets_the_box() {
+        let (raw, official) = release_with_stray_line();
+        let p = hide_page(&raw, Some(&official), None, None, false);
+        let plan = hidden(plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap());
+        assert!(plan.reclean.is_none());
+        assert!(matches!(plan.ops.as_slice(), [Op::AddNode { .. }]));
+    }
+
+    #[test]
+    fn nothing_to_hide_plans_nothing() {
+        let (raw, official) = release_with_stray_line();
+        let p = hide_page(&raw, Some(&official), None, None, true);
+        // Artwork, the owner's own line, and points off the page.
+        for (x, y) in [
+            (600.0, 300.0),
+            (200.0, 75.0),
+            (-5.0, 415.0),
+            (184.0, 6000.0),
+            (f32::NAN, 415.0),
+        ] {
+            assert!(
+                matches!(
+                    plan_hide(&p.scene, p.page, &p.blobs, x, y).unwrap(),
+                    Hide::NothingThere
+                ),
+                "({x}, {y})"
+            );
+        }
+        // A page without a release.
+        let p = hide_page(&raw, None, None, None, true);
+        assert!(matches!(
+            plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap(),
+            Hide::NoRelease
+        ));
+        // A page that isn't there.
+        assert!(plan_hide(&p.scene, PageId::new(), &p.blobs, 184.0, 415.0).is_err());
+    }
+
+    #[test]
+    fn lettering_that_follows_an_unboxed_moan_is_reported_as_still_shown() {
+        let (w, h) = (2000, 600);
+        let raw = RgbaImage::from_pixel(w, h, Rgba([200, 200, 200, 255]));
+        let mut official = raw.clone();
+        let mut raw = raw;
+        let mut bubbles = GrayImage::new(w, h);
+        fill_mask(&mut bubbles, [20, 140, 1000, 500], 1);
+        // A moan the release re-lettered in place, and a mark of the
+        // release's a little way off in the same bubble: it goes with the
+        // moan, which cleanup doesn't erase.
+        fill(&mut raw, [260, 200, 330, 240], [10, 10, 10]);
+        fill(&mut official, [270, 210, 340, 250], [10, 10, 10]);
+        fill(&mut official, [390, 210, 410, 240], [10, 10, 10]);
+        let erase = GrayImage::new(w, h);
+        let p = hide_page(&raw, Some(&official), Some(&erase), Some(&bubbles), true);
+        assert!(matches!(
+            plan_hide(&p.scene, p.page, &p.blobs, 400.0, 225.0).unwrap(),
+            Hide::StillShown
+        ));
+    }
+
+    #[test]
+    fn cleanup_inputs_tell_a_changed_page_from_an_untouched_one() {
+        let (raw, official) = release_with_stray_line();
+        let mut p = hide_page(&raw, Some(&official), None, None, true);
+        let before = cleanup_inputs(&p.scene.pages[&p.page]);
+        assert_eq!(before, cleanup_inputs(&p.scene.pages[&p.page]));
+        let plan = hidden(plan_hide(&p.scene, p.page, &p.blobs, 184.0, 415.0).unwrap());
+        Op::Batch {
+            ops: plan.ops,
+            label: "hide".into(),
+        }
+        .apply(&mut p.scene)
+        .unwrap();
+        assert_ne!(before, cleanup_inputs(&p.scene.pages[&p.page]));
     }
 }

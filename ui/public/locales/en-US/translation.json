@@ -132,7 +132,11 @@
     "added_other": "Official release added to {{count}} of {{total}} pages.",
     "noneMatched": "No page matched the official release. Its pages must be the same size and picture as yours.",
     "unmatched_one": "No match for page {{pages}}.",
-    "unmatched_other": "No match for pages {{pages}}."
+    "unmatched_other": "No match for pages {{pages}}.",
+    "hiding": "Hiding the release's lettering…",
+    "hidden": "Hidden. An empty text box now keeps the release's lettering away from this spot. Delete the box to bring it back.",
+    "hideStillShown": "This lettering can't be hidden on its own: it goes with a sound in the same bubble. Put a text box on that sound instead.",
+    "hideNothing": "There is no lettering from the release at this spot."
   },
   "operations": {
     "title": "Working",
@@ -426,7 +430,8 @@
     "deleteBlock": "Delete block",
     "deleteBlocks_one": "Delete {{count}} box",
     "deleteBlocks_other": "Delete {{count}} boxes",
-    "uninpaintBlock": "Restore original art (un-inpaint)"
+    "uninpaintBlock": "Restore original art (un-inpaint)",
+    "hideOfficialLettering": "Hide the release's lettering here"
   },
   "statusBar": {
     "zoom": "Zoom",

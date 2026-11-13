@@ -190,6 +190,12 @@ expression: paths
         ],
     ),
     (
+        "/pages/{id}/official/hide-lettering",
+        [
+            "post",
+        ],
+    ),
+    (
         "/pages/{id}/thumbnail",
         [
             "get",

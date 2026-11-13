@@ -11,6 +11,7 @@ import {
   CodexAuthAttemptStatus,
   FontSource,
   GradientDirection,
+  HideOfficialLetteringStatus,
   ImageRole,
   JobStatus,
   LlmProviderCatalogStatus,
@@ -40,6 +41,7 @@ import type {
   FontFaceInfo,
   FontPrediction,
   GoogleFontCatalog,
+  HideOfficialLetteringResponse,
   HistoryResult,
   HttpConfig,
   ListDownloadsResponse,
@@ -811,6 +813,17 @@ export const getPutMaskResponseMock = (
 ): PutMaskResponse => ({
   blob: faker.string.alpha({ length: { min: 10, max: 20 } }),
   node: faker.string.uuid(),
+  ...overrideResponse,
+})
+
+export const getHideOfficialLetteringResponseMock = (
+  overrideResponse: Partial<Extract<HideOfficialLetteringResponse, object>> = {},
+): HideOfficialLetteringResponse => ({
+  node: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([null, faker.string.uuid()]),
+    undefined,
+  ]),
+  status: faker.helpers.arrayElement(Object.values(HideOfficialLetteringStatus)),
   ...overrideResponse,
 })
 
@@ -2050,6 +2063,30 @@ export const getPutMaskMockHandler = (
   )
 }
 
+export const getHideOfficialLetteringMockHandler = (
+  overrideResponse?:
+    | HideOfficialLetteringResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<HideOfficialLetteringResponse> | HideOfficialLetteringResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    '*/pages/:id/official/hide-lettering',
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === 'function'
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHideOfficialLetteringResponseMock(),
+        { status: 200 },
+      )
+    },
+    options,
+  )
+}
+
 export const getGetPageThumbnailMockHandler = (
   overrideResponse?:
     | ArrayBuffer
@@ -2451,6 +2488,7 @@ export const getDefaultMock = () => [
   getAddOfficialPagesFromPathsMockHandler(),
   getAddImageLayerMockHandler(),
   getPutMaskMockHandler(),
+  getHideOfficialLetteringMockHandler(),
   getGetPageThumbnailMockHandler(),
   getReorderTextNodesMockHandler(),
   getStartPipelineMockHandler(),

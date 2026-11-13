@@ -2,6 +2,7 @@
 //!
 //! - `POST /pages`                           — multipart: create pages from N image files
 //! - `POST /pages/official/from-paths`       — pair an official release with the pages
+//! - `POST /pages/{id}/official/hide-lettering` — hide a stray piece of the release's lettering
 //! - `POST /pages/{id}/image-layers`         — multipart: add one Custom image node
 //! - `PUT  /pages/{id}/masks/{role}`         — raw PNG body: upsert a mask node
 //!   (role ∈ `segment`, `brushInpaint`)
@@ -45,6 +46,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(create_pages))
         .routes(routes!(create_pages_from_paths))
         .routes(routes!(add_official_pages_from_paths))
+        .routes(routes!(hide_official_lettering))
         .routes(routes!(add_image_layer))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
@@ -422,6 +424,182 @@ async fn add_official_pages_from_paths(
         unmatched_pages: plan.unmatched_pages,
         unused_files: plan.unused_files,
         rerender: plan.rerender,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /pages/{id}/official/hide-lettering — hide a stray piece of the release
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HideOfficialLetteringRequest {
+    /// The point on the page (in page pixels) the lettering is at.
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HideOfficialLetteringStatus {
+    /// The lettering is hidden: an empty text box covers it.
+    Hidden,
+    /// None of the release's lettering comes over at that point.
+    NothingThere,
+    /// The lettering there would stay even with a box on it; nothing changed.
+    StillShown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HideOfficialLetteringResponse {
+    pub status: HideOfficialLetteringStatus,
+    /// The empty text box put over the lettering (when hidden).
+    pub node: Option<NodeId>,
+}
+
+/// Hide the piece of the official release's lettering at a point of the
+/// page — a line the release put where the raw page has none, which cleanup
+/// keeps because no text box claims it. Puts an empty text box over the whole
+/// piece and cleans that spot again, as one undo step; later cleanups leave
+/// the lettering out for as long as the box is there.
+#[utoipa::path(
+    post,
+    path = "/pages/{id}/official/hide-lettering",
+    params(("id" = PageId, Path, description = "Page id")),
+    request_body = HideOfficialLetteringRequest,
+    responses((status = 200, body = HideOfficialLetteringResponse))
+)]
+async fn hide_official_lettering(
+    State(app): State<AppState>,
+    Path(page_id): Path<PageId>,
+    Json(req): Json<HideOfficialLetteringRequest>,
+) -> ApiResult<Json<HideOfficialLetteringResponse>> {
+    use koharu_app::official::{Hide, cleanup_inputs, plan_hide};
+
+    let session = app
+        .current_session()
+        .ok_or_else(|| ApiError::bad_request("no project open"))?;
+    let scene = session.scene_snapshot();
+    let inputs = cleanup_inputs(
+        scene
+            .page(page_id)
+            .ok_or_else(|| ApiError::not_found(format!("page {page_id}")))?,
+    );
+    let blobs = session.blobs.clone();
+    let (mut scene, hide) = tokio::task::spawn_blocking(move || {
+        let hide = plan_hide(&scene, page_id, &blobs, req.x, req.y);
+        (scene, hide)
+    })
+    .await
+    .map_err(|e| ApiError::internal(anyhow::anyhow!("hide lettering task panicked: {e}")))?;
+    let nothing = |status| Ok(Json(HideOfficialLetteringResponse { status, node: None }));
+    let plan = match hide.map_err(ApiError::internal)? {
+        Hide::NoRelease => {
+            return Err(ApiError::bad_request(
+                "this page has no official release underneath",
+            ));
+        }
+        Hide::NothingThere => return nothing(HideOfficialLetteringStatus::NothingThere),
+        Hide::StillShown => return nothing(HideOfficialLetteringStatus::StillShown),
+        Hide::Hidden(plan) => plan,
+    };
+    // The plan was made beside the live scene. If the page's boxes, masks or
+    // cleaned layer changed meanwhile (a cleanup landing, an edit), applying
+    // it would put older work back.
+    let unchanged = || {
+        session
+            .scene
+            .read()
+            .page(page_id)
+            .is_some_and(|page| cleanup_inputs(page) == inputs)
+    };
+    let changed = || {
+        ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "the page changed while the lettering was being hidden; try again",
+        )
+    };
+
+    let mut ops = plan.ops;
+    let cancel = Arc::new(AtomicBool::new(false));
+    // Kept until the batch is applied; declared before the engine handle, so
+    // it outlives it.
+    let mut gpu_turn = None;
+    if let Some(region) = plan.reclean {
+        // Cleanup erases something under the new box: the inpainter cleans
+        // the spot again, from the source, as it does for a box taken out of
+        // the cleanup. It takes its GPU turn first, like a repair stroke.
+        let engine_id = app.config.load().pipeline.inpainter.clone();
+        let info = pipeline::Registry::find(&engine_id)
+            .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+        gpu_turn = app
+            .registry
+            .gpu_turn(info.id, app.cpu_only(), &cancel)
+            .await
+            .map_err(ApiError::internal)?;
+        if !unchanged() {
+            return Err(changed());
+        }
+        for op in &ops {
+            op.clone()
+                .apply(&mut scene)
+                .map_err(|e| ApiError::internal(e.into()))?;
+        }
+        let (flux2_strength, flux2_steps, flux2_flat_fill, flux2_fast_large_crops) = {
+            let config = app.config.load();
+            (
+                config.pipeline.flux2_strength,
+                config.pipeline.flux2_steps,
+                config.pipeline.flux2_flat_fill,
+                config.pipeline.flux2_fast_large_crops,
+            )
+        };
+        let options = PipelineRunOptions {
+            region: Some(region),
+            restore_source_region: Some(true),
+            flux2_strength: Some(flux2_strength),
+            flux2_steps: Some(flux2_steps),
+            flux2_flat_fill: Some(flux2_flat_fill),
+            flux2_fast_large_crops: Some(flux2_fast_large_crops),
+            ..Default::default()
+        };
+        let ctx = EngineCtx {
+            scene: &scene,
+            page: page_id,
+            blobs: &session.blobs,
+            runtime: &app.runtime,
+            cancel: &cancel,
+            options: &options,
+            llm: &app.llm,
+            renderer: &app.renderer,
+        };
+        let engine = app
+            .registry
+            .get(info.id, &app.runtime, app.cpu_only())
+            .await
+            .map_err(|e| ApiError::internal(anyhow::anyhow!("load engine: {e:#}")))?;
+        let engine_ops = engine
+            .run(ctx)
+            .await
+            .map_err(|e| ApiError::internal(anyhow::anyhow!("run engine: {e:#}")))?;
+        ops.extend(engine_ops);
+    }
+    if !unchanged() {
+        return Err(changed());
+    }
+    app.apply_to(
+        &session,
+        Op::Batch {
+            ops,
+            label: "Hide the release's lettering".into(),
+        },
+    )
+    .map_err(ApiError::internal)?;
+    drop(gpu_turn);
+    Ok(Json(HideOfficialLetteringResponse {
+        status: HideOfficialLetteringStatus::Hidden,
+        node: Some(plan.node),
     }))
 }
 

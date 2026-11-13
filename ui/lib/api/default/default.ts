@@ -43,6 +43,8 @@ import type {
   ExportProjectRequest,
   FontFaceInfo,
   GoogleFontCatalog,
+  HideOfficialLetteringRequest,
+  HideOfficialLetteringResponse,
   HistoryResult,
   ListDownloadsResponse,
   ListOperationsResponse,
@@ -2972,6 +2974,98 @@ export const usePutMask = <TError = unknown, TContext = unknown>(
   TContext
 > => {
   return useMutation(getPutMaskMutationOptions(options), queryClient)
+}
+export const getHideOfficialLetteringUrl = (id: PageId) => {
+  return `/api/v1/pages/${id}/official/hide-lettering`
+}
+
+/**
+ * @summary Hide the piece of the official release's lettering at a point of the
+page — a line the release put where the raw page has none, which cleanup
+keeps because no text box claims it. Puts an empty text box over the whole
+piece and cleans that spot again, as one undo step; later cleanups leave
+the lettering out for as long as the box is there.
+ */
+export const hideOfficialLettering = async (
+  id: PageId,
+  hideOfficialLetteringRequest: HideOfficialLetteringRequest,
+  options?: RequestInit,
+): Promise<HideOfficialLetteringResponse> => {
+  return fetchApi<HideOfficialLetteringResponse>(getHideOfficialLetteringUrl(id), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(hideOfficialLetteringRequest),
+  })
+}
+
+export const getHideOfficialLetteringMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof hideOfficialLettering>>,
+    TError,
+    { id: PageId; data: HideOfficialLetteringRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof fetchApi>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof hideOfficialLettering>>,
+  TError,
+  { id: PageId; data: HideOfficialLetteringRequest },
+  TContext
+> => {
+  const mutationKey = ['hideOfficialLettering']
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof hideOfficialLettering>>,
+    { id: PageId; data: HideOfficialLetteringRequest }
+  > = (props) => {
+    const { id, data } = props ?? {}
+
+    return hideOfficialLettering(id, data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type HideOfficialLetteringMutationResult = NonNullable<
+  Awaited<ReturnType<typeof hideOfficialLettering>>
+>
+export type HideOfficialLetteringMutationBody = HideOfficialLetteringRequest
+export type HideOfficialLetteringMutationError = unknown
+
+/**
+ * @summary Hide the piece of the official release's lettering at a point of the
+page — a line the release put where the raw page has none, which cleanup
+keeps because no text box claims it. Puts an empty text box over the whole
+piece and cleans that spot again, as one undo step; later cleanups leave
+the lettering out for as long as the box is there.
+ */
+export const useHideOfficialLettering = <TError = unknown, TContext = unknown>(
+  options?: {
+    mutation?: UseMutationOptions<
+      Awaited<ReturnType<typeof hideOfficialLettering>>,
+      TError,
+      { id: PageId; data: HideOfficialLetteringRequest },
+      TContext
+    >
+    request?: SecondParameter<typeof fetchApi>
+  },
+  queryClient?: QueryClient,
+): UseMutationResult<
+  Awaited<ReturnType<typeof hideOfficialLettering>>,
+  TError,
+  { id: PageId; data: HideOfficialLetteringRequest },
+  TContext
+> => {
+  return useMutation(getHideOfficialLetteringMutationOptions(options), queryClient)
 }
 export const getGetPageThumbnailUrl = (id: PageId) => {
   return `/api/v1/pages/${id}/thumbnail`

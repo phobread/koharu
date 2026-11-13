@@ -9,6 +9,7 @@ import {
   CodexAuthAttemptStatus,
   FontSource,
   GradientDirection,
+  HideOfficialLetteringStatus,
   ImageRole,
   JobStatus,
   LlmProviderCatalogStatus,
@@ -38,6 +39,7 @@ import type {
   FontFaceInfo,
   FontPrediction,
   GoogleFontCatalog,
+  HideOfficialLetteringResponse,
   HistoryResult,
   HttpConfig,
   ListDownloadsResponse,
@@ -809,6 +811,17 @@ export const getPutMaskResponseMock = (
 ): PutMaskResponse => ({
   blob: faker.string.alpha({ length: { min: 10, max: 20 } }),
   node: faker.string.uuid(),
+  ...overrideResponse,
+})
+
+export const getHideOfficialLetteringResponseMock = (
+  overrideResponse: Partial<Extract<HideOfficialLetteringResponse, object>> = {},
+): HideOfficialLetteringResponse => ({
+  node: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([null, faker.string.uuid()]),
+    undefined,
+  ]),
+  status: faker.helpers.arrayElement(Object.values(HideOfficialLetteringStatus)),
   ...overrideResponse,
 })
 
