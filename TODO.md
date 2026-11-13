@@ -735,6 +735,44 @@ was run, and its numbers come from Japanese manga, not Korean pages.
     Japanese). Runs on libtorch upstream, so using it in the app means a
     hand port to candle. Test it on about ten of the owner's pages outside
     the app before anything else.
+    **Tested 2026-11-14 outside the app, no code changed.** Model
+    `mayocream/koharu-layout-highres` (186 MB, 46.6M parameters, Apache-2.0,
+    input 1920x1920), run with the `rfdetr` 1.7.0 Python package on the CPU
+    (about 20 s a page, 8 threads) and the pre/post-processing of the
+    model's own Hugging Face demo. 11 pages from the `C:\kt` copies:
+    LOLExtras 0006, 0026, 0028, 0035, 0038, 0084, 0115; Ruination 0062,
+    0063; Neeko's Help 0012; BadEnd3 026. Compared with the boxes the app
+    detected and the boxes the owner added by hand (a box with no detector
+    name). The trial folder (`D:\layout-trial`: throwaway Python, model,
+    scripts, side-by-side pictures) was deleted the same day after the owner
+    had seen the results; re-running means reinstalling `rfdetr` 1.7.0.
+    - SFX, the main hope: the owner's hand-added boxes were nearly all
+      found, almost all labelled SFX (counted by box overlap: 46 of 49; that
+      count is loose on busy pages). Clean cases: all 10 traced SFX on
+      LOLExtras 0028, all four big SFX on 0115, FWAAASH on 0026, 게익…쾅 on
+      Neeko 0012. Its SFX masks follow the letter shapes, outlined letters
+      included, so they could start a clean-up mask instead of tracing by
+      hand. Hearts touching an SFX are often inside its mask (the owner
+      wants those kept).
+    - Misses and false finds: dense moan clusters (Neeko 0012 bottom left)
+      come out as overlapping low-score text boxes with the hearts counted
+      as text; some vertical moans only reach 0.2-0.3 (0115 응오오옷, Neeko
+      앗앗); printed words on clothes and a halo were called SFX (Neeko 0012
+      hoodie, Ruination 0063).
+    - Dialogue: matched 74 of 76 of the app's own boxes. The 2 misses are the
+      small black SFX bubbles top left on Ruination 0063.
+    - Bubbles: finds the black caption frames the app's bubble finder misses
+      (all four on Ruination 0063, the "caption frame counts as artwork"
+      case) and skips some false bubbles of the app's (fur cuff on 0115). But
+      on the dark, colourful BadEnd3 026 it found no bubbles and no panels at
+      all (the app found all 7 black bubbles), and its text scores there were
+      low (0.2-0.5). It also misses the wild-edged moan bubbles on Neeko 0012.
+      Trained on black-and-white Japanese manga only.
+    - Getting it into the app: the app already runs ONNX models through `ort`
+      (`koharu-ml/src/korean_ocr`), so an ONNX export of this model loaded
+      the same way is likely much less work than a candle port.
+    - Best fit: as an extra SFX finder (and caption-frame finder) beside the
+      current detectors, not as a replacement for them.
   - "Rooms" for texts in joined balloons (`rooms.rs`): a newer version of
     the seam search we ported. Not urgent.
   - RORem clean-up (`main`; SDXL-based object removal through
