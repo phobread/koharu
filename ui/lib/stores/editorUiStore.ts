@@ -39,11 +39,19 @@ type EditorUiState = {
   showInpaintedImage: boolean
   showBrushLayer: boolean
   showRenderedImage: boolean
+  /**
+   * The Release view: the page's official release in place of the raw page
+   * (display only; pages without a release show the raw page). It never
+   * combines with the cleaned or translated image: turning either of those on
+   * turns it off, and turning it on turns them off.
+   */
+  showOfficialImage: boolean
   showTextBlocksOverlay: boolean
   setShowSegmentationMask: (show: boolean) => void
   setShowInpaintedImage: (show: boolean) => void
   setShowBrushLayer: (show: boolean) => void
   setShowRenderedImage: (show: boolean) => void
+  setShowOfficialImage: (show: boolean) => void
   setShowTextBlocksOverlay: (show: boolean) => void
 
   // tools
@@ -98,6 +106,7 @@ const initialState = {
   showInpaintedImage: false,
   showBrushLayer: false,
   showRenderedImage: false,
+  showOfficialImage: false,
   showTextBlocksOverlay: false,
   mode: 'select' as ToolMode,
   renderEffect: { italic: false, bold: false } as RenderEffect,
@@ -124,15 +133,31 @@ export const useEditorUiStore = create<EditorUiState>()(
       setAutoFitEnabled: (enabled) => set({ autoFitEnabled: enabled }),
 
       setShowSegmentationMask: (show) => set({ showSegmentationMask: show }),
-      setShowInpaintedImage: (show) => set({ showInpaintedImage: show }),
+      setShowInpaintedImage: (show) =>
+        set(
+          show
+            ? { showInpaintedImage: true, showOfficialImage: false }
+            : { showInpaintedImage: false },
+        ),
       setShowBrushLayer: (show) => set({ showBrushLayer: show }),
-      setShowRenderedImage: (show) => set({ showRenderedImage: show }),
+      setShowRenderedImage: (show) =>
+        set(
+          show
+            ? { showRenderedImage: true, showOfficialImage: false }
+            : { showRenderedImage: false },
+        ),
+      setShowOfficialImage: (show) =>
+        set(
+          show
+            ? { showOfficialImage: true, showInpaintedImage: false, showRenderedImage: false }
+            : { showOfficialImage: false },
+        ),
       setShowTextBlocksOverlay: (show) => set({ showTextBlocksOverlay: show }),
 
       setMode: (mode) => {
         set({ mode })
         if (mode === 'repairBrush' || mode === 'brush' || mode === 'eraser') {
-          set({ showRenderedImage: false, showInpaintedImage: true })
+          set({ showRenderedImage: false, showInpaintedImage: true, showOfficialImage: false })
         }
         if (mode === 'repairBrush') {
           // Text boxes keep whatever the owner last chose (toggle key / eye menu).

@@ -21,6 +21,17 @@ notes name (under `C:\kt`, `D:\layout-trial`, `D:\flux3-trial`) are deleted.
 
 ## Next up
 
+Owner, 2026-11-16: the first two are for Claude Fable 5.2 after the owner's
+usage reset (2026-11-16 17:00), in this order.
+
+- **OCR of black-on-black outlined text (owner: "very interesting issue,
+  high prio, Fable will look at this first").** Black or dark lettering with
+  an outline, on a dark background, still has trapped background pockets
+  (the gaps inside letters and between strokes) that can't be told from ink
+  by colour, so some letters read wrong (in one font 다 reads as 타, even
+  in the original image). The thick-outline redraw (`0874959f`, see Done)
+  doesn't solve this case. Astra's idea: read ambiguous lines with and
+  without the pockets and accept only repairs both readings agree on.
 - **Keep coloured hearts on black boxes (queued 2026-11-15, owner: "Yes,
   queue it"; the hearts change and the Ruination 0063 fix it waited for are
   committed and installed).** The rule that keeps coloured hearts out of the
@@ -39,13 +50,6 @@ notes name (under `C:\kt`, `D:\layout-trial`, `D:\flux3-trial`) are deleted.
   with a mask painted over the lettering as the owner would, on a sandbox
   copy, plus a check that 0064's glow still goes and the Ruination,
   LOLExtras and Neeko's Help pages don't change.
-
-- **A view button for the official release (owner, 2026-11-15: "a toggle
-  between the official release and the raw korean would be nice").**
-  Display only: show the release page in place of the raw, next to Original
-  / Cleaned / Translated. The release image is already stored per page, so
-  no format change. (BadEnd3 010's Korean SFX turned out to be the owner's
-  own empty box + clean-up; undoing them brought the English back.)
 
 ## For the owner to check in the app
 
@@ -66,22 +70,8 @@ fine. Still to watch:
 
 ## Owner decisions open
 
-- **On/off setting for the Flux2 rough start (owner, 2026-11-14).** On
-  Ruination 0064 the owner's old from-noise page shows the shoulder through
-  the bubble with a crisp edge; every run with the start blurs it (its edge
-  lies wholly under the lettering). A switch would let a page be re-run from
-  noise, with the bright-patch risk back. A LaMa start and 4 steps were
-  tried and didn't help (see Tried and not kept).
-- **Upstream layout model as an extra SFX / caption-frame finder.** Tested
-  2026-11-14 (see Upstream): it found 46 of 49 hand-added SFX boxes, with
-  masks that follow the letters. Best beside the current detectors, not
-  instead of them; an ONNX export loaded through `ort` (as
-  `koharu-ml/src/korean_ocr` does) is likely much less work than a candle
-  port.
-- **A "Release" view for stray release English**, only if stray lines keep
-  turning up now that "Hide the release's lettering here" exists: a view
-  next to Original / Cleaned / Translated where brushing means "not the
-  release's here". Needs a saved mask per page, so a project-format change.
+- **Ultrareviews #2 and #3** (1fb6c709→882f6090 and 0c070995→1fb6c709,
+  never run; owner, 2026-11-16: "later"). The owner runs them.
 
 ## Known bugs and limits (not being worked on)
 
@@ -135,21 +125,15 @@ fine. Still to watch:
   runs again).
 - "Hide the release's lettering here": the Korean cleaned out under the
   hidden line often needs tweaking by hand (owner, 2026-11-15: "a bit
-  iffy", probably the model); two lines closer than about 40px count as one; a sound effect of several big letters needs one click per
-  letter; where the release lettered over the Korean, Korean fragments can
-  remain; a later OCR run may try to read the empty box.
+  iffy", probably the model); two lines closer than about 40px count as
+  one; a sound effect of several big letters needs one click per letter;
+  where the release lettered over the Korean, Korean fragments can remain;
+  a later OCR run may try to read the empty box.
 
 ## Ideas (not started)
 
-- **OCR, black-on-black outlined text:** trapped background pockets can't be
-  told from ink by colour (in one font 다 reads as 타 even in the original).
-  Astra's idea: read ambiguous lines with and without the pockets and accept
-  only agreeing repairs. Modest gain.
-- **OCR context correction:** the translation model sees the whole sentence
-  and could flag obvious OCR slips (온몸을 타해 → 다해). Only if leftover OCR
-  errors keep costing proofreading time.
 - Hand-lettered moans and SFX stay out of scope for OCR.
-- **Upstream layout extras (not evaluated):** justify alignment, line-height
+- **Upstream layout extras (the owner is looking into them, 2026-11-16):** justify alignment, line-height
   and letter/word spacing controls, balanced line breaks with "don't break
   after the/to/of" penalties, hyphenation only as a last resort. Upstream's
   `layout.rs` real code is about 400 lines bigger than ours.
@@ -203,6 +187,25 @@ messages, docs and module headers, none of its code run.
   model (owner: redundant). Archive/PDF import and CBZ export only if wanted.
 
 ## Done
+
+### Not built into the app yet
+
+- **A Release view (2026-11-16; owner, 2026-11-15: "a toggle between the
+  official release and the raw korean would be nice").** In a project with
+  an official release, the view switch gets a fourth button, Release, after
+  Original / Cleaned / Translated. It shows the page's release in place of
+  the raw page; nothing else changes (text boxes, detected text and brush
+  strokes show as on Original, without the translation previews). On a page
+  without a release the button is greyed out and the page shows as
+  Original; the next page with a release shows it again. Picking a brush
+  tool switches to Cleaned as before, which leaves the Release view.
+  Projects without a release look as before. `showOfficialImage` in
+  `ui/lib/stores/editorUiStore.ts` (turning on the cleaned or translated
+  image turns it off, and the other way round), `ViewControls.tsx`,
+  `Workspace.tsx`; 9 new tests (`ViewControls.test.tsx`,
+  `ReleaseView.test.tsx`). Limits: display only; no key for it; a release
+  of a different size from the raw page is fitted into the page (clean-up
+  ignores such a release anyway). Tried in UI tests only, not in the app.
 
 ### Installed 2026-11-16 (f37208d4)
 
@@ -430,6 +433,18 @@ messages, docs and module headers, none of its code run.
   hair); less context (64px: back in 3 of 5, 128px: 1 of 5).
 
 ### Dropped
+
+Owner, 2026-11-16:
+- **On/off setting for the Flux2 rough start** ("off i guess"): no switch;
+  the start stays as it is (Ruination 0064's shoulder stays soft).
+- **Upstream layout model as an SFX / caption-frame finder** ("juice not
+  worth the squeeze, I'll find it myself"). Test results stay under
+  Upstream.
+- **A "Release" view you can brush on** (brushing there = "not the
+  release's here"; needed a saved mask per page, a format change): "probably
+  not worth it for now". The display-only view button is separate.
+- **OCR context correction** (the translation model flagging OCR slips such
+  as 온몸을 타해 → 다해): "not worth it".
 
 - **TrashHand border clipping (2026-11-12, project gone, never
   reproduced).** If it comes back: worst on TrashHand Relaxed

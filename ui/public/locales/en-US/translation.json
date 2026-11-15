@@ -243,6 +243,9 @@
     "viewOriginal": "Original",
     "viewCleaned": "Cleaned",
     "viewTranslated": "Translated",
+    "viewRelease": "Release",
+    "viewReleaseTitle": "The official release of this page",
+    "viewReleaseNone": "This page has no official release",
     "overlays": "Show on the page"
   },
   "processing": {

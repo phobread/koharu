@@ -72,6 +72,7 @@ export function Workspace() {
   const showInpaintedImage = useEditorUiStore((s) => s.showInpaintedImage)
   const showBrushLayer = useEditorUiStore((s) => s.showBrushLayer)
   const showRenderedImage = useEditorUiStore((s) => s.showRenderedImage)
+  const showOfficialImage = useEditorUiStore((s) => s.showOfficialImage)
   const showTextBlocksOverlay = useEditorUiStore((s) => s.showTextBlocksOverlay)
   const mode = useEditorUiStore((s) => s.mode)
   const autoFitEnabled = useEditorUiStore((s) => s.autoFitEnabled)
@@ -88,12 +89,19 @@ export function Workspace() {
   // A page with an official release underneath: its lettering can be hidden
   // by a right-click on it.
   const hasOfficial = useMemo(() => !!page && findImageBlob(page, 'official') !== null, [page])
+  // The Release view shows that release in place of the raw page. Fetched
+  // only while the view is on; a page without one shows the raw page.
+  const officialHash = useMemo(
+    () => (page && showOfficialImage ? findImageBlob(page, 'official') : null),
+    [page, showOfficialImage],
+  )
 
   const imageData = useBlobData(imageHash ?? undefined)
   const segmentData = useBlobData(segmentHash ?? undefined)
   const inpaintedData = useBlobData(inpaintedHash ?? undefined)
   const brushLayerData = useBlobData(brushLayerHash ?? undefined)
   const renderedData = useBlobData(renderedHash ?? undefined)
+  const officialData = useBlobData(officialHash ?? undefined)
 
   useEffect(() => {
     if (page) setCanvasDocumentSize(page.width, page.height)
@@ -450,6 +458,16 @@ export function Workspace() {
                           dataKey={imageHash ?? undefined}
                           transition={false}
                         />
+                        {/* Release view: covers the raw page (same size) and
+                            sits under everything else, as Original does. */}
+                        {officialData && (
+                          <Image
+                            data-testid='workspace-official-image'
+                            data={officialData}
+                            dataKey={officialHash ?? undefined}
+                            transition={false}
+                          />
+                        )}
                         <canvas
                           ref={maskDrawing.canvasRef}
                           data-testid='workspace-mask-canvas'

@@ -1,6 +1,7 @@
 'use client'
 
 import { EyeIcon } from 'lucide-react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -18,14 +19,19 @@ import { cn } from '@/lib/utils'
  * / cleaned / translated) stack opaquely, so only one is ever really visible:
  * a single switch models that honestly. The overlays that combine with any
  * view (text boxes, detected text, brush strokes) sit behind the eye button.
+ *
+ * Release (the official release in place of the raw page) is offered only in
+ * projects that have one, and works only on pages that have one. Elsewhere
+ * the page shows as Original, and Release comes back on the next page that
+ * has a release.
  */
 
-type ViewId = 'original' | 'cleaned' | 'translated'
+type ViewId = 'original' | 'cleaned' | 'translated' | 'release'
 
 export function ViewControls() {
   const { t } = useTranslation()
   const page = useCurrentPage()
-  const { epoch: sceneEpoch } = useScene()
+  const { scene, epoch: sceneEpoch } = useScene()
   const textNodes = useTextNodes()
   const showInpaintedImage = useEditorUiStore((s) => s.showInpaintedImage)
   const setShowInpaintedImage = useEditorUiStore((s) => s.setShowInpaintedImage)
@@ -37,30 +43,55 @@ export function ViewControls() {
   const setShowTextBlocksOverlay = useEditorUiStore((s) => s.setShowTextBlocksOverlay)
   const showRenderedImage = useEditorUiStore((s) => s.showRenderedImage)
   const setShowRenderedImage = useEditorUiStore((s) => s.setShowRenderedImage)
+  const showOfficialImage = useEditorUiStore((s) => s.showOfficialImage)
+  const setShowOfficialImage = useEditorUiStore((s) => s.setShowOfficialImage)
   const toggleTextBoxesKey = usePreferencesStore((s) => s.shortcuts.toggleTextBoxes)
 
   const hasRendered = !!(page && findImageBlob(page, 'rendered'))
   const hasInpainted = !!(page && findImageBlob(page, 'inpainted'))
+  const hasOfficial = !!(page && findImageBlob(page, 'official'))
   const hasSegment = !!(page && findMaskBlob(page, 'segment'))
   const hasBrush = !!(page && findMaskBlob(page, 'brushInpaint'))
+  const projectHasOfficial = useMemo(
+    () => Object.values(scene?.pages ?? {}).some((p) => findImageBlob(p, 'official') !== null),
+    [scene],
+  )
   // Silence warning about unused epoch dep — it's the invalidation trigger.
   void sceneEpoch
 
-  const view: ViewId = showRenderedImage
-    ? 'translated'
-    : showInpaintedImage
-      ? 'cleaned'
-      : 'original'
+  const view: ViewId =
+    showOfficialImage && hasOfficial
+      ? 'release'
+      : showRenderedImage
+        ? 'translated'
+        : showInpaintedImage
+          ? 'cleaned'
+          : 'original'
   const setView = (next: ViewId) => {
+    if (next === 'release') {
+      setShowOfficialImage(true)
+      return
+    }
+    setShowOfficialImage(false)
     setShowRenderedImage(next === 'translated')
     setShowInpaintedImage(next !== 'original')
   }
 
-  const views: { id: ViewId; label: string; enabled: boolean }[] = [
+  const views: { id: ViewId; label: string; enabled: boolean; title?: string }[] = [
     { id: 'original', label: t('layers.viewOriginal'), enabled: true },
     { id: 'cleaned', label: t('layers.viewCleaned'), enabled: hasInpainted },
     { id: 'translated', label: t('layers.viewTranslated'), enabled: hasRendered },
   ]
+  if (projectHasOfficial) {
+    views.push({
+      id: 'release',
+      label: t('layers.viewRelease', 'Release'),
+      enabled: hasOfficial,
+      title: hasOfficial
+        ? t('layers.viewReleaseTitle', 'The official release of this page')
+        : t('layers.viewReleaseNone', 'This page has no official release'),
+    })
+  }
 
   const overlays: {
     id: string
@@ -98,7 +129,10 @@ export function ViewControls() {
   return (
     <div className='flex items-center gap-1'>
       <div
-        className='grid grid-cols-3 gap-0.5 rounded-md border border-border bg-muted/60 p-0.5'
+        className={cn(
+          'grid gap-0.5 rounded-md border border-border bg-muted/60 p-0.5',
+          views.length > 3 ? 'grid-cols-4' : 'grid-cols-3',
+        )}
         role='radiogroup'
         aria-label={t('layers.title')}
       >
@@ -110,6 +144,7 @@ export function ViewControls() {
             aria-checked={view === v.id}
             data-testid={`view-${v.id}`}
             disabled={!v.enabled}
+            title={v.title}
             onClick={() => setView(v.id)}
             className={cn(
               'rounded-[5px] px-2 py-0.5 text-xs transition-colors',
