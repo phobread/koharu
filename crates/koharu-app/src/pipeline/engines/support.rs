@@ -11,7 +11,8 @@ use koharu_core::{
 };
 
 use crate::blobs::BlobStore;
-use crate::pipeline::engine::PipelineRunOptions;
+use crate::official::Pieces;
+use crate::pipeline::engine::{EngineCtx, PipelineRunOptions};
 
 // ---------------------------------------------------------------------------
 // Read helpers
@@ -149,6 +150,160 @@ pub fn glyph_erase_mask(
             text_blocks,
         ),
     }
+}
+
+/// For a mask-eraser stroke on a cleaned page: the page as the stroke leaves
+/// it ([`eraser_stroke_result`]), with no model run. `page` is the original
+/// page (the clean-up base), `previous_mask` the segment mask before the
+/// stroke, and `mask` and `bubble_mask` are the page's, unclipped.
+///
+/// `None` when the run is not such a stroke; the engine then runs as before.
+pub fn eraser_stroke(
+    ctx: &EngineCtx<'_>,
+    page: &DynamicImage,
+    previous_mask: Option<&DynamicImage>,
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+) -> Result<Option<DynamicImage>> {
+    let (Some(_), Some(true), Some(previous_mask)) = (
+        ctx.options.region,
+        ctx.options.restore_source_region,
+        previous_mask,
+    ) else {
+        return Ok(None);
+    };
+    let Some((_, inpainted)) = find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) else {
+        return Ok(None);
+    };
+    let inpainted = ctx.blobs.load_image(&inpainted)?;
+    let text_blocks = text_nodes(ctx.scene, ctx.page)
+        .into_iter()
+        .map(|(_, transform, text)| text_node_to_region(transform, text))
+        .collect::<Vec<_>>();
+    Ok(eraser_stroke_result(
+        ctx.options,
+        page,
+        &inpainted,
+        previous_mask,
+        mask,
+        bubble_mask,
+        &text_blocks,
+    ))
+}
+
+/// What a mask-eraser stroke (black, `restore_source_region` is
+/// `Some(true)`) leaves on the cleaned page `inpainted`: the original `page`
+/// comes back where the stroke un-marked, and nothing is cleaned again.
+///
+/// Before, the stroke put the original back over its whole rectangle and the
+/// model cleaned the mask left there again, grown the wide way (up to 8px for
+/// a hand-added box). That took bites out of the heart the stroke had just
+/// given back, and a few mask pixels the stroke left made Flux2 paint a new
+/// patch (LOLExtras 0084). Now, inside the stroke's rectangle:
+/// - outside what that re-clean would erase, the original comes back, as
+///   before;
+/// - inside it, the cleaned pixels stay as they are, except the pixels the
+///   stroke un-marked and up to 2px round them
+///   (`erased_stroke_give_back`), which get the original.
+///
+/// `None` when the run isn't a mask-eraser stroke: a full run, a brush
+/// stroke, a regional run without the mask before it (hiding release
+/// lettering), pages of different sizes, or a new mask that adds pixels
+/// inside the rectangle.
+pub fn eraser_stroke_result(
+    options: &PipelineRunOptions,
+    page: &DynamicImage,
+    inpainted: &DynamicImage,
+    previous_mask: &DynamicImage,
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+    text_blocks: &[koharu_ml::types::TextRegion],
+) -> Option<DynamicImage> {
+    let region = options.region?;
+    if options.restore_source_region != Some(true) {
+        return None;
+    }
+    let (width, height) = mask.dimensions();
+    if page.dimensions() != (width, height) || inpainted.dimensions() != (width, height) {
+        return None;
+    }
+    let x1 = region.x.saturating_add(region.width).min(width);
+    let y1 = region.y.saturating_add(region.height).min(height);
+    let give_back = koharu_ml::inpainting::erased_stroke_give_back(
+        previous_mask,
+        mask,
+        [region.x, region.y, x1, y1],
+    )?;
+    // What the model used to clean again: the mask left in the rectangle,
+    // grown as for any regional run.
+    let erase = glyph_erase_mask(
+        options,
+        page,
+        Some(previous_mask),
+        &clip_to_region(mask, &region),
+        &clip_to_region(bubble_mask, &region),
+        text_blocks,
+    );
+    let (mut unmarked, mut kept) = (0usize, 0usize);
+    let back = GrayImage::from_fn(width, height, |x, y| {
+        let inside = (region.x..x1).contains(&x) && (region.y..y1).contains(&y);
+        let erased = erase.get_pixel(x, y)[0] > 0;
+        let given = give_back.get_pixel(x, y)[0] > 0;
+        if inside && erased {
+            if given {
+                unmarked += 1;
+            } else {
+                kept += 1;
+            }
+        }
+        image::Luma([if inside && (given || !erased) { 255 } else { 0 }])
+    });
+    tracing::info!(
+        x = region.x,
+        y = region.y,
+        width = region.width,
+        height = region.height,
+        unmarked,
+        kept,
+        "mask eraser stroke: the original comes back where the stroke un-marked; nothing cleaned again"
+    );
+    Some(restore_masked_from_source(inpainted, page, &back, &region))
+}
+
+/// Store a clean-up result as the page's `Image { Inpainted }`, with an
+/// official release's pieces copied in when the page has them.
+pub fn store_inpainted(
+    ctx: &EngineCtx<'_>,
+    pieces: Option<&Pieces>,
+    result: &DynamicImage,
+) -> Result<Vec<Op>> {
+    let result = match pieces {
+        Some(pieces) => pieces.apply(result),
+        None => result.clone(),
+    };
+    let (width, height) = image_dimensions(&result);
+    let blob = ctx.blobs.put_webp(&result)?;
+    Ok(vec![upsert_image_blob(
+        ctx.scene,
+        ctx.page,
+        ImageRole::Inpainted,
+        blob,
+        width,
+        height,
+    )])
+}
+
+/// `mask` with every pixel outside `region` cleared, as one channel.
+fn clip_to_region(mask: &DynamicImage, region: &Region) -> DynamicImage {
+    let src = mask.to_luma8();
+    let (w, h) = src.dimensions();
+    let x1 = region.x.saturating_add(region.width).min(w);
+    let y1 = region.y.saturating_add(region.height).min(h);
+    let clipped = GrayImage::from_fn(w, h, |x, y| {
+        let inside = (region.x..x1).contains(&x) && (region.y..y1).contains(&y);
+        image::Luma([if inside { src.get_pixel(x, y)[0] } else { 0 }])
+    });
+    DynamicImage::ImageLuma8(clipped)
 }
 
 /// The pixels set in `mask` that were not set in `previous`: what a brush
@@ -942,6 +1097,219 @@ mod tests {
         let out = restore_masked_from_source(&base, &source, &mask, &big).to_rgba8();
         assert_eq!(out.get_pixel(6, 6).0, [10, 20, 30, 255]);
         assert_eq!(out.get_pixel(3, 3).0, [255; 4]);
+    }
+
+    const CLEANED: [u8; 4] = [250, 250, 250, 255];
+    const PINK: [u8; 4] = [240, 40, 160, 255];
+
+    /// A white page with a dark line of lettering (x 20..50) and, 4px right
+    /// of it, a pink heart (x 54..68) with a white inside, in a hand-added
+    /// text box big enough for the widest growth (8px). Returns the page,
+    /// the mask before the eraser stroke (lettering and heart, as when a
+    /// brush stroke took the heart), the cleaned page and the box.
+    fn heart_beside_lettering() -> (
+        DynamicImage,
+        GrayImage,
+        DynamicImage,
+        koharu_ml::types::TextRegion,
+    ) {
+        let mut page = RgbaImage::from_pixel(120, 60, Rgba([255; 4]));
+        let mut previous = GrayImage::new(120, 60);
+        for y in 25..35 {
+            for x in 20..50 {
+                page.put_pixel(x, y, Rgba([20, 20, 20, 255]));
+                previous.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        for y in 22..38 {
+            for x in 54..68 {
+                let inside = (58..64).contains(&x) && (27..33).contains(&y);
+                if !inside {
+                    page.put_pixel(x, y, Rgba(PINK));
+                }
+                previous.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let mut cleaned = page.clone();
+        for y in 15..46 {
+            for x in 12..80 {
+                cleaned.put_pixel(x, y, Rgba(CLEANED));
+            }
+        }
+        let text_box = koharu_ml::types::TextRegion {
+            x: 10.0,
+            y: 5.0,
+            width: 80.0,
+            height: 50.0,
+            ..Default::default()
+        };
+        (
+            DynamicImage::ImageRgba8(page),
+            previous,
+            DynamicImage::ImageRgba8(cleaned),
+            text_box,
+        )
+    }
+
+    fn eraser_options(region: Region) -> PipelineRunOptions {
+        PipelineRunOptions {
+            region: Some(region),
+            restore_source_region: Some(true),
+            ..Default::default()
+        }
+    }
+
+    /// The previous mask with `cleared` taken out inside the rectangle.
+    fn erased(previous: &GrayImage, cleared: impl Fn(u32, u32) -> bool) -> GrayImage {
+        GrayImage::from_fn(previous.width(), previous.height(), |x, y| {
+            let on = previous.get_pixel(x, y)[0] > 0 && !cleared(x, y);
+            image::Luma([if on { 255 } else { 0 }])
+        })
+    }
+
+    /// Every pixel of `out` is the page's or the cleaned page's: nothing was
+    /// generated.
+    fn nothing_generated(out: &RgbaImage, page: &DynamicImage, cleaned: &DynamicImage) {
+        let (page, cleaned) = (page.to_rgba8(), cleaned.to_rgba8());
+        for (x, y, pixel) in out.enumerate_pixels() {
+            assert!(
+                pixel == page.get_pixel(x, y) || pixel == cleaned.get_pixel(x, y),
+                "({x}, {y}) is new"
+            );
+        }
+    }
+
+    #[test]
+    fn an_eraser_stroke_over_a_heart_gives_it_back_and_cleans_nothing_again() {
+        let (page, previous, cleaned, text_box) = heart_beside_lettering();
+        // The stroke erases the heart's mask; its rectangle takes in the end
+        // of the lettering, whose growth (8px) reaches into the heart.
+        let mask = erased(&previous, |x, _| x >= 52);
+        let stroke = Region {
+            x: 44,
+            y: 18,
+            width: 34,
+            height: 24,
+        };
+        let bubbles = DynamicImage::ImageLuma8(GrayImage::new(120, 60));
+        let out = eraser_stroke_result(
+            &eraser_options(stroke),
+            &page,
+            &cleaned,
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(mask),
+            &bubbles,
+            &[text_box],
+        )
+        .expect("an eraser stroke on a cleaned page")
+        .to_rgba8();
+
+        // The whole heart is back, its white inside included.
+        let original = page.to_rgba8();
+        for y in 22..38 {
+            for x in 54..68 {
+                assert_eq!(out.get_pixel(x, y), original.get_pixel(x, y), "({x}, {y})");
+            }
+        }
+        // The lettering left in the mask and its wide margin away from the
+        // heart stay as they were cleaned: not cleaned again, not given back.
+        for (x, y) in [(44, 30), (49, 25), (46, 19), (50, 40)] {
+            assert_eq!(out.get_pixel(x, y).0, CLEANED, "({x}, {y})");
+        }
+        // Past that margin the rectangle gets the original, as before.
+        assert_eq!(out.get_pixel(75, 40).0, [255; 4]);
+        // Outside the rectangle nothing changes.
+        assert_eq!(out.get_pixel(30, 30).0, CLEANED);
+        assert_eq!(out.get_pixel(79, 44).0, CLEANED);
+        nothing_generated(&out, &page, &cleaned);
+    }
+
+    #[test]
+    fn mask_left_by_an_eraser_stroke_is_not_cleaned_again() {
+        let (page, previous, cleaned, text_box) = heart_beside_lettering();
+        // The stroke misses a speck at the heart's top right corner.
+        let speck = |x: u32, y: u32| (66..68).contains(&x) && (22..24).contains(&y);
+        let mask = erased(&previous, |x, y| x >= 52 && !speck(x, y));
+        let stroke = Region {
+            x: 50,
+            y: 18,
+            width: 24,
+            height: 24,
+        };
+        let bubbles = DynamicImage::ImageLuma8(GrayImage::new(120, 60));
+        let out = eraser_stroke_result(
+            &eraser_options(stroke),
+            &page,
+            &cleaned,
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(mask),
+            &bubbles,
+            &[text_box],
+        )
+        .expect("an eraser stroke on a cleaned page")
+        .to_rgba8();
+
+        // No patch is painted: the speck keeps its cleaned pixels, and the
+        // heart round it, its white inside included, is the original.
+        let original = page.to_rgba8();
+        for y in 22..38 {
+            for x in 54..68 {
+                let want = if speck(x, y) {
+                    CLEANED
+                } else {
+                    original.get_pixel(x, y).0
+                };
+                assert_eq!(out.get_pixel(x, y).0, want, "({x}, {y})");
+            }
+        }
+        // Beside the speck, outside what the stroke un-marked, the cleaned
+        // pixels stay.
+        assert_eq!(out.get_pixel(69, 21).0, CLEANED);
+        nothing_generated(&out, &page, &cleaned);
+    }
+
+    #[test]
+    fn only_a_mask_eraser_stroke_skips_the_model() {
+        let (page, previous, cleaned, text_box) = heart_beside_lettering();
+        let mask = erased(&previous, |x, _| x >= 52);
+        let stroke = Region {
+            x: 44,
+            y: 18,
+            width: 34,
+            height: 24,
+        };
+        let bubbles = DynamicImage::ImageLuma8(GrayImage::new(120, 60));
+        let previous = DynamicImage::ImageLuma8(previous);
+        let run = |options: &PipelineRunOptions, mask: &GrayImage| {
+            eraser_stroke_result(
+                options,
+                &page,
+                &cleaned,
+                &previous,
+                &DynamicImage::ImageLuma8(mask.clone()),
+                &bubbles,
+                std::slice::from_ref(&text_box),
+            )
+        };
+        assert!(run(&eraser_options(stroke), &mask).is_some());
+        // A full run, a brush stroke and a regional run that doesn't say
+        // which kind it is run the model as before.
+        let full = PipelineRunOptions::default();
+        assert!(run(&full, &mask).is_none());
+        let brush = PipelineRunOptions {
+            restore_source_region: Some(false),
+            ..eraser_options(stroke)
+        };
+        assert!(run(&brush, &mask).is_none());
+        let unsaid = PipelineRunOptions {
+            restore_source_region: None,
+            ..eraser_options(stroke)
+        };
+        assert!(run(&unsaid, &mask).is_none());
+        // So does a new mask that adds pixels inside the rectangle.
+        let mut added = mask.clone();
+        added.put_pixel(70, 40, image::Luma([255]));
+        assert!(run(&eraser_options(stroke), &added).is_none());
     }
 
     #[test]

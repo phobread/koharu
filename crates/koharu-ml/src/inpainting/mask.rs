@@ -75,6 +75,73 @@ pub fn expand_hand_stroke_mask_for_inpainting(
     )
 }
 
+/// The pixels a mask-eraser stroke gives back to the original page, inside
+/// its rectangle `[x0, y0, x1, y1]`: the ones it un-marked (set in
+/// `previous`, not in `mask`) and, around them, [`LEGACY_MIN_DILATE_RADIUS`]
+/// more where no mask is left that close. A brush stroke erases what it paints
+/// grown by the same amount (`expand_hand_stroke_mask_for_inpainting`); the
+/// mask left beside the stroke keeps that margin for itself, so the edge of
+/// lettering next to a heart doesn't come back with the heart.
+///
+/// `None` when the masks differ in size or `mask` sets a pixel inside the
+/// rectangle that `previous` didn't: not an eraser stroke.
+pub fn erased_stroke_give_back(
+    previous: &DynamicImage,
+    mask: &DynamicImage,
+    [x0, y0, x1, y1]: Xyxy,
+) -> Option<GrayImage> {
+    let previous = binarize_mask(previous);
+    let mask = binarize_mask(mask);
+    if previous.dimensions() != mask.dimensions() {
+        return None;
+    }
+    let (width, height) = mask.dimensions();
+    let (x1, y1) = (x1.min(width), y1.min(height));
+    let (x0, y0) = (x0.min(x1), y0.min(y1));
+    let mut out = GrayImage::new(width, height);
+    if x0 == x1 || y0 == y1 {
+        return Some(out);
+    }
+    let added = (y0..y1).any(|y| {
+        (x0..x1).any(|x| mask.get_pixel(x, y).0[0] > 0 && previous.get_pixel(x, y).0[0] == 0)
+    });
+    if added {
+        return None;
+    }
+
+    let grow = LEGACY_MIN_DILATE_RADIUS;
+    let work = expand_rect([x0, y0, x1, y1], width, height, u32::from(grow));
+    let local_mask = crop_imm(
+        &mask,
+        work[0],
+        work[1],
+        work[2] - work[0],
+        work[3] - work[1],
+    )
+    .to_image();
+    let unmarked = GrayImage::from_fn(local_mask.width(), local_mask.height(), |lx, ly| {
+        let (x, y) = (work[0] + lx, work[1] + ly);
+        let inside = (x0..x1).contains(&x) && (y0..y1).contains(&y);
+        let on =
+            inside && previous.get_pixel(x, y).0[0] > 0 && local_mask.get_pixel(lx, ly).0[0] == 0;
+        Luma([if on { 255 } else { 0 }])
+    });
+    let near_unmarked = dilate(&unmarked, Norm::LInf, grow);
+    let near_mask = dilate(&local_mask, Norm::LInf, grow);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (lx, ly) = (x - work[0], y - work[1]);
+            let give = unmarked.get_pixel(lx, ly).0[0] > 0
+                || (near_unmarked.get_pixel(lx, ly).0[0] > 0
+                    && near_mask.get_pixel(lx, ly).0[0] == 0);
+            if give {
+                out.put_pixel(x, y, Luma([255]));
+            }
+        }
+    }
+    Some(out)
+}
+
 fn expand_glyph_mask(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
@@ -1080,5 +1147,105 @@ mod tests {
         assert_eq!(expanded.get_pixel(32, 29).0[0], 255);
         // (33, 29) should be 0
         assert_eq!(expanded.get_pixel(33, 29).0[0], 0);
+    }
+
+    /// A line of lettering (x 10..40) with a heart beside it (x 44..56), both
+    /// in the mask, as when a brush stroke took the heart.
+    fn lettering_and_heart() -> GrayImage {
+        let mut mask = GrayImage::new(80, 40);
+        for y in 15..25 {
+            for x in (10..40).chain(44..56) {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        mask
+    }
+
+    #[test]
+    fn an_eraser_stroke_gives_back_what_it_unmarks_and_2px_round_it() {
+        let previous = lettering_and_heart();
+        // The eraser takes the heart's mask and grazes the lettering's end.
+        let mut mask = previous.clone();
+        for y in 10..30 {
+            for x in 38..60 {
+                mask.put_pixel(x, y, Luma([0]));
+            }
+        }
+        let rect = [36, 8, 62, 32];
+        let give = erased_stroke_give_back(
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(mask),
+            rect,
+        )
+        .expect("an eraser stroke");
+
+        // The heart and the lettering's un-marked end come back...
+        for x in [38, 39, 44, 50, 55] {
+            assert_eq!(give.get_pixel(x, 20)[0], 255, "x = {x}");
+        }
+        // ...with 2px round them,
+        assert_eq!(give.get_pixel(57, 20)[0], 255);
+        assert_eq!(give.get_pixel(50, 13)[0], 255);
+        assert_eq!(give.get_pixel(58, 20)[0], 0);
+        assert_eq!(give.get_pixel(50, 12)[0], 0);
+        // the gap between them too, since nothing marked is left that close,
+        assert_eq!(give.get_pixel(42, 20)[0], 255);
+        assert_eq!(give.get_pixel(40, 13)[0], 255);
+        // but not the 2px the lettering left in the mask keeps for its edge,
+        assert_eq!(give.get_pixel(38, 13)[0], 0);
+        assert_eq!(give.get_pixel(36, 26)[0], 0);
+        // nor the lettering itself, nor anything outside the rectangle.
+        assert_eq!(give.get_pixel(37, 20)[0], 0);
+        assert_eq!(give.get_pixel(36, 20)[0], 0);
+        assert_eq!(give.get_pixel(20, 20)[0], 0);
+        assert!(
+            give.enumerate_pixels()
+                .all(|(x, y, p)| p[0] == 0 || ((36..62).contains(&x) && (8..32).contains(&y)))
+        );
+    }
+
+    #[test]
+    fn an_eraser_stroke_that_leaves_mask_pixels_gives_back_round_them_only() {
+        let previous = lettering_and_heart();
+        // The heart's mask is erased except for a speck at its top corner.
+        let mut mask = previous.clone();
+        for y in 15..25 {
+            for x in 44..56 {
+                if !(x >= 54 && y <= 16) {
+                    mask.put_pixel(x, y, Luma([0]));
+                }
+            }
+        }
+        let give = erased_stroke_give_back(
+            &DynamicImage::ImageLuma8(previous),
+            &DynamicImage::ImageLuma8(mask),
+            [42, 12, 60, 28],
+        )
+        .expect("an eraser stroke");
+
+        // The speck stays marked. What the stroke un-marked comes back, also
+        // right next to the speck; round it, 2px more come back except within
+        // the speck's own 2px.
+        assert_eq!(give.get_pixel(55, 15)[0], 0);
+        assert_eq!(give.get_pixel(53, 17)[0], 255);
+        assert_eq!(give.get_pixel(50, 20)[0], 255);
+        assert_eq!(give.get_pixel(56, 17)[0], 0);
+        assert_eq!(give.get_pixel(56, 22)[0], 255);
+    }
+
+    #[test]
+    fn a_stroke_that_adds_to_the_mask_is_no_eraser_stroke() {
+        let previous = lettering_and_heart();
+        let mut mask = previous.clone();
+        mask.put_pixel(60, 30, Luma([255]));
+        mask.put_pixel(44, 20, Luma([0]));
+        let previous = DynamicImage::ImageLuma8(previous);
+        let mask = DynamicImage::ImageLuma8(mask);
+        assert!(erased_stroke_give_back(&previous, &mask, [40, 10, 70, 35]).is_none());
+        // A pixel added outside the rectangle doesn't count.
+        assert!(erased_stroke_give_back(&previous, &mask, [40, 10, 58, 28]).is_some());
+        // Masks of different sizes give nothing.
+        let small = DynamicImage::ImageLuma8(GrayImage::new(10, 10));
+        assert!(erased_stroke_give_back(&previous, &small, [0, 0, 10, 10]).is_none());
     }
 }

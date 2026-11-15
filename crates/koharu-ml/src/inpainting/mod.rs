@@ -13,7 +13,8 @@ pub mod strategy;
 pub use balloon::{BubbleFillResult, apply_bubble_fill};
 pub use decorations::{keep_coloured_decorations, keep_coloured_decorations_except};
 pub use mask::{
-    UndetectedBlockFallback, expand_hand_stroke_mask_for_inpainting, expand_mask_for_inpainting,
+    UndetectedBlockFallback, erased_stroke_give_back, expand_hand_stroke_mask_for_inpainting,
+    expand_mask_for_inpainting,
 };
 pub use strategy::{
     HdStrategy, HdStrategyConfig, InpaintForward, run_inpaint, run_inpaint_with_windows,

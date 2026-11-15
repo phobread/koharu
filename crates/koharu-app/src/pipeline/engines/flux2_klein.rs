@@ -17,10 +17,10 @@ use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::PipelineRunOptions;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    differs_under_mask, find_image_node, find_mask_node, glyph_erase_mask, grow_region,
-    image_dimensions, mask_bounds, mask_intersection, mask_pieces_touching,
-    restore_masked_from_source, restore_region_from_source, text_node_to_region, text_nodes,
-    upsert_image_blob,
+    differs_under_mask, eraser_stroke, find_image_node, find_mask_node, glyph_erase_mask,
+    grow_region, image_dimensions, mask_bounds, mask_intersection, mask_pieces_touching,
+    restore_masked_from_source, restore_region_from_source, store_inpainted, text_node_to_region,
+    text_nodes, upsert_image_blob,
 };
 
 /// How far around a repair stroke the lettering it lies on is followed.
@@ -55,6 +55,13 @@ impl Engine for Model {
             .as_ref()
             .map(|blob| ctx.blobs.load_image(blob))
             .transpose()?;
+        // A mask-eraser stroke gives the original back where it un-marked
+        // and cleans nothing again.
+        if let Some(result) =
+            eraser_stroke(&ctx, &original, previous_mask.as_ref(), &mask, &bubble_mask)?
+        {
+            return store_inpainted(&ctx, pieces.as_ref(), &result);
+        }
         // Set when a repair stroke builds on the cleaned image: the original
         // page, to show Flux2 under the pixels the stroke repaints.
         let mut repaint_from_source = None;

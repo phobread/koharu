@@ -6,7 +6,9 @@
 //! `Image { Inpainted }` if present (fallback Source), revert the region to
 //! the source pixels, and zero out mask pixels outside the region — the
 //! region is recomputed from scratch, so cleared mask areas return to the
-//! original art.
+//! original art. A mask-eraser stroke skips the model: the original comes
+//! back where it un-marked and the rest stays as cleaned
+//! (`support::eraser_stroke`).
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -19,8 +21,9 @@ use crate::official::cleanup_base;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, glyph_erase_mask, image_dimensions,
-    restore_region_from_source, text_node_to_region, text_nodes, upsert_image_blob,
+    eraser_stroke, find_image_node, find_mask_node, glyph_erase_mask, image_dimensions,
+    restore_region_from_source, store_inpainted, text_node_to_region, text_nodes,
+    upsert_image_blob,
 };
 
 pub struct Model(AotInpainting);
@@ -47,6 +50,13 @@ impl Engine for Model {
             .as_ref()
             .map(|blob| ctx.blobs.load_image(blob))
             .transpose()?;
+        // A mask-eraser stroke gives the original back where it un-marked
+        // and cleans nothing again.
+        if let Some(result) =
+            eraser_stroke(&ctx, &original, previous_mask.as_ref(), &mask, &bubble_mask)?
+        {
+            return store_inpainted(&ctx, pieces.as_ref(), &result);
+        }
         let (image, mask, bubble_mask) = match ctx.options.region {
             Some(r) => {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {

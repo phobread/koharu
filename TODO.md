@@ -65,8 +65,15 @@ fine. Still to watch:
   dropping to 5px.
 - The "Text over artwork" switch (Settings → Font defaults, near the
   bottom; only matters if turned on).
-- Once installed: the text-box key (T), and "Export all pages" on a big
-  project (folder dialog first, "Exporting N pages…" notice, then the files).
+- The text-box key (T), and "Export all pages" on a big project (folder
+  dialog first, "Exporting N pages…" notice, then the files).
+- Installed overnight 2026-11-16, never seen in a window: the Release view
+  button, text in black caption frames (Ruination 0062 / 0063; pictures in
+  `D:\koharu-review-2026-11-16\captions`), and the mask eraser over a heart
+  (pictures in `D:\koharu-review-2026-11-16\eraser`).
+- BadEnd3 026 box 5 ("JIGGLE") asks for the font TrashHandTight, which is
+  not installed (only TrashHand Relaxed is), so that box doesn't render.
+  Pick another font for it or add the font.
 
 ## Owner decisions open
 
@@ -85,10 +92,6 @@ fine. Still to watch:
   second stroke) and leave a hard cut at the rectangle's edge between new
   and old fill (nothing visible in tests). Evidence: 2 pages, 8 spots, 2
   steps; not tried on lettering made of separate blobs with no box round it.
-- Eraser side not looked at: erasing the mask over a heart to get it back
-  re-cleans nearby lettering with the wide margin, and an eraser stroke that
-  leaves a few mask pixels makes Flux2 redo that small rectangle (once it
-  pasted a pale pink patch over a heart's white inside, LOLExtras 0084).
 - A coloured word inside dark dialogue is kept like a heart. A brush stroke
   over a heart that is already in the letter mask paints no new pixels, so
   the heart stays: erase the mask over it first, then brush the whole heart
@@ -104,15 +107,12 @@ fine. Still to watch:
 
 - Vertical text can still have the hair-miss behind the 5px bug (only
   horizontal box text was fixed).
-- Some black caption boxes are missed by the bubble detector and keep the
-  box layout. Possible fallback: find the box's flat-colour patch on the
-  cleaned page (the upstream layout model also finds these frames).
-- Text over artwork growth (off by default), if turned on: a caption frame
-  or sign the bubble detector misses counts as artwork, so its text fills
-  the frame (Ruination 0063, LOLExtras 0037 sign); only other boxes and the
-  page edge stop the growth, not a bubble edge; a neighbour beside a box
-  caps its growth up and down too; a box with no font detection result
-  never grows.
+- Text over artwork growth (off by default), if turned on: a sign or a
+  caption frame that neither the bubble detector nor the caption-frame
+  fallback (see Done) takes counts as artwork, so its text fills the frame
+  (LOLExtras 0037 sign); only other boxes and the page edge stop the
+  growth, not a bubble edge; a neighbour beside a box caps its growth up
+  and down too; a box with no font detection result never grows.
 
 ### Official release
 
@@ -188,7 +188,46 @@ messages, docs and module headers, none of its code run.
 
 ## Done
 
-### Not built into the app yet
+### Installed 2026-11-16 03:35 (eraser strokes, uncommitted)
+
+- **Eraser strokes give back what they un-mark (2026-11-16).** Erasing the
+  mask over a heart now brings the heart back, and nothing next to it is
+  cleaned again. Before, an eraser stroke put the original back over its
+  whole rectangle, then Flux2 (or LaMa / AOT) cleaned the mask left in that
+  rectangle again with the wide margin (up to 8px for a hand-added box) and
+  usually without the hearts rule (the rectangle rarely holds enough
+  lettering for it). The heart was eaten again, and a few mask pixels the
+  stroke missed made Flux2 paint a new patch over a kept heart. Now an
+  eraser stroke runs no model. Inside its rectangle the original comes back
+  where the stroke un-marked, up to 2px round that (not within 2px of mask
+  that is left), and wherever the old re-clean would not have reached; the
+  rest stays as it was cleaned. Brush strokes, full runs and "Hide the
+  release's lettering" are unchanged. Un-cleaning a box uses the same route,
+  so it no longer re-cleans the lettering it just gave back next to a
+  neighbouring box. `eraser_stroke`, `eraser_stroke_result` and
+  `store_inpainted` in `koharu-app/src/pipeline/engines/support.rs` (called
+  first by `flux2_klein.rs`, `lama.rs` and `aot.rs`),
+  `erased_stroke_give_back` in `koharu-ml/src/inpainting/mask.rs`; 6 new
+  tests. On a copy of LOLExtras 0084, old and new builds, 2 runs each (same
+  pixels every run): after a repair stroke over 응..., the eraser over the
+  heart left 300 of its 311 pink pixels erased with the old build and 0 with
+  the new one; the small heart beside it 73 of 73 → 4. After a full Flux2
+  run (hearts kept), an eraser stroke by the heart that left a few mask
+  pixels cut its top flat with a pale pink patch (53 pixels off) and a
+  second one erased the small heart (73 of 73); new build: 0 and 0, no new
+  pixels made. Un-cleaning 0084's 응... box (1 run each): 126 pixels off
+  the original in its area → 14 (the ㄴ of 나 and the ㅅ of 사 next to the
+  box below came back cleaned with the old build). An eraser stroke takes
+  about 0.2 s instead of 1.3 s. Unchanged, pixel for pixel: the repair
+  stroke, full Flux2 runs on LOLExtras 0084 and 0028 and Neeko's Help 0012.
+  Limits: mask the stroke misses stays cleaned, and so does what was
+  cleaned round it (erase it too); an eraser stroke that un-marks nothing
+  (over a heart that isn't in the mask) still counts as a repair stroke on
+  the server and redoes cleaned lettering in its rectangle (telling the two
+  apart needs the app to say which tool drew it); tried on 0084 only;
+  pictures in `D:\koharu-review-2026-11-16\eraser\`.
+
+### Installed 2026-11-16 01:40 (c6ff85ca + the caption frames, uncommitted)
 
 - **A Release view (2026-11-16; owner, 2026-11-15: "a toggle between the
   official release and the raw korean would be nice").** In a project with
@@ -206,6 +245,37 @@ messages, docs and module headers, none of its code run.
   `ReleaseView.test.tsx`). Limits: display only; no key for it; a release
   of a different size from the raw page is fitted into the page (clean-up
   ignores such a release anyway). Tried in UI tests only, not in the app.
+- **Black caption boxes use their frame for lettering (2026-11-16).** Text
+  in a caption frame the bubble detector missed kept the box layout and
+  came out smaller than the frame allows (Ruination 0063: three of its four
+  black frames; 0062 has two more). Now, for an unlocked, upright,
+  horizontal box on no detected bubble, the renderer looks at the cleaned
+  page under it: if 90 % of the box is one colour and that colour fills a
+  closed patch that stays off the page edge, is at most 8 times the box,
+  holds 95 % of the box, has straight sides (65 % of its outline) and a
+  clear edge (80 % of the outline has a pixel 48 levels different within
+  3 px), the patch counts as one more bubble for that render. Its text then
+  flows into it like into any bubble (only when that gives bigger text),
+  boxes in one frame share it, frames overlapping like steps are split
+  between their texts, and with "Text over artwork" on, such a box no
+  longer grows. Nothing is saved: the stored bubble mask and the project
+  don't change. `add_flat_frames` in `koharu-renderer/src/text/frames.rs`,
+  called by `add_caption_frames` in `koharu-app/src/renderer.rs`; 12 new
+  tests. Checked without the GPU on copies of the owner's 71 cleaned pages
+  with a bubble mask (BadEnd3, LOLExtras, Neeko's Help, One Piece,
+  Ruination): of the 14 boxes it looks at, the 5 in black frames qualify
+  (0063's three frames, 0062's two) and the 9 over artwork don't (BadEnd3
+  003 and 026, LOLExtras 0019, 0029 and 0037's sign, Ruination 0062's sky
+  and 0064). With every bubble removed as a stress test, 18 of 439 boxes
+  qualify, all in caption frames (9 black, 9 white the detector does
+  find). Limits: not built or tried in the app yet; boxes drawn or resized
+  by hand, tilted or vertical are never looked at (0062's top-right black
+  box holds three such boxes and stays as it is); pages without a bubble
+  mask are left alone; a frame at the page edge, much bigger than its box,
+  with art covering more than a tenth of it, or with a box sticking out of
+  it is not taken. Tuned on Ruination's frames only (constants at the top
+  of `frames.rs`); `RUST_LOG=koharu_renderer::text::frames=debug` logs each
+  box's verdict.
 
 ### Installed 2026-11-16 (f37208d4)
 
