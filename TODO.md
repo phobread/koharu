@@ -64,7 +64,90 @@
 - **"Flux2 has trouble over some boxes":** part of a broader problem, to be
   looked at separately, not tonight.
 
+## Queued, 2026-11-15
+
+- **Keep coloured hearts on black boxes (owner: "Yes, queue it"; do it
+  after the hearts change and the Ruination 0063 change are committed).**
+  The rule that keeps coloured hearts out of the erase mask
+  (`koharu-ml/src/inpainting/decorations.rs`, `MAX_SURROUNDING_DARK_SHARE`)
+  skips dark boxes on purpose: with white-on-black lettering the dark
+  pixels are the background, so it can't tell lettering from background.
+  A pink heart on a black box is therefore erased like lettering when it
+  is under the mask or in a text box with no mask (old and new builds
+  alike). Idea: in a dark box with light lettering, keep coloured shapes
+  that sit on the box's own colour, apart from the lettering; still erase
+  the coloured parts of the lettering itself: a glow wrapped round the
+  white letters (Ruination 0064's green glow) and colour inside outlined
+  letters (ringed by the light outline). Test material: BadEnd3's black SFX
+  boxes with pink hearts (pages 001, 005, 026, 035; 3000x4000). In the
+  owner's project nothing cleans them yet (no box or mask touches them), so
+  test with a mask painted over the lettering as the owner would, on a
+  sandbox copy, plus a check that 0064's glow still goes and the Ruination,
+  LOLExtras and Neeko's Help pages don't change.
+
 ## Done recently
+
+- **Small black SFX bubbles on Ruination 0063 come out black (2026-11-15,
+  built, not installed).** The two small bubbles top left ("하븝..♡",
+  "쥽♡") came out grey or teal. Cause: the owner's mask is painted over
+  them whole (outline and some sky too), so only 4 pixels of bubble were
+  left to judge the dark-bubble start on (it needs 64) and Flux2 started
+  from noise, seeing teal sky all round. Flat fill can't take them either
+  (the bubble map takes in outline and sky: 28 % one colour). Now, when
+  fewer than 64 pixels are left around a bubble's lettering, the bubble is
+  judged on the picture under the lettering instead: its median must be
+  dark, at least 45 % of it that colour and 10 % something else, and the
+  two must look like space and strokes (after a 5x5 erosion at least 15 %
+  of the colour survives and at most 5 % of the rest; and the few pixels
+  left around the lettering, if any, must agree). The start then fills
+  from the bubble seen between the letters, and only inside the outline:
+  the bubble's colour with the strokes closed up, plus what it encloses;
+  the outline and the sky past it stay as on the page. The inside is grown
+  from the bubble's clear colour through anything near it (art seen
+  through a see-through bubble included) without crossing the outline, so
+  a see-through bubble keeps its art in the start (filled from itself) and
+  loses only the strokes over it.
+  `between_letters`, `bubble_inside` and `BubbleColour` in
+  `koharu-ml/src/flux2_klein/rough_fill.rs`; the log line "Flux2 crop
+  starts from the picture" now lists `between_letters`. 6 new unit tests
+  (23 in the file).
+  - See-through bubbles (owner's question the same day: "I'd prefer their
+    background to be transparent"): with an ordinary mask they don't reach
+    this path (0063's right bubble pixel-identical in all 6 runs). Painted
+    over whole (test only: the bubble's map area pulled in 4px, on the
+    sandbox copy), 0063's right bubble takes it; 3 runs each, brightness of
+    the shoulder seen through it: source 55, owner's page 33, old exe
+    47-58, new 46-48; the black part 10 / 11 / 13-15 / 15. No lettering
+    came back over the shoulder in either. Pictures:
+    `C:\kt\ab\st_compare.png`, `C:\kt\ab\st_zoom.png`. A first try kept the
+    strokes over the shoulder in the start (they touch art that reaches
+    past the mask); growing the inside through the art fixed that. Light
+    lines in art seen through (brighter than the bubble by more than 48)
+    count as strokes and are blurred over in the start, as on 0064.
+  - Result on a copy of the owner's project, Flux2 with the owner's
+    settings, 6 runs in a row after a fresh start, old exe against new:
+    inside the two bubbles not black 10-94 % (4 runs over 90 %) → 1-2 %,
+    mean colour (37-47, 42-54, 41-54) → (8-25, 10-29, 10-29) (owner's page
+    about 10); outline under the mask kept 93-99 % → 96-100 %. 0062 and
+    0064 pixel-identical, and the rest of 0063. Pictures:
+    `C:\kt\ab\strip_new3.png` (source, owner, old 1-6, before the
+    see-through change 1-6, final 1-6), `C:\kt\ab\zoom_new3.png`.
+  - The first try filled the outline too (the start was a black block over
+    it); Flux2 then left gaps in it, most of one side in 1 of 6 runs.
+  - Still seen: in 1 of 6 runs a faint teal line, the sky's lightning line
+    carried through the left bubble (short stubs in 2 more), and in 1 a
+    small white curve at its top-left corner spike. With 2 steps the start
+    can only go in at the one step there is, so there is no gentler
+    setting short of changing every start.
+  - Checked against white bubbles: every lettered bubble on 54 pages
+    (LOLExtras 49, Neeko's Help, One Piece, BadEnd3) judged this way
+    regardless: 227 white ones all fail at the first test (lettering is
+    the smaller part under its mask); the 8 that pass are all black or
+    dark grey bubbles with white text (LOLExtras 0017, 0018, 0020, 0103).
+    Black bubbles on BadEnd3's 3000x4000 pages fail (thicker strokes):
+    left as before. A white bubble whose bold black lettering is most of
+    what is under its mask, with no white gap over 4px, would pass the
+    stroke test; only the leftover pixels test stops it (unit test).
 
 Pictures and logs under `C:\kt` named below (the isolated test root) were
 deleted on 2026-11-14 at the owner's request.
@@ -659,7 +742,8 @@ deleted on 2026-11-14 at the owner's request.
     come out grey or teal in 6 of 6 runs (before and after this change;
     the owner's page has them black). The lettering and its widened mask
     nearly fill them, so too little bubble is left well inside the map to
-    judge the colour; they start as before.
+    judge the colour; they start as before. **Fixed 2026-11-15, see Done
+    recently.**
   - Owner, 2026-11-14: on 0064 their own page (an old-build run from
     noise) is better than the new start: the shoulder seen through the
     bubble has a crisp edge there, while every run with the start shows it

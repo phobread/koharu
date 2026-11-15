@@ -22,7 +22,7 @@
 use image::{GrayImage, Luma, Rgb, RgbImage};
 use imageproc::{
     distance_transform::Norm,
-    morphology::dilate,
+    morphology::{close, dilate, erode},
     region_labelling::{Connectivity, connected_components},
 };
 
@@ -72,13 +72,49 @@ const BUBBLE_SHARE: f32 = 0.75;
 /// Only bubbles whose colour has no channel above this take part. On the
 /// test pages dark bubbles reach 26 at most and light ones start at 237.
 const DARK_BUBBLE_MAX: u8 = 64;
+/// When the lettering covers nearly all of a bubble, too little of it is left
+/// around the lettering to judge (4 pixels well inside the map on the small
+/// black SFX bubbles of Ruination 0063, 2026-11-15: the owner's mask is
+/// painted over them whole). The bubble is then judged on the picture under
+/// its lettering (see [`between_letters`]), which needs this many pixels.
+const BETWEEN_MIN_PIXELS: usize = 400;
+/// Under the lettering, at least this share must be the bubble's colour
+/// (0.59 on Ruination 0063)...
+const BETWEEN_BUBBLE_SHARE: f32 = 0.45;
+/// ...and at least this share something else: the lettering.
+const BETWEEN_LETTERING_SHARE: f32 = 0.1;
+/// Lettering is made of strokes, the bubble of the space around them. Each
+/// part is eroded by this radius (a 5x5 square), and what survives tells
+/// strokes from space.
+const STROKE_PX: u8 = 2;
+/// At least this share of the bubble's colour survives (0.27 on Ruination
+/// 0063)...
+const BETWEEN_BUBBLE_SOLID: f32 = 0.15;
+/// ...and at most this share of the lettering (0.026 there, the soft edges of
+/// the strokes counted in; 0.042 at most on the black bubbles of LOLExtras,
+/// 0.017 on the rest of Ruination). A white bubble whose black lettering is
+/// mistaken for its colour fails here: the white around its strokes and
+/// between its words and lines survives. Strokes on big pages are thicker:
+/// the black bubbles of BadEnd3 (3000x4000 pages, the others 1300x2000)
+/// reach 0.16-0.31 and are left alone.
+const BETWEEN_LETTERING_SOLID: f32 = 0.05;
 
 /// Where a fill should start from the picture, and from what.
 pub(super) struct Surroundings {
     /// Where (255) the fill starts from the picture.
     pub weights: GrayImage,
     /// The bubbles that take part, each with its own colour.
-    pub bubble_colours: Vec<(u8, [u8; 3])>,
+    pub bubble_colours: Vec<BubbleColour>,
+}
+
+/// A dark bubble that takes part in the start, and its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BubbleColour {
+    pub id: u8,
+    pub colour: [u8; 3],
+    /// Judged on the picture under its lettering (see [`between_letters`]);
+    /// the fill then also starts from the bubble seen between the letters.
+    pub between_letters: bool,
 }
 
 /// Where (255) a fill should start from the picture, or `None` when no
@@ -88,7 +124,9 @@ pub(super) struct Surroundings {
 /// - lettering outside bubbles whose surroundings are plain;
 /// - lettering in a dark bubble when most of its surroundings well inside
 ///   that bubble share one colour, the bubble's (see [`BUBBLE_MAP_CELL_PX`]),
-///   and only inside that bubble.
+///   and only inside that bubble. When the lettering leaves too little of
+///   the bubble around it, the bubble is judged between the letters instead
+///   (see [`between_letters`]).
 ///
 /// The whole regenerated region is taken, not only the lettering: Flux2
 /// regenerates a text box's whole rectangle, and where part of it still
@@ -215,7 +253,7 @@ pub(super) fn plain_surroundings(
         .map(|ids| bubble_colours(image, erase, &guarded, ids))
         .unwrap_or_default();
     if let Some(ids) = bubbles {
-        for &(id, _) in &bubble_colours {
+        for &BubbleColour { id, .. } in &bubble_colours {
             let mut taken = vec![false; region_count];
             let mut marked = GrayImage::new(width, height);
             for (x, y, p) in erase.enumerate_pixels() {
@@ -248,13 +286,15 @@ pub(super) fn plain_surroundings(
 }
 
 /// The dark bubbles in `ids` that hold lettering whose surroundings well
-/// inside the bubble mostly share one colour, each with that colour.
+/// inside the bubble mostly share one colour, each with that colour. A
+/// bubble with too little of it left around the lettering is judged between
+/// the letters instead.
 fn bubble_colours(
     image: &RgbImage,
     erase: &GrayImage,
     guarded: &GrayImage,
     ids: &GrayImage,
-) -> Vec<(u8, [u8; 3])> {
+) -> Vec<BubbleColour> {
     let (width, height) = image.dimensions();
     let in_bubbles = GrayImage::from_fn(width, height, |x, y| {
         Luma([u8::from(erase.get_pixel(x, y).0[0] > 0 && ids.get_pixel(x, y).0[0] > 0) * 255])
@@ -284,13 +324,113 @@ fn bubble_colours(
                 samples.push(image.get_pixel(x, y).0);
             }
         }
+        if samples.len() < MIN_SURROUNDING_PIXELS {
+            let interior = GrayImage::from_fn(width, height, |x, y| {
+                Luma([u8::from(near_edge.get_pixel(x, y).0[0] == 0) * 255])
+            });
+            // What little is left around the lettering must not disagree:
+            // around a white bubble's black lettering it is white.
+            if let Some(between) = between_letters(image, erase, &interior)
+                && between.qualifies()
+                && (samples.is_empty()
+                    || close_to(&median(&mut samples), &between.colour, BUBBLE_TOLERANCE))
+            {
+                colours.push(BubbleColour {
+                    id,
+                    colour: between.colour,
+                    between_letters: true,
+                });
+            }
+            continue;
+        }
         if let Some(colour) = bubble_colour(&mut samples)
             && colour.iter().all(|c| *c <= DARK_BUBBLE_MAX)
         {
-            colours.push((id, colour));
+            colours.push(BubbleColour {
+                id,
+                colour,
+                between_letters: false,
+            });
         }
     }
     colours
+}
+
+/// How the picture under a bubble's lettering splits into the bubble's own
+/// colour and the lettering.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct BetweenLetters {
+    /// The median colour under the lettering.
+    pub colour: [u8; 3],
+    /// How many pixels it was judged on.
+    pub pixels: usize,
+    /// The share within [`BUBBLE_TOLERANCE`] of `colour` (the bubble)...
+    pub bubble_share: f32,
+    /// ...and the share of the rest (the lettering).
+    pub lettering_share: f32,
+    /// The share of each that survives erosion by [`STROKE_PX`].
+    pub bubble_solid: f32,
+    pub lettering_solid: f32,
+}
+
+impl BetweenLetters {
+    /// A dark bubble with lettering in strokes over it.
+    pub(super) fn qualifies(&self) -> bool {
+        self.pixels >= BETWEEN_MIN_PIXELS
+            && self.colour.iter().all(|c| *c <= DARK_BUBBLE_MAX)
+            && self.bubble_share >= BETWEEN_BUBBLE_SHARE
+            && self.lettering_share >= BETWEEN_LETTERING_SHARE
+            && self.bubble_solid >= BETWEEN_BUBBLE_SOLID
+            && self.lettering_solid <= BETWEEN_LETTERING_SOLID
+    }
+}
+
+/// A bubble judged on the picture under its lettering: the pixels of `image`
+/// under `erase` (nonzero) and in `interior` (nonzero: well inside one
+/// bubble). Their median is taken for the bubble's colour; the pixels near it
+/// are the bubble seen between the letters and the rest is the lettering.
+/// `None` when there is nothing to judge.
+pub(super) fn between_letters(
+    image: &RgbImage,
+    erase: &GrayImage,
+    interior: &GrayImage,
+) -> Option<BetweenLetters> {
+    let (width, height) = image.dimensions();
+    let judged =
+        |x: u32, y: u32| erase.get_pixel(x, y).0[0] > 0 && interior.get_pixel(x, y).0[0] > 0;
+    let mut samples: Vec<[u8; 3]> = image
+        .enumerate_pixels()
+        .filter(|(x, y, _)| judged(*x, *y))
+        .map(|(_, _, p)| p.0)
+        .collect();
+    if samples.is_empty() {
+        return None;
+    }
+    let colour = median(&mut samples);
+    let part = |bubble: bool| {
+        GrayImage::from_fn(width, height, |x, y| {
+            let near = close_to(&image.get_pixel(x, y).0, &colour, BUBBLE_TOLERANCE);
+            Luma([u8::from(judged(x, y) && near == bubble) * 255])
+        })
+    };
+    let (bubble, lettering) = (part(true), part(false));
+    let count = |mask: &GrayImage| mask.pixels().filter(|p| p.0[0] > 0).count();
+    let solid = |mask: &GrayImage| {
+        let total = count(mask);
+        if total == 0 {
+            return 0.0;
+        }
+        count(&erode(mask, Norm::LInf, STROKE_PX)) as f32 / total as f32
+    };
+    let pixels = samples.len();
+    Some(BetweenLetters {
+        colour,
+        pixels,
+        bubble_share: count(&bubble) as f32 / pixels as f32,
+        lettering_share: count(&lettering) as f32 / pixels as f32,
+        bubble_solid: solid(&bubble),
+        lettering_solid: solid(&lettering),
+    })
 }
 
 /// Whether most of `samples` share one colour.
@@ -336,13 +476,16 @@ fn close_to(pixel: &[u8; 3], colour: &[u8; 3], tolerance: u8) -> bool {
 /// blend of its surroundings (pull-push interpolation from a narrow band
 /// around the erased area). Lettering outside bubbles is filled from the
 /// surroundings outside bubbles; lettering in one of `bubble_colours` from
-/// the surroundings in that bubble close to its colour. Other pixels are
-/// unchanged, and so is lettering with nothing to fill from.
+/// the surroundings in that bubble close to its colour. A bubble judged
+/// between the letters is also filled from the bubble seen there (its colour
+/// at least [`EDGE_GUARD_PX`] from anything else, past the soft edges of the
+/// strokes), and only inside its outline (see [`bubble_inside`]). Other
+/// pixels are unchanged, and so is lettering with nothing to fill from.
 pub(super) fn rough_fill(
     image: &RgbImage,
     erase: &GrayImage,
     bubbles: Option<&GrayImage>,
-    bubble_colours: &[(u8, [u8; 3])],
+    bubble_colours: &[BubbleColour],
 ) -> RgbImage {
     let (width, height) = image.dimensions();
     if erase.dimensions() != (width, height) {
@@ -353,22 +496,45 @@ pub(super) fn rough_fill(
     let guarded = binary_dilate(erase, EDGE_GUARD_PX);
     let around = binary_dilate(erase, EDGE_GUARD_PX + SURROUNDINGS_PX);
     let mut filled = image.clone();
-    let groups = std::iter::once((0, None)).chain(
+    let groups = std::iter::once((0, None, false)).chain(
         bubble_colours
             .iter()
-            .map(|&(id, colour)| (id, Some(colour))),
+            .map(|b| (b.id, Some(b.colour), b.between_letters)),
     );
-    for (id, colour) in groups {
+    for (id, colour, between_letters) in groups {
         let erased = |x: u32, y: u32| erase.get_pixel(x, y).0[0] > 0 && id_at(x, y) == id;
         if !(0..height).any(|y| (0..width).any(|x| erased(x, y))) {
             continue;
         }
+        // The bubble seen between the letters, away from the strokes, and
+        // its inside: only that is filled.
+        let near = |tolerance: u8| {
+            colour.filter(|_| between_letters).map(|colour| {
+                GrayImage::from_fn(width, height, |x, y| {
+                    let near =
+                        id_at(x, y) == id && close_to(&image.get_pixel(x, y).0, &colour, tolerance);
+                    Luma([u8::from(near) * 255])
+                })
+            })
+        };
+        let seen = near(BUBBLE_TOLERANCE);
+        let between = seen
+            .as_ref()
+            .map(|seen| erode(seen, Norm::LInf, EDGE_GUARD_PX));
+        let inside = seen
+            .as_ref()
+            .zip(near(PLAIN_TOLERANCE))
+            .map(|(seen, own)| bubble_inside(seen, &own, erase));
         let known = |x: u32, y: u32| {
-            guarded.get_pixel(x, y).0[0] == 0
+            let around_lettering = guarded.get_pixel(x, y).0[0] == 0
                 && around.get_pixel(x, y).0[0] > 0
                 && id_at(x, y) == id
                 && colour.is_none_or(|colour| {
                     close_to(&image.get_pixel(x, y).0, &colour, BUBBLE_TOLERANCE)
+                });
+            around_lettering
+                || between.as_ref().is_some_and(|between| {
+                    erase.get_pixel(x, y).0[0] > 0 && between.get_pixel(x, y).0[0] > 0
                 })
         };
         let Some(colours) = pull_push(image, known) else {
@@ -376,7 +542,10 @@ pub(super) fn rough_fill(
         };
         for y in 0..height {
             for x in 0..width {
-                if erased(x, y) {
+                let filled_here = inside
+                    .as_ref()
+                    .is_none_or(|inside| inside.get_pixel(x, y).0[0] > 0);
+                if erased(x, y) && filled_here {
                     let colour = colours[(y * width + x) as usize];
                     filled.put_pixel(x, y, Rgb(colour.map(|c| c.round().clamp(0.0, 255.0) as u8)));
                 }
@@ -384,6 +553,56 @@ pub(super) fn rough_fill(
         }
     }
     filled
+}
+
+/// The inside of a bubble: what is `seen` in it (nonzero: near its colour,
+/// art seen through a see-through bubble included) and joined to its colour
+/// proper (`own`, nonzero) without crossing anything else, with the strokes
+/// over it closed up (see [`STROKE_PX`]), and whatever that encloses under
+/// `erase`. Left out is what reaches past the erased area: the bubble's
+/// outline, which has the bubble on one side only, and the page past it.
+///
+/// A mask painted over a bubble whole covers its outline, and filled with
+/// the bubble's colour there the start lost it: on Ruination 0063
+/// (2026-11-15) Flux2 then left gaps in the outline, most of one side in 1
+/// of 6 runs. A stroke of lettering touching the outline is still filled:
+/// it has the bubble on both sides. Only what is joined to the bubble's own
+/// colour counts as seen: dark page just past the outline is near a black
+/// bubble's colour too (Ruination 0063), and closed up with it the outline
+/// between them went. Art seen through a see-through bubble is joined to it,
+/// so the strokes over that art are filled as well, and the art itself is
+/// filled from itself (it is what the bubble shows between the letters).
+fn bubble_inside(seen: &GrayImage, own: &GrayImage, erase: &GrayImage) -> GrayImage {
+    let (width, height) = seen.dimensions();
+    let parts = connected_components(seen, Connectivity::Four, Luma([0u8]));
+    let count = parts.pixels().map(|p| p.0[0]).max().unwrap_or(0) as usize + 1;
+    let mut joined = vec![false; count];
+    for (x, y, part) in parts.enumerate_pixels() {
+        if own.get_pixel(x, y).0[0] > 0 {
+            joined[part.0[0] as usize] = true;
+        }
+    }
+    joined[0] = false;
+    let bubble = GrayImage::from_fn(width, height, |x, y| {
+        Luma([u8::from(joined[parts.get_pixel(x, y).0[0] as usize]) * 255])
+    });
+    let closed = close(&bubble, Norm::LInf, STROKE_PX);
+    let rest = GrayImage::from_fn(width, height, |x, y| {
+        Luma([u8::from(closed.get_pixel(x, y).0[0] == 0) * 255])
+    });
+    let pieces = connected_components(&rest, Connectivity::Four, Luma([0u8]));
+    let count = pieces.pixels().map(|p| p.0[0]).max().unwrap_or(0) as usize + 1;
+    let mut reaches_out = vec![false; count];
+    for (x, y, piece) in pieces.enumerate_pixels() {
+        if erase.get_pixel(x, y).0[0] == 0 {
+            reaches_out[piece.0[0] as usize] = true;
+        }
+    }
+    GrayImage::from_fn(width, height, |x, y| {
+        let piece = pieces.get_pixel(x, y).0[0] as usize;
+        let inside = closed.get_pixel(x, y).0[0] > 0 || (piece > 0 && !reaches_out[piece]);
+        Luma([u8::from(inside) * 255])
+    })
 }
 
 /// `mask` (nonzero = set) grown by `radius`, as 0/255.
@@ -739,6 +958,225 @@ mod tests {
         assert!(plain_surroundings(&image, &erase, &erase, None).is_none());
     }
 
+    fn dark_bubble(id: u8, colour: [u8; 3]) -> BubbleColour {
+        BubbleColour {
+            id,
+            colour,
+            between_letters: false,
+        }
+    }
+
+    /// A small bubble (24..96, outline 22..24 and 96..98) on a teal page,
+    /// the bubble map overshooting it (10..110), and vertical strokes of
+    /// lettering at `strokes` (x ranges, 24..96 high or `stroke_rows`).
+    /// The erase mask covers the whole bubble and its outline, as a mask
+    /// painted over it whole does.
+    fn covered_bubble(
+        fill: [u8; 3],
+        outline: [u8; 3],
+        ink: [u8; 3],
+        strokes: &[(u32, u32)],
+        stroke_rows: (u32, u32),
+    ) -> (RgbImage, GrayImage, GrayImage) {
+        let ids = bubble_map(120, 120, 10, 10, 110, 110);
+        let erase = block(120, 120, 20, 20, 100, 100);
+        let image = RgbImage::from_fn(120, 120, |x, y| {
+            let inside = |a, b| (a..b).contains(&x) && (a..b).contains(&y);
+            let stroke = strokes.iter().any(|&(a, b)| (a..b).contains(&x))
+                && (stroke_rows.0..stroke_rows.1).contains(&y);
+            if inside(24, 96) {
+                Rgb(if stroke { ink } else { fill })
+            } else if inside(22, 98) {
+                Rgb(outline)
+            } else {
+                Rgb([60, 90, 90])
+            }
+        });
+        (image, erase, ids)
+    }
+
+    #[test]
+    fn a_dark_bubble_its_lettering_covers_is_judged_between_the_letters() {
+        // White strokes 3px wide with 7px of the bubble between them.
+        let strokes: Vec<(u32, u32)> = (0..6).map(|i| (36 + i * 10, 39 + i * 10)).collect();
+        let (image, erase, ids) = covered_bubble(
+            [8, 10, 10],
+            [240, 240, 240],
+            [250, 250, 250],
+            &strokes,
+            (34, 86),
+        );
+
+        let plain = plain_surroundings(&image, &erase, &erase, Some(&ids))
+            .expect("the bubble shows between the letters");
+        let filled = rough_fill(&image, &erase, Some(&ids), &plain.bubble_colours);
+
+        assert_eq!(
+            plain.bubble_colours,
+            vec![BubbleColour {
+                id: 1,
+                colour: [8, 10, 10],
+                between_letters: true,
+            }]
+        );
+        assert_eq!(plain.weights.get_pixel(60, 60).0[0], 255);
+        for (x, y, pixel) in filled.enumerate_pixels() {
+            if (24..96).contains(&x) && (24..96).contains(&y) {
+                assert!(
+                    pixel.0.iter().all(|c| *c < 30),
+                    "pixel {x},{y} is {pixel:?}"
+                );
+            }
+        }
+        // The outline and the page past it, under the mask too, stay.
+        assert_eq!(filled.get_pixel(23, 60).0, [240, 240, 240]);
+        assert_eq!(filled.get_pixel(97, 60).0, [240, 240, 240]);
+        assert_eq!(filled.get_pixel(21, 60).0, [60, 90, 90]);
+    }
+
+    #[test]
+    fn a_stroke_touching_the_outline_is_filled_and_the_outline_kept() {
+        // As on Ruination 0063, where the first stroke of the lettering
+        // starts at the bubble's corner: a 3px stroke from the outline
+        // across the bubble.
+        let strokes: Vec<(u32, u32)> = (0..6).map(|i| (36 + i * 10, 39 + i * 10)).collect();
+        let (mut image, erase, ids) = covered_bubble(
+            [8, 10, 10],
+            [240, 240, 240],
+            [250, 250, 250],
+            &strokes,
+            (34, 86),
+        );
+        for x in 24..70 {
+            for y in 28..31 {
+                image.put_pixel(x, y, Rgb([250, 250, 250]));
+            }
+        }
+
+        let plain = plain_surroundings(&image, &erase, &erase, Some(&ids)).expect("judged");
+        let filled = rough_fill(&image, &erase, Some(&ids), &plain.bubble_colours);
+
+        assert!(plain.bubble_colours[0].between_letters);
+        for x in 24..70 {
+            let pixel = filled.get_pixel(x, 29).0;
+            assert!(
+                pixel.iter().all(|c| *c < 30),
+                "stroke at {x},29 is {pixel:?}"
+            );
+        }
+        assert_eq!(filled.get_pixel(23, 29).0, [240, 240, 240]);
+    }
+
+    #[test]
+    fn art_seen_through_a_covered_bubble_stays_and_the_strokes_over_it_go() {
+        // A see-through black bubble showing dim art on its left (24..50),
+        // white strokes over the art and over the black.
+        let strokes: Vec<(u32, u32)> = (0..6).map(|i| (36 + i * 10, 39 + i * 10)).collect();
+        let (mut image, erase, ids) = covered_bubble(
+            [8, 10, 10],
+            [240, 240, 240],
+            [250, 250, 250],
+            &strokes,
+            (34, 86),
+        );
+        for y in 24..96 {
+            for x in 24..50 {
+                if image.get_pixel(x, y).0 == [8, 10, 10] {
+                    image.put_pixel(x, y, Rgb([40, 46, 46]));
+                }
+            }
+        }
+
+        let plain = plain_surroundings(&image, &erase, &erase, Some(&ids)).expect("judged");
+        let filled = rough_fill(&image, &erase, Some(&ids), &plain.bubble_colours);
+
+        assert!(plain.bubble_colours[0].between_letters);
+        assert_eq!(filled.get_pixel(30, 60).0, [40, 46, 46], "the art stays");
+        let over_art = filled.get_pixel(37, 60).0;
+        assert!(
+            over_art
+                .iter()
+                .zip([40, 46, 46])
+                .all(|(c, art)| c.abs_diff(art) <= 12),
+            "the stroke over the art is {over_art:?}"
+        );
+        let over_black = filled.get_pixel(67, 60).0;
+        assert!(over_black.iter().all(|c| *c < 30), "{over_black:?}");
+        assert_eq!(filled.get_pixel(23, 60).0, [240, 240, 240], "the outline");
+    }
+
+    #[test]
+    fn a_white_bubble_its_lettering_covers_is_left_alone() {
+        let strokes: Vec<(u32, u32)> = (0..6).map(|i| (36 + i * 10, 39 + i * 10)).collect();
+        let (image, erase, ids) = covered_bubble(
+            [245, 245, 245],
+            [20, 20, 20],
+            [10, 10, 10],
+            &strokes,
+            (34, 86),
+        );
+
+        assert!(plain_surroundings(&image, &erase, &erase, Some(&ids)).is_none());
+    }
+
+    /// Bold black strokes 6px wide, 4px apart, filling a white bubble from
+    /// side to side, with a `wide` gap of 10px in the middle or not. Black
+    /// is then most of what is under the lettering.
+    fn bold_strokes(wide: bool) -> Vec<(u32, u32)> {
+        let mut strokes = vec![(24, 30), (34, 40), (44, 50), (54, 60)];
+        if wide {
+            strokes.extend([(70, 76), (80, 86), (90, 96)]);
+        } else {
+            strokes.extend([(64, 70), (74, 80), (84, 90), (94, 96)]);
+        }
+        strokes
+    }
+
+    #[test]
+    fn bold_black_lettering_with_white_between_its_words_is_not_taken_for_the_bubble() {
+        let (image, erase, ids) = covered_bubble(
+            [245, 245, 245],
+            [20, 20, 20],
+            [10, 10, 10],
+            &bold_strokes(true),
+            (24, 96),
+        );
+
+        assert!(plain_surroundings(&image, &erase, &erase, Some(&ids)).is_none());
+    }
+
+    #[test]
+    fn what_is_left_around_the_lettering_vetoes_a_wrong_colour() {
+        // Bold black strokes with no white wider than 4px between them pass
+        // as a dark bubble between the letters; a 6x6 patch of the white
+        // bubble left uncovered well inside it says otherwise.
+        let (mut image, mut erase, ids) = covered_bubble(
+            [245, 245, 245],
+            [20, 20, 20],
+            [10, 10, 10],
+            &bold_strokes(false),
+            (24, 96),
+        );
+        let interior = GrayImage::from_fn(120, 120, |x, y| {
+            Luma([u8::from((22..98).contains(&x) && (22..98).contains(&y)) * 255])
+        });
+        let between = between_letters(&image, &erase, &interior).expect("judged");
+        assert!(between.qualifies(), "{between:?}");
+        for y in 60..66 {
+            for x in 40..46 {
+                erase.put_pixel(x, y, Luma([0]));
+                image.put_pixel(x, y, Rgb([245, 245, 245]));
+            }
+        }
+        let between = between_letters(&image, &erase, &interior).expect("judged");
+        assert!(
+            between.qualifies(),
+            "still, between the letters: {between:?}"
+        );
+
+        assert!(plain_surroundings(&image, &erase, &erase, Some(&ids)).is_none());
+    }
+
     /// Bubble 1 over `x0..x1` x `y0..y1`, nothing elsewhere.
     fn bubble_map(width: u32, height: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> GrayImage {
         GrayImage::from_fn(width, height, |x, y| {
@@ -767,7 +1205,7 @@ mod tests {
         let plain =
             plain_surroundings(&image, &erase, &erase, Some(&ids)).expect("the bubble is plain");
 
-        assert_eq!(plain.bubble_colours, vec![(1, [10, 10, 10])]);
+        assert_eq!(plain.bubble_colours, vec![dark_bubble(1, [10, 10, 10])]);
         assert_eq!(plain.weights.get_pixel(64, 64).0[0], 255);
         assert_eq!(plain.weights.get_pixel(44 - 16, 64).0[0], 255, "the margin");
         assert_eq!(plain.weights.get_pixel(44 - 17, 64).0[0], 0);
@@ -798,7 +1236,7 @@ mod tests {
             plain_surroundings(&image, &erase, &erase, Some(&ids)).expect("mostly the bubble");
         let filled = rough_fill(&image, &erase, Some(&ids), &plain.bubble_colours);
 
-        assert_eq!(plain.bubble_colours, vec![(1, [8, 8, 8])]);
+        assert_eq!(plain.bubble_colours, vec![dark_bubble(1, [8, 8, 8])]);
         for (x, y, pixel) in filled.enumerate_pixels() {
             if erase.get_pixel(x, y).0[0] > 0 {
                 assert!(

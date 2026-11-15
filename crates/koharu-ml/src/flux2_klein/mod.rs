@@ -495,11 +495,17 @@ impl Flux2Klein {
                         ))
                     });
                     let start = plain.as_ref().zip(rough.as_ref()).map(|(plain, rough)| {
-                        let bubbles: Vec<u8> =
-                            plain.bubble_colours.iter().map(|(id, _)| *id).collect();
+                        let bubbles: Vec<u8> = plain.bubble_colours.iter().map(|b| b.id).collect();
+                        let between_letters: Vec<u8> = plain
+                            .bubble_colours
+                            .iter()
+                            .filter(|b| b.between_letters)
+                            .map(|b| b.id)
+                            .collect();
                         tracing::info!(
                             crop_index,
                             ?bubbles,
+                            ?between_letters,
                             "Flux2 crop starts from the picture around plain lettering"
                         );
                         RoughStart {
