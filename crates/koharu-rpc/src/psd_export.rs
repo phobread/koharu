@@ -185,22 +185,25 @@ pub fn png_bytes_for_page(
     page_id: PageId,
     roles: &[ImageRole],
 ) -> Result<Option<Vec<u8>>> {
-    let scene: Scene = session.scene_snapshot();
-    let page = scene
-        .pages
-        .get(&page_id)
-        .ok_or_else(|| anyhow::anyhow!("page {page_id} not found"))?;
-
-    let blob = roles.iter().find_map(|role| {
-        page.nodes.values().find_map(|n| match &n.kind {
-            NodeKind::Image(img) if img.role == *role => Some(img.blob.clone()),
-            _ => None,
+    // Only the blob reference is needed: read it under the lock rather than
+    // cloning the whole scene, since pages are encoded in parallel.
+    let blob = {
+        let scene = session.scene.read();
+        let page = scene
+            .pages
+            .get(&page_id)
+            .ok_or_else(|| anyhow::anyhow!("page {page_id} not found"))?;
+        roles.iter().find_map(|role| {
+            page.nodes.values().find_map(|n| match &n.kind {
+                NodeKind::Image(img) if img.role == *role => Some(img.blob.clone()),
+                _ => None,
+            })
         })
-    });
+    };
     let Some(blob_ref) = blob else {
         return Ok(None);
     };
-    let image = session.blobs.load_image(&blob_ref)?;
+    let image = session.blobs.load_image_uncached(&blob_ref)?;
     let mut buf: Vec<u8> = Vec::new();
     image
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)

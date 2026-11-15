@@ -641,6 +641,7 @@
     "shortcutIncreaseBrushSize": "Increase Brush Size",
     "shortcutDecreaseBrushSize": "Decrease Brush Size",
     "shortcutCloseProject": "Close project",
+    "shortcutToggleTextBoxes": "Show / hide text boxes",
     "shortcutPressKey": "Press a key...",
     "shortcutReset": "Reset Keybinds",
     "shortcutResetDescription": "This will restore all shortcuts to their default values. Your saved changes will be lost.",

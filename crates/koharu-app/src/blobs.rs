@@ -94,6 +94,17 @@ impl BlobStore {
         Ok(img)
     }
 
+    /// Decode an image without adding it to the LRU (a copy already cached is
+    /// still used). For one pass over every page, such as an export, which
+    /// would otherwise fill the cache with full-size pages and push out the
+    /// ones being edited.
+    pub fn load_image_uncached(&self, r: &BlobRef) -> Result<DynamicImage> {
+        if let Some(img) = self.cache.lock().peek(r).cloned() {
+            return Ok(img);
+        }
+        decode_blob(&self.get_bytes(r)?)
+    }
+
     /// Encode an image as WebP, store, cache, return ref.
     pub fn put_webp(&self, img: &DynamicImage) -> Result<BlobRef> {
         let mut buf = Cursor::new(Vec::new());

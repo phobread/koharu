@@ -6,6 +6,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
 import type { Node, Page, SceneSnapshot } from '@/lib/api/schemas'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 import { server } from '../msw/server'
@@ -106,5 +107,51 @@ describe('useKeyboardShortcuts — Ctrl+W', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('useKeyboardShortcuts — text boxes', () => {
+  beforeEach(() => {
+    useEditorUiStore.setState({ showTextBlocksOverlay: false, mode: 'select' })
+  })
+
+  it('T shows and hides the text boxes', () => {
+    renderHook(() => useKeyboardShortcuts())
+
+    fireEvent.keyDown(window, { key: 't' })
+    expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(true)
+
+    fireEvent.keyDown(window, { key: 't' })
+    expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(false)
+  })
+
+  it('T does nothing while typing inside a textarea', () => {
+    renderHook(() => useKeyboardShortcuts())
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    textarea.focus()
+
+    fireEvent.keyDown(textarea, { key: 't' })
+
+    expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(false)
+    document.body.removeChild(textarea)
+  })
+
+  it('switching to the repair brush leaves hidden text boxes hidden', () => {
+    renderHook(() => useKeyboardShortcuts())
+
+    fireEvent.keyDown(window, { key: 'r' })
+
+    expect(useEditorUiStore.getState().mode).toBe('repairBrush')
+    expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(false)
+  })
+
+  it('switching to the repair brush leaves shown text boxes shown', () => {
+    useEditorUiStore.setState({ showTextBlocksOverlay: true })
+    renderHook(() => useKeyboardShortcuts())
+
+    fireEvent.keyDown(window, { key: 'r' })
+
+    expect(useEditorUiStore.getState().showTextBlocksOverlay).toBe(true)
   })
 })

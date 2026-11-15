@@ -4,8 +4,15 @@ import type { TFunction } from 'i18next'
 
 import { getGetSceneJsonQueryKey, getSceneJson } from '@/lib/api/default/default'
 import type { AddOfficialPagesResponse, SceneSnapshot } from '@/lib/api/schemas'
+import { isTauri } from '@/lib/backend'
+import i18n from '@/lib/i18n'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
-import { prepareExportDirectory, saveBlob, saveBlobToDirectory } from '@/lib/io/saveBlob'
+import {
+  pickSaveDirectory,
+  prepareExportDirectory,
+  saveBlob,
+  saveBlobToDirectory,
+} from '@/lib/io/saveBlob'
 import {
   addOfficialPagesByPaths,
   awaitPendingSceneEdits,
@@ -159,6 +166,13 @@ function exportFailureMessage(format: ExportFormat, raw: string): string {
   return `Export failed: ${raw}`
 }
 
+/** How many pages an export of `pages` covers (every page when omitted). */
+function exportPageCount(pages?: string[]): number {
+  if (pages) return pages.length
+  const snap = queryClient.getQueryData<SceneSnapshot>(getGetSceneJsonQueryKey())
+  return Object.keys(snap?.scene.pages ?? {}).length
+}
+
 /**
  * Export the current project in `format` and save it; `pages` limits image
  * formats to those pages. Waits for queued edits and their auto-renders
@@ -170,18 +184,42 @@ export async function exportCurrentProjectAs(
   pages?: string[],
   opts?: { outputDirectory?: string },
 ): Promise<boolean> {
+  const ui = useEditorUiStore.getState()
+  let busyNotice: number | undefined
   try {
+    const { defaultFont, exportFolder } = usePreferencesStore.getState()
+    const pageCount = format === 'khr' ? 0 : exportPageCount(pages)
+    let outputDirectory = opts?.outputDirectory
+    // Several pages come back as one zip that is unpacked into a folder. Ask
+    // for the folder before building it, so the dialog opens at once instead
+    // of after every page has been encoded.
+    if (!outputDirectory && pageCount > 1 && isTauri()) {
+      const defaultDirectory = await prepareExportDirectory(
+        exportFolder,
+        currentProjectName(),
+        exportSubfolder[format],
+      )
+      outputDirectory = await pickSaveDirectory(defaultDirectory)
+      if (!outputDirectory) return false
+    }
+    if (format === 'khr' || pageCount > 1) {
+      busyNotice = ui.showNotice(
+        format === 'khr'
+          ? i18n.t('export.workingProject', 'Exporting the project…')
+          : i18n.t('export.workingPages', 'Exporting {{count}} pages…', { count: pageCount }),
+        { sticky: true },
+      )
+    }
     await awaitPendingSceneEdits()
     await settleAutoRenders()
-    const { defaultFont, exportFolder } = usePreferencesStore.getState()
     const { blob, filename } = await exportProject({ format, pages, defaultFont })
     const base = sanitiseBaseName(currentProjectName())
     // Prefer the server's Content-Disposition filename (matches the actual
     // bytes — a raw PNG/PSD for single-file responses, a zip for multi).
     // Fall back to our guess only if the header is missing/unparseable.
     const defaultName = filename ?? `${base}.${exportExtension[format]}`
-    if (opts?.outputDirectory) {
-      return await saveBlobToDirectory(blob, defaultName, opts.outputDirectory)
+    if (outputDirectory) {
+      return await saveBlobToDirectory(blob, defaultName, outputDirectory)
     }
     const defaultDirectory = await prepareExportDirectory(
       exportFolder,
@@ -199,6 +237,11 @@ export async function exportCurrentProjectAs(
     const raw = err instanceof Error ? err.message : String(err)
     useEditorUiStore.getState().showError(exportFailureMessage(format, raw))
     return false
+  } finally {
+    // Take the "Exporting…" notice down unless something replaced it.
+    if (busyNotice !== undefined && useEditorUiStore.getState().error?.id === busyNotice) {
+      useEditorUiStore.getState().clearError()
+    }
   }
 }
 

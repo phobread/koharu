@@ -41,6 +41,43 @@ describe('preferencesStore persistence', () => {
     })
   })
 
+  it.each([
+    ['adds T for showing / hiding text boxes', { undo: 'Ctrl+Z' }, 'T'],
+    ['leaves it unbound when T is already taken', { brush: 'T' }, ''],
+  ])('%s when rehydrating shortcuts saved before version 11', async (_, extra, expected) => {
+    const persisted = JSON.stringify({
+      state: {
+        shortcuts: {
+          select: 'V',
+          block: 'M',
+          brush: 'B',
+          eraser: 'E',
+          repairBrush: 'R',
+          increaseBrushSize: ']',
+          decreaseBrushSize: '[',
+          closeProject: 'Ctrl+W',
+          undo: 'Ctrl+Z',
+          redo: 'Ctrl+Shift+Z',
+          ...extra,
+        },
+      },
+      version: 10,
+    })
+    const storage = {
+      getItem: vi.fn(async () => persisted),
+      setItem: vi.fn(async () => undefined),
+      removeItem: vi.fn(async () => undefined),
+    }
+    vi.resetModules()
+    vi.doMock('@/lib/stores/serverConfigStorage', () => ({ serverConfigStorage: storage }))
+
+    const { usePreferencesStore } = await import('@/lib/stores/preferencesStore')
+    await usePreferencesStore.persist.rehydrate()
+
+    expect(usePreferencesStore.getState().shortcuts.toggleTextBoxes).toBe(expected)
+    expect(usePreferencesStore.getState().shortcuts.repairBrush).toBe('R')
+  })
+
   it('replaces the old Custom pipeline ticks with all Process steps ticked', async () => {
     const persisted = JSON.stringify({
       state: {

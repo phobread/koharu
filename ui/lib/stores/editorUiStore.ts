@@ -65,7 +65,8 @@ type EditorUiState = {
   // ui error (or a neutral notice, shown in the same spot)
   error?: { id: number; message: string; notice?: boolean }
   showError: (message: string) => void
-  showNotice: (message: string) => void
+  /** Returns the notice's id. A sticky notice stays until replaced or cleared. */
+  showNotice: (message: string, opts?: { sticky?: boolean }) => number
   clearError: () => void
 
   // settings dialog: the open tab, or null when closed (not persisted)
@@ -134,8 +135,8 @@ export const useEditorUiStore = create<EditorUiState>()(
           set({ showRenderedImage: false, showInpaintedImage: true })
         }
         if (mode === 'repairBrush') {
+          // Text boxes keep whatever the owner last chose (toggle key / eye menu).
           set({
-            showTextBlocksOverlay: true,
             showSegmentationMask: true,
             showBrushLayer: false,
           })
@@ -160,13 +161,17 @@ export const useEditorUiStore = create<EditorUiState>()(
           set({ error: undefined })
         }, ERROR_AUTO_DISMISS_MS)
       },
-      showNotice: (message) => {
+      showNotice: (message, opts) => {
         clearDismissTimer()
-        set({ error: { id: Date.now(), message, notice: true } })
-        dismissTimer = setTimeout(() => {
-          dismissTimer = null
-          set({ error: undefined })
-        }, ERROR_AUTO_DISMISS_MS)
+        const id = Date.now()
+        set({ error: { id, message, notice: true } })
+        if (!opts?.sticky) {
+          dismissTimer = setTimeout(() => {
+            dismissTimer = null
+            set({ error: undefined })
+          }, ERROR_AUTO_DISMISS_MS)
+        }
+        return id
       },
       clearError: () => {
         clearDismissTimer()

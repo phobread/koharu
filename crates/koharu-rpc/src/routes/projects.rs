@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use camino::Utf8Path;
 use koharu_app::projects as project_dirs;
 use koharu_core::{ImageRole, PageId, ProjectSummary};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -367,6 +368,9 @@ async fn export_current_project(
     }
 }
 
+/// Most pages a PNG export encodes at once.
+const MAX_EXPORT_WORKERS: usize = 6;
+
 /// One `.png` per page from the first of `roles` the page has; pages with
 /// none of them are left out.
 async fn export_image_role(
@@ -382,13 +386,27 @@ async fn export_image_role(
     let session_c = session.clone();
     let page_ids_c = page_ids.clone();
     let files = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-        for (stem, id) in &page_ids_c {
-            if let Some(bytes) = crate::psd_export::png_bytes_for_page(&session_c, *id, roles)? {
-                out.push((format!("{stem}.png"), bytes));
-            }
-        }
-        Ok(out)
+        // Decoding and PNG-encoding a full-size page takes a second or more,
+        // so pages are done side by side (order kept). Capped, since each
+        // worker holds a whole decoded page.
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, MAX_EXPORT_WORKERS);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?;
+        let encoded = pool.install(|| {
+            page_ids_c
+                .par_iter()
+                .map(|(stem, id)| -> anyhow::Result<_> {
+                    Ok(
+                        crate::psd_export::png_bytes_for_page(&session_c, *id, roles)?
+                            .map(|bytes| (format!("{stem}.png"), bytes)),
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        })?;
+        Ok(encoded.into_iter().flatten().collect::<Vec<_>>())
     })
     .await
     .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?

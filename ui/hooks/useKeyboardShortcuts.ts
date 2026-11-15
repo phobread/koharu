@@ -94,6 +94,12 @@ export function useKeyboardShortcuts() {
         return
       }
 
+      if (shortcut && shortcut === shortcuts.toggleTextBoxes) {
+        const ui = useEditorUiStore.getState()
+        ui.setShowTextBlocksOverlay(!ui.showTextBlocksOverlay)
+        return
+      }
+
       // Brush Size
       if (shortcut === shortcuts.increaseBrushSize) {
         const currentSize = usePreferencesStore.getState().brushConfig.size

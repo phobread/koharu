@@ -138,23 +138,38 @@ pub fn import_khr(khr_path: &Utf8Path, project_dir: &Utf8Path) -> Result<Utf8Pat
     import_khr_bytes(&bytes, project_dir)
 }
 
-/// Pack `(filename, bytes)` pairs into a `Deflated` zip in memory. Used by
-/// the HTTP export route when a format produces multiple files (per-page PSD,
+/// Pack `(filename, bytes)` pairs into a zip in memory. Used by the HTTP
+/// export route when a format produces multiple files (per-page PSD,
 /// per-page PNG). Filenames are used verbatim — caller decides structure.
+/// Already-compressed images go in `Stored` (deflating them again costs
+/// time and gains nothing); everything else is `Deflated`.
 pub fn zip_files_to_bytes(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
         for (name, bytes) in files {
+            let method = if is_compressed_image(name) {
+                CompressionMethod::Stored
+            } else {
+                CompressionMethod::Deflated
+            };
             zip.start_file(
                 name,
-                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+                SimpleFileOptions::default().compression_method(method),
             )?;
             zip.write_all(bytes)?;
         }
         zip.finish()?;
     }
     Ok(cursor.into_inner())
+}
+
+/// Whether `name` is an image format whose bytes are already compressed.
+fn is_compressed_image(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".webp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 /// Regenerable caches, the lock, and temp directories that `atomicwrites`
@@ -214,6 +229,32 @@ mod tests {
 
         assert!(restored.join("blobs/ab/cdef").exists());
         assert!(!restored.join("blobs/ab/.atomicwriteXYZ").exists());
+    }
+
+    #[test]
+    fn exported_images_are_stored_and_other_files_deflated() {
+        let page = vec![7u8; 4096];
+        let bytes = zip_files_to_bytes(&[
+            ("001.png".into(), page.clone()),
+            ("002.PNG".into(), page.clone()),
+            ("003.psd".into(), page.clone()),
+        ])
+        .unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let methods: Vec<_> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().compression())
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                CompressionMethod::Stored,
+                CompressionMethod::Stored,
+                CompressionMethod::Deflated
+            ]
+        );
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_name("002.PNG").unwrap(), &mut out).unwrap();
+        assert_eq!(out, page);
     }
 
     #[test]

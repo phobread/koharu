@@ -8,7 +8,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Switch } from '@/components/ui/switch'
 import { findImageBlob, findMaskBlob, useCurrentPage, useTextNodes } from '@/hooks/useCurrentPage'
 import { useScene } from '@/hooks/useScene'
+import { formatShortcutForDisplay, getPlatform } from '@/lib/shortcutUtils'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { cn } from '@/lib/utils'
 
 /**
@@ -35,6 +37,7 @@ export function ViewControls() {
   const setShowTextBlocksOverlay = useEditorUiStore((s) => s.setShowTextBlocksOverlay)
   const showRenderedImage = useEditorUiStore((s) => s.showRenderedImage)
   const setShowRenderedImage = useEditorUiStore((s) => s.setShowRenderedImage)
+  const toggleTextBoxesKey = usePreferencesStore((s) => s.shortcuts.toggleTextBoxes)
 
   const hasRendered = !!(page && findImageBlob(page, 'rendered'))
   const hasInpainted = !!(page && findImageBlob(page, 'inpainted'))
@@ -59,13 +62,21 @@ export function ViewControls() {
     { id: 'translated', label: t('layers.viewTranslated'), enabled: hasRendered },
   ]
 
-  const overlays = [
+  const overlays: {
+    id: string
+    label: string
+    checked: boolean
+    setChecked: (show: boolean) => void
+    enabled: boolean
+    shortcut?: string
+  }[] = [
     {
       id: 'textBlocks',
       label: t('layers.textBlocks'),
       checked: showTextBlocksOverlay,
       setChecked: setShowTextBlocksOverlay,
       enabled: textNodes.length > 0,
+      shortcut: formatShortcutForDisplay(toggleTextBoxesKey ?? '', getPlatform() === 'mac'),
     },
     {
       id: 'mask',
@@ -140,6 +151,11 @@ export function ViewControls() {
                 className={cn('text-xs', o.checked ? 'text-foreground' : 'text-muted-foreground')}
               >
                 {o.label}
+                {o.shortcut && (
+                  <kbd className='ml-1.5 rounded border border-border px-1 font-sans text-[10px] text-muted-foreground'>
+                    {o.shortcut}
+                  </kbd>
+                )}
               </span>
               <Switch
                 checked={o.checked}

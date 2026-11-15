@@ -57,6 +57,7 @@ type PreferencesState = {
     brush: string
     eraser: string
     repairBrush: string
+    toggleTextBoxes: string
     increaseBrushSize: string
     decreaseBrushSize: string
     closeProject: string
@@ -99,6 +100,7 @@ const initialPreferences = {
     brush: 'B',
     eraser: 'E',
     repairBrush: 'R',
+    toggleTextBoxes: 'T',
     increaseBrushSize: ']',
     decreaseBrushSize: '[',
     closeProject: getPlatform() === 'mac' ? 'Cmd+W' : 'Ctrl+W',
@@ -179,7 +181,7 @@ export const usePreferencesStore = create<PreferencesState>()(
     {
       name: 'koharu-config',
       storage: createJSONStorage(() => serverConfigStorage),
-      version: 10,
+      version: 11,
       migrate: (persisted: any, version: number) => {
         if (version < 2 && persisted) {
           delete persisted.localLlm
@@ -221,6 +223,13 @@ export const usePreferencesStore = create<PreferencesState>()(
         }
         if (version < 9 && persisted?.shortcuts) {
           persisted.shortcuts.closeProject ??= initialPreferences.shortcuts.closeProject
+        }
+        if (version < 11 && persisted?.shortcuts && persisted.shortcuts.toggleTextBoxes == null) {
+          // Saved shortcuts replace the defaults whole, so a new action needs
+          // its key added here. Left unbound if the key is already taken.
+          const key = initialPreferences.shortcuts.toggleTextBoxes
+          const taken = Object.values(persisted.shortcuts).includes(key)
+          persisted.shortcuts.toggleTextBoxes = taken ? '' : key
         }
         return persisted
       },

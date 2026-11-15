@@ -40,30 +40,29 @@ notes name (under `C:\kt`, `D:\layout-trial`, `D:\flux3-trial`) are deleted.
   copy, plus a check that 0064's glow still goes and the Ruination,
   LOLExtras and Neeko's Help pages don't change.
 
+- **A view button for the official release (owner, 2026-11-15: "a toggle
+  between the official release and the raw korean would be nice").**
+  Display only: show the release page in place of the raw, next to Original
+  / Cleaned / Translated. The release image is already stored per page, so
+  no format change. (BadEnd3 010's Korean SFX turned out to be the owner's
+  own empty box + clean-up; undoing them brought the English back.)
+
 ## For the owner to check in the app
 
-Installed 2026-11-14 (the 0063 fix 2026-11-15) but never tried in a window,
-or only unit-tested:
+Checked 2026-11-15: favourites, open/export folders, font picker, 1px brush,
+step dropdowns, "Hide the release's lettering here" and repair strokes all
+fine. Still to watch:
 
-- Favourites: does the star read well over artwork on small thumbnails, and
-  does it crowd the delete button? The "Favourites" pill on the home screen.
-- Right-click → "Hide the release's lettering here" on an official-release
-  page (unit-tested only; the brushed-over case was run once).
-- Open and export dialogs remembering separate folders (unit-tested only).
-- The shorter font picker.
-- The 1px brush: crosshair pointer under 8px, and the brush panel letting a
-  held stroke pass under it.
-- The toolbar step dropdowns in a narrow window.
-- Repair strokes with the real brush: over cleaned lettering (no clipped
-  piece should come back), next to a kept heart, and on an official-release
-  page.
 - Hand strokes are now erased as drawn (+2px): a speck the tracing misses
-  stays and needs its own stroke.
-- Box text sizes after the fit fixes: some hand-sized boxes now fill much
-  more of their bubble, and a fuller early line can leave a short last line
-  (BadEnd3 031, "LIKE A" alone). Watch for any box dropping to 5px (the
-  original SlaveMarket case couldn't be replayed).
-- The Settings → "Text over artwork" switch (only matters if turned on).
+  stays and needs its own stroke ("fine for now, needs more testing").
+- Box text sizes after the fit fixes ("fine for now, needs more testing"):
+  some hand-sized boxes fill much more of their bubble, and a fuller early
+  line can leave a short last line (BadEnd3 031). Watch for any box
+  dropping to 5px.
+- The "Text over artwork" switch (Settings → Font defaults, near the
+  bottom; only matters if turned on).
+- Once installed: the text-box key (T), and "Export all pages" on a big
+  project (folder dialog first, "Exporting N pages…" notice, then the files).
 
 ## Owner decisions open
 
@@ -134,8 +133,9 @@ or only unit-tested:
   erase mask.
 - Deleting a box on a cleaned release page takes about 2.5-3 s (the rule
   runs again).
-- "Hide the release's lettering here": two lines closer than about 40px
-  count as one; a sound effect of several big letters needs one click per
+- "Hide the release's lettering here": the Korean cleaned out under the
+  hidden line often needs tweaking by hand (owner, 2026-11-15: "a bit
+  iffy", probably the model); two lines closer than about 40px count as one; a sound effect of several big letters needs one click per
   letter; where the release lettered over the Korean, Korean fragments can
   remain; a later OCR run may try to read the empty box.
 
@@ -203,6 +203,35 @@ messages, docs and module headers, none of its code run.
   model (owner: redundant). Archive/PDF import and CBZ export only if wanted.
 
 ## Done
+
+### Not built into the app yet
+
+- **Text boxes on a key; the repair brush leaves them alone (2026-11-15,
+  owner request).** T shows / hides the text boxes (Settings → Keybinds,
+  "Show / hide text boxes"; the eye menu shows the key next to "Text
+  boxes"). Picking the repair brush no longer turns the boxes back on; the
+  box tool (M) still does. Saved shortcuts from older builds get T added
+  unless T is already taken (then it starts unbound). `toggleTextBoxes` in
+  `ui/lib/stores/preferencesStore.ts` (settings version 11),
+  `useKeyboardShortcuts.ts`, `setMode` in `editorUiStore.ts`,
+  `ViewControls.tsx`; 6 new tests.
+- **Faster export of many pages (2026-11-15, owner report on BadEnd3:
+  3000x4000 pages, 472 MB, slow to show the save dialog).** The server built
+  the whole zip before the dialog opened, decoding and PNG-encoding every
+  page one after another, then deflating the PNGs again. Now: pages are
+  encoded side by side (up to 6 at once, `MAX_EXPORT_WORKERS` in
+  `koharu-rpc/src/routes/projects.rs`), PNGs go into the zip uncompressed
+  (`zip_files_to_bytes` in `koharu-app/src/archive.rs`), and the export no
+  longer fills the decoded-image cache (`load_image_uncached` in
+  `blobs.rs`). In the app, an export of several pages asks for the folder
+  first and shows "Exporting N pages…" until it is done (`.khr`: "Exporting
+  the project…"); a single page keeps the save dialog after the build
+  (`exportCurrentProjectAs` in `ui/lib/io/pagesIo.ts`; sticky notices in
+  `editorUiStore.ts`). 5 new UI tests, 1 Rust test. Timed on a copy of
+  BadEnd3 (36 pages), fresh process each, server side of "Export all
+  pages": 14.3 / 13.8 s → 1.3 / 1.2 s, the same 36 files with every PNG
+  byte-identical. The folder-first dialog and the notice are unit-tested
+  only (native dialog).
 
 ### 2026-11-11 to 2026-11-15 (installed 2026-11-14, the first item 2026-11-15)
 

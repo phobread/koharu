@@ -1467,6 +1467,7 @@ const SHORTCUT_ITEMS = [
   { key: 'brush', labelKey: 'toolRail.brush' },
   { key: 'eraser', labelKey: 'toolRail.eraser' },
   { key: 'repairBrush', labelKey: 'toolRail.repairBrush' },
+  { key: 'toggleTextBoxes', labelKey: 'settings.shortcutToggleTextBoxes' },
   {
     key: 'increaseBrushSize',
     labelKey: 'settings.shortcutIncreaseBrushSize',
