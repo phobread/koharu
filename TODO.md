@@ -204,7 +204,7 @@ messages, docs and module headers, none of its code run.
 
 ## Done
 
-### Not built into the app yet
+### Installed 2026-11-16 (f37208d4)
 
 - **Text boxes on a key; the repair brush leaves them alone (2026-11-15,
   owner request).** T shows / hides the text boxes (Settings → Keybinds,
