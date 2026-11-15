@@ -24,6 +24,7 @@ use koharu_renderer::{
         RasterOptions, RenderOptions, RenderStrokeOptions, RenderStyleRange, TinySkiaRenderer,
     },
     text::{
+        frames::add_flat_frames,
         latin::{BalloonShape, BubbleIndex, LayoutBox},
         script::{font_families_for_text, writing_mode_for_block},
     },
@@ -248,11 +249,20 @@ impl Renderer {
         opts: &PageRenderOptions,
     ) -> Result<RenderOutput> {
         let min_font = min_font_size_for_image(image_width, image_height);
+        let mut background = inpainted.to_rgba8();
+        if let Some(brush) = brush_layer {
+            imageops::overlay(&mut background, &brush.to_rgba8(), 0, 0);
+        }
         // Build the bubble index once per page. The mask encodes each
         // detected bubble as a distinct grayscale ID; the index scans
         // once to record per-ID bboxes and then answers seed→bbox
-        // lookups in O(seed_area).
-        let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| BubbleIndex::new(m.to_luma8()));
+        // lookups in O(seed_area). Caption frames the detector missed are
+        // added to it first (`add_caption_frames`).
+        let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| {
+            let mut ids = m.to_luma8();
+            add_caption_frames(blocks, &mut ids, &background);
+            BubbleIndex::new(ids)
+        });
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
         let balloons = resolve_balloons(blocks, bubble_index.as_ref());
         let rooms = if opts.grow_over_artwork {
@@ -261,11 +271,6 @@ impl Renderer {
             vec![None; blocks.len()]
         };
         let bubble_mask = bubble_index.as_ref().map(BubbleIndex::mask);
-
-        let mut background = inpainted.to_rgba8();
-        if let Some(brush) = brush_layer {
-            imageops::overlay(&mut background, &brush.to_rgba8(), 0, 0);
-        }
 
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
         for (((block, layout_box), balloon), room) in blocks
@@ -1235,6 +1240,47 @@ fn resolve_balloons(
     balloons
 }
 
+/// Paints into the bubble ID map `bubbles` the caption frames the bubble
+/// detector missed (black narration boxes, mostly): for each block that
+/// could be lettered into a bubble (text, unlocked, upright, horizontal) but
+/// sits on none, a flat, bounded patch of the cleaned `page` under it
+/// becomes one more bubble ([`add_flat_frames`]). From there on the frame
+/// is a bubble like any other: the text may flow into it, it is shared with
+/// other boxes in it, and its text doesn't grow over artwork. The saved
+/// mask is not changed.
+fn add_caption_frames(blocks: &[RenderBlockInput], bubbles: &mut GrayImage, page: &RgbaImage) {
+    let candidates = blocks
+        .iter()
+        .filter(|block| {
+            let translation = block.translation.trim();
+            !translation.is_empty()
+                && !block.lock_layout_box
+                && effective_rotation(block.transform.rotation_deg).is_none()
+                && !writing_mode_for_block(&layout_source_from_input(block, translation))
+                    .is_vertical()
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return;
+    }
+    let seeds = candidates
+        .iter()
+        .map(|&block| seed_layout_box(block))
+        .collect::<Vec<_>>();
+    for (block, frame) in candidates
+        .iter()
+        .zip(add_flat_frames(bubbles, page, &seeds))
+    {
+        if let Some(frame) = frame {
+            tracing::debug!(
+                node = %block.node_id,
+                frame,
+                "box sits on a flat frame the bubble detector missed; it counts as a bubble"
+            );
+        }
+    }
+}
+
 fn apply_default_font_families(font_families: &mut Vec<String>, text: &str) {
     if font_families.is_empty() {
         *font_families = font_families_for_text(text);
@@ -1378,8 +1424,9 @@ struct ArtworkRoom {
 
 /// The size of the lettering a block replaces, when the block is one that may
 /// spread past its box: auto-sized text in a box the detector made, upright,
-/// and not in a speech bubble. A box the user drew or resized, a size set by
-/// hand and a bubble are all explicit limits and stay as they are.
+/// and not in a speech bubble (a caption frame `add_caption_frames` found
+/// counts as one). A box the user drew or resized, a size set by hand and a
+/// bubble are all explicit limits and stay as they are.
 fn original_size_over_artwork(
     block: &RenderBlockInput,
     resolved: &ResolvedLayoutBox,
@@ -2624,6 +2671,78 @@ mod tests {
         let frame = balloons[0].as_ref().expect("top lobe").frame;
         assert!(frame.y + frame.height <= 215.0, "{frame:?}");
         assert!(balloons[1].is_none());
+    }
+
+    /// Busy artwork with a black caption frame (white rim) at 100..300 x
+    /// 80..220 that the bubble map misses, and a white bubble at 320..390 x
+    /// 20..120 that it has (id 1).
+    fn page_with_a_missed_caption_frame() -> (RgbaImage, GrayImage) {
+        let mut page = RgbaImage::from_fn(400, 300, |x, y| {
+            if (x + y) / 3 % 2 == 0 {
+                Rgba([200, 120, 90, 255])
+            } else {
+                Rgba([60, 90, 150, 255])
+            }
+        });
+        for (x0, y0, x1, y1, v) in [
+            (97, 77, 303, 223, 255u8),
+            (100, 80, 300, 220, 8),
+            (320, 20, 390, 120, 250),
+        ] {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    page.put_pixel(x, y, Rgba([v, v, v, 255]));
+                }
+            }
+        }
+        let mut bubbles = GrayImage::new(400, 300);
+        paint_rect(&mut bubbles, 320, 20, 390, 120, 1);
+        (page, bubbles)
+    }
+
+    #[test]
+    fn a_box_on_a_missed_caption_frame_is_lettered_into_it() {
+        let (page, mut bubbles) = page_with_a_missed_caption_frame();
+        let mut caption = block(140.0, 120.0, 120.0, 60.0, "The ruined king");
+        caption.font_prediction = lettering(40.0);
+        let blocks = [caption];
+
+        add_caption_frames(&blocks, &mut bubbles, &page);
+        let index = BubbleIndex::new(bubbles);
+        let layout_boxes = resolve_layout_boxes(&blocks, Some(&index));
+        let balloons = resolve_balloons(&blocks, Some(&index));
+
+        assert_eq!(layout_boxes[0].bubble_id, Some(2));
+        let frame = balloons[0].as_ref().expect("the caption frame").frame;
+        assert!(
+            frame.x >= 99.0 && frame.x + frame.width <= 301.0 && frame.width >= 180.0,
+            "{frame:?}"
+        );
+        assert!(
+            frame.y >= 79.0 && frame.y + frame.height <= 221.0 && frame.height >= 120.0,
+            "{frame:?}"
+        );
+        // Like text in any bubble, it doesn't grow over artwork.
+        assert_eq!(
+            original_size_over_artwork(&blocks[0], &layout_boxes[0], balloons[0].as_ref()),
+            None
+        );
+    }
+
+    #[test]
+    fn boxes_in_a_bubble_locked_tilted_or_over_artwork_get_no_frame() {
+        let (page, mut bubbles) = page_with_a_missed_caption_frame();
+        let before = bubbles.clone();
+        let in_bubble = block(330.0, 40.0, 50.0, 40.0, "Hi");
+        let mut locked = block(140.0, 120.0, 120.0, 60.0, "Mine");
+        locked.lock_layout_box = true;
+        let mut tilted = block(140.0, 120.0, 120.0, 60.0, "Tilted");
+        tilted.transform.rotation_deg = 15.0;
+        let over_art = block(20.0, 230.0, 120.0, 50.0, "Whoosh");
+
+        add_caption_frames(&[in_bubble, locked, tilted, over_art], &mut bubbles, &page);
+
+        assert_eq!(bubbles, before);
     }
 
     fn lettering(size: f32) -> Option<FontPrediction> {
