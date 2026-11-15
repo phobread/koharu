@@ -76,6 +76,11 @@ pub struct PipelineRunOptions {
     /// additions must keep the existing cleaned background or the rectangle
     /// itself becomes visible. `None` preserves the legacy restore behavior.
     pub restore_source_region: Option<bool>,
+    /// For a repair stroke: the segment mask before it. Lets the clean-up
+    /// tell what the stroke painted from what was already in the mask, so a
+    /// coloured decoration (a pink heart) the stroke didn't paint over is
+    /// kept (`glyph_erase_mask`).
+    pub previous_segment_mask: Option<koharu_core::BlobRef>,
     /// Flux.2 Klein tuning. `None` leaves the engine's built-in default in effect.
     pub flux2_strength: Option<f64>,
     pub flux2_steps: Option<u32>,

@@ -96,32 +96,73 @@ pub fn requested_text_nodes<'a>(
 /// `Some(false)`) is erased as drawn, grown by the minimum only. The usual
 /// growth follows the size of the text box or of the stroke, up to 8px, and
 /// that reaches a heart drawn beside a traced SFX.
+///
+/// Coloured decorations, such as pink hearts, stay out of the mask where the
+/// lettering beside them is dark (`keep_coloured_decorations`); `page` is
+/// the original page (the source, not the cleaned image). A brush stroke
+/// still erases the decorations it paints over: the pixels it added to the
+/// mask are told apart with `previous_mask`, the segment mask before it.
+/// Without that mask a brush stroke erases everything it covers, as before.
 pub fn glyph_erase_mask(
     options: &PipelineRunOptions,
+    page: &DynamicImage,
+    previous_mask: Option<&DynamicImage>,
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     text_blocks: &[koharu_ml::types::TextRegion],
 ) -> GrayImage {
     use koharu_ml::inpainting::{
-        UndetectedBlockFallback, expand_hand_stroke_mask_for_inpainting, expand_mask_for_inpainting,
+        UndetectedBlockFallback, expand_hand_stroke_mask_for_inpainting,
+        expand_mask_for_inpainting, keep_coloured_decorations, keep_coloured_decorations_except,
     };
     match (options.region, options.restore_source_region) {
-        (None, _) => expand_mask_for_inpainting(
-            mask,
-            bubble_mask,
+        (None, _) => keep_coloured_decorations(
+            &expand_mask_for_inpainting(
+                mask,
+                bubble_mask,
+                text_blocks,
+                UndetectedBlockFallback::FillBubble,
+            ),
+            page,
             text_blocks,
-            UndetectedBlockFallback::FillBubble,
         ),
         (Some(_), Some(false)) => {
-            expand_hand_stroke_mask_for_inpainting(mask, bubble_mask, text_blocks)
+            let erase = expand_hand_stroke_mask_for_inpainting(mask, bubble_mask, text_blocks);
+            match previous_mask {
+                Some(previous) => keep_coloured_decorations_except(
+                    &erase,
+                    page,
+                    text_blocks,
+                    &painted_pixels(mask, previous),
+                ),
+                None => erase,
+            }
         }
-        (Some(_), _) => expand_mask_for_inpainting(
-            mask,
-            bubble_mask,
+        (Some(_), _) => keep_coloured_decorations(
+            &expand_mask_for_inpainting(
+                mask,
+                bubble_mask,
+                text_blocks,
+                UndetectedBlockFallback::Skip,
+            ),
+            page,
             text_blocks,
-            UndetectedBlockFallback::Skip,
         ),
     }
+}
+
+/// The pixels set in `mask` that were not set in `previous`: what a brush
+/// stroke painted. Empty when the sizes differ.
+pub fn painted_pixels(mask: &DynamicImage, previous: &DynamicImage) -> GrayImage {
+    let mask = mask.to_luma8();
+    let previous = previous.to_luma8();
+    if mask.dimensions() != previous.dimensions() {
+        return GrayImage::new(mask.width(), mask.height());
+    }
+    GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        let painted = mask.get_pixel(x, y).0[0] > 127 && previous.get_pixel(x, y).0[0] <= 127;
+        image::Luma([if painted { 255 } else { 0 }])
+    })
 }
 
 pub fn text_node_to_region(transform: &Transform, text: &TextData) -> koharu_ml::types::TextRegion {

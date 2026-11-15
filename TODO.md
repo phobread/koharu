@@ -47,7 +47,9 @@
   (paint on the release, or select release bubbles to clean). Open to other
   ideas: diagnose 0026 first, then propose.
 - **Hearts damaged next to a traced SFX:** LOLExtras 0028, 0035, 0038, 0084,
-  0100, 0104 (and Neeko's Help 0012).
+  0100, 0104 (and Neeko's Help 0012). Full runs fixed 2026-11-14 (see Done
+  recently); owner's call that day: keep coloured hearts in dialogue
+  bubbles too, not only beside SFX.
 - **TrashHand border clipping:** no longer reproducible, the project is
   gone. Dropped; the entry was removed 2026-11-12. If it comes back, what
   had been checked (cause never found): worst on TrashHand Relaxed
@@ -63,6 +65,62 @@
   looked at separately, not tonight.
 
 ## Done recently
+
+Pictures and logs under `C:\kt` named below (the isolated test root) were
+deleted on 2026-11-14 at the owner's request.
+
+- **Coloured hearts kept by full clean-up runs (2026-11-14, installed the
+  same evening; "Hearts damaged next to a traced SFX").** Two causes, both on full runs
+  (the Inpaint button, Process): a box added by hand over an SFX has no
+  letter mask under it, so its whole rectangle (+8px) was erased inside the
+  bubble and the hearts in it went too or were cut along its edge (the
+  straight cuts on LOLExtras 0084); and the letter finder marks hearts
+  beside dialogue as text, while the 8px growth around letters reaches the
+  ones next to them (0100, 0035, Neeko's Help 0012). Owner's choice: keep
+  them everywhere, dialogue included (drop the ♡ from the English there).
+  Now, per text box, bright coloured shapes and their pale edge are left out
+  of what gets erased when the box's lettering is dark
+  (`keep_coloured_decorations`, new `koharu-ml/src/inpainting/decorations.rs`,
+  called from `glyph_erase_mask` in `koharu-app/.../engines/support.rs`;
+  Flux2, LaMa and AOT). Not when the lettering itself is coloured, the
+  surroundings are coloured (text on a pink bubble, narration over red
+  hair) or mostly dark (Ruination's white-on-black boxes), and not a
+  coloured shape ringed by a dark outline (a letter's fill). Dark lettering
+  crossing a heart is still erased. A heart is kept whole even where it
+  reaches into a neighbouring box's area. Results on copies of the owner's
+  projects, Flux2 with the owner's settings, old exe against new in the
+  same order: damaged hearts 36→0 (0084), 24→0 (0100), 16→0 (0035), 6→1
+  (0028, a small one now 74% intact), 16→0 (0038), 11→0 (0104), 38→0
+  (Neeko 0012), 8→0 (One Piece 0022); Ruination 0043/0045/0063/0064 and
+  One Piece 0008 pixel-identical, Ruination 0062 64 pixels. Lettering comes
+  off as before; Flux2's leftovers on some SFX (grey ghosts on 0038 히잇,
+  0028 핫) are the same with both exes. Run-to-run note: Flux2's result
+  depends on what ran before it in the same session, so only same-order
+  runs after a fresh start compare. Log line "kept coloured decorations out
+  of the erase mask" (per-box details at debug level,
+  `RUST_LOG=info,koharu_ml::inpainting::decorations=debug`). Unit tests: 11
+  new in `inpainting::decorations`.
+  **Repair strokes too (same day, owner: "Sure lets do it").** A stroke over
+  cleaned lettering redoes the whole piece of lettering from the page's
+  letter mask, which still holds the segmented heart pixels, so it could
+  erase the part of a kept heart inside the stroke's rectangle. Now repair
+  strokes (brush, eraser, Flux2 / LaMa / AOT) keep coloured shapes the same
+  way, except where the stroke itself painted new mask pixels (+2px): those
+  are erased as before (`keep_coloured_decorations_except`, the mask before
+  the stroke travels as `previous_segment_mask` in `PipelineRunOptions`,
+  set by `put_mask` in `koharu-rpc/src/routes/pages.rs`). On the LOLExtras
+  0084 copy, the same stroke over the cleaned "응..." beside the heart
+  (rect 1066,208 73x43): old exe changed the heart (1121-1139, 208-228),
+  new exe changed no pixel; the whole-piece redo still ran.
+  Limits: a coloured word inside dark dialogue would be kept like a heart.
+  A brush stroke over a heart that is already in the letter mask paints no
+  new pixels, so the heart stays; to remove one, erase the mask over it
+  first, then brush. Tried on 0084: it works for the mask, but Flux2,
+  shown only part of the heart, redraws its lines from the rest; cover the
+  whole heart or use "Repair with LaMa". Seen on the way, not caused by
+  this: an eraser stroke that leaves a few mask pixels in its rectangle
+  makes Flux2 redo that small rectangle, and here it pasted a pale pink
+  patch over the heart's white inside. Not yet tried in a window.
 
 - **Text over artwork may grow to the original size (2026-11-12, installed
   2026-11-14; "Text over artwork is too small").** When the automatic
@@ -492,6 +550,7 @@
   stroke (pictures `C:\kt\t_hat_fixed.png` before, `t_hat_fix2.png` after).
   The other side of it: a stroke now has to cover the lettering itself; a
   speck the tracing misses stays (it used to be swallowed by the widening).
+  Hearts lost by full runs: fixed 2026-11-14, see Done recently.
   Not looked at: the eraser side (erasing the mask over a heart to get it
   back still re-cleans nearby lettering with the wide margin), and hearts
   lost by the automatic full-page run inside text bubbles (seen on LOLExtras

@@ -46,6 +46,15 @@ impl Engine for Model {
         // The source, with an official release's onomatopoeia if the page
         // has one (`official`).
         let (source, pieces) = cleanup_base(ctx.scene, ctx.page, ctx.blobs)?;
+        // The original page and, for a repair stroke, the segment mask before
+        // it: what `glyph_erase_mask` keeps coloured decorations by.
+        let original = source.clone();
+        let previous_mask = ctx
+            .options
+            .previous_segment_mask
+            .as_ref()
+            .map(|blob| ctx.blobs.load_image(blob))
+            .transpose()?;
         // Set when a repair stroke builds on the cleaned image: the original
         // page, to show Flux2 under the pixels the stroke repaints.
         let mut repaint_from_source = None;
@@ -88,7 +97,14 @@ impl Engine for Model {
         // Give FLUX the broad block-shaped context it needs to generate a
         // clean fill, but paste through the tighter glyph mask. Using the
         // broad mask for both stages leaves a flat, discoloured rectangle.
-        let composite_mask = glyph_erase_mask(ctx.options, &mask, &bubble_mask, &text_blocks);
+        let composite_mask = glyph_erase_mask(
+            ctx.options,
+            &original,
+            previous_mask.as_ref(),
+            &mask,
+            &bubble_mask,
+            &text_blocks,
+        );
         let (generation_mask, composite_mask) = match ctx.options.region {
             Some(r) => (
                 clip_gray_mask_to_region(&generation_mask, &r),
@@ -114,6 +130,8 @@ impl Engine for Model {
                 let page_bubbles = ctx.blobs.load_image(&bubble_ref)?;
                 lettering_under_stroke(
                     ctx.options,
+                    &source,
+                    previous_mask.as_ref(),
                     &page_mask,
                     &page_bubbles,
                     &text_blocks,
@@ -207,10 +225,15 @@ struct LetteringPiece {
 }
 
 /// The lettering a repair stroke lies on. `stroke_erase` holds the pixels the
-/// stroke erases (inside `stroke`, its rectangle); the masks are the page's.
+/// stroke erases (inside `stroke`, its rectangle); `page` is the original
+/// page, `previous_mask` the segment mask before the stroke, and the masks
+/// are the page's.
 /// `None` when the stroke erases nothing in the page's clean-up region.
+#[allow(clippy::too_many_arguments)]
 fn lettering_under_stroke(
     options: &PipelineRunOptions,
+    page: &DynamicImage,
+    previous_mask: Option<&DynamicImage>,
     page_mask: &DynamicImage,
     page_bubbles: &DynamicImage,
     text_blocks: &[koharu_ml::types::TextRegion],
@@ -226,7 +249,14 @@ fn lettering_under_stroke(
     let (width, height) = region.dimensions();
     let window = grow_region(stroke, REDO_CONTEXT_PX, width, height);
     let piece = mask_pieces_touching(&region, stroke_erase, &window);
-    let erase = glyph_erase_mask(options, page_mask, page_bubbles, text_blocks);
+    let erase = glyph_erase_mask(
+        options,
+        page,
+        previous_mask,
+        page_mask,
+        page_bubbles,
+        text_blocks,
+    );
     let erase = mask_intersection(&erase, &piece);
     // A text box can be far bigger than the lettering in it, and two boxes
     // that overlap make one piece. Flux2 needs the region around what is
@@ -294,6 +324,10 @@ mod tests {
         )
     }
 
+    fn blank_page(mask: &DynamicImage) -> DynamicImage {
+        DynamicImage::new_rgb8(mask.width(), mask.height())
+    }
+
     fn stroke_options(stroke: Region) -> PipelineRunOptions {
         PipelineRunOptions {
             region: Some(stroke),
@@ -315,6 +349,8 @@ mod tests {
 
         let piece = lettering_under_stroke(
             &stroke_options(stroke),
+            &blank_page(&mask),
+            None,
             &mask,
             &bubbles,
             &[],
@@ -371,6 +407,8 @@ mod tests {
 
         let piece = lettering_under_stroke(
             &stroke_options(stroke),
+            &blank_page(&mask),
+            None,
             &mask,
             &bubbles,
             &[text_box],
@@ -401,6 +439,8 @@ mod tests {
         assert!(
             lettering_under_stroke(
                 &stroke_options(stroke),
+                &blank_page(&mask),
+                None,
                 &mask,
                 &bubbles,
                 &[],

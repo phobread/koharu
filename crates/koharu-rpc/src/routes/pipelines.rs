@@ -164,6 +164,7 @@ pub(crate) fn launch(
             text_node_ids: req.text_node_ids,
             region: req.region,
             restore_source_region: None,
+            previous_segment_mask: None,
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             flux2_flat_fill: Some(flux2_flat_fill),

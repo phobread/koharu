@@ -864,6 +864,7 @@ async fn put_mask(
         let options = PipelineRunOptions {
             region: Some(region),
             restore_source_region: Some(restore_source_region),
+            previous_segment_mask: previous_blob.clone().filter(|_| role == MaskRole::Segment),
             flux2_strength: Some(flux2_strength),
             flux2_steps: Some(flux2_steps),
             flux2_flat_fill: Some(flux2_flat_fill),

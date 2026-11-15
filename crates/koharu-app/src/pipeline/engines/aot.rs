@@ -38,6 +38,15 @@ impl Engine for Model {
         // The source, with an official release's onomatopoeia if the page
         // has one (`official`).
         let (source, pieces) = cleanup_base(ctx.scene, ctx.page, ctx.blobs)?;
+        // The original page and, for a repair stroke, the segment mask before
+        // it: what `glyph_erase_mask` keeps coloured decorations by.
+        let original = source.clone();
+        let previous_mask = ctx
+            .options
+            .previous_segment_mask
+            .as_ref()
+            .map(|blob| ctx.blobs.load_image(blob))
+            .transpose()?;
         let (image, mask, bubble_mask) = match ctx.options.region {
             Some(r) => {
                 let base = match find_image_node(ctx.scene, ctx.page, ImageRole::Inpainted) {
@@ -61,7 +70,14 @@ impl Engine for Model {
             .into_iter()
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect();
-        let expanded = glyph_erase_mask(ctx.options, &mask, &bubble_mask, &text_blocks);
+        let expanded = glyph_erase_mask(
+            ctx.options,
+            &original,
+            previous_mask.as_ref(),
+            &mask,
+            &bubble_mask,
+            &text_blocks,
+        );
         let mask = match ctx.options.region {
             Some(r) => clip_mask_to_region(&DynamicImage::ImageLuma8(expanded), &r),
             None => DynamicImage::ImageLuma8(expanded),
