@@ -88,7 +88,7 @@
 ## Done recently
 
 - **Small black SFX bubbles on Ruination 0063 come out black (2026-11-15,
-  built, not installed).** The two small bubbles top left ("하븝..♡",
+  installed 14:50 as a clean build of 697bd8c3).** The two small bubbles top left ("하븝..♡",
   "쥽♡") came out grey or teal. Cause: the owner's mask is painted over
   them whole (outline and some sky too), so only 4 pixels of bubble were
   left to judge the dark-bubble start on (it needs 64) and Flux2 started
